@@ -11,7 +11,7 @@ SECRET_MAP = {
     "ANTHROPIC_API_KEY": "op://Security/yoqqzcgul5sdwn24si2vlzuwzm/password",
     "GEMINI_API_KEY": "op://Security/p2ekopsycdr4edaynx3rqkor3m/password",
     "GROK_API_KEY": "op://Security/5qtm7ttf7o4yycptuttbadri2e/credential",
-    "ASANA_PAT": "op://Security/Asana/credential",
+    "ASANA_PAT": "op://Security/jhpvfnugdmsrz7clygqblqhqqm/credential",
 }
 
 
