@@ -105,7 +105,16 @@ src/
 ## Running
 The bot runs via `python main.py` using long polling. Deployed as a VM for perpetual operation.
 
+### Asana Integration
+- `/extract <pasted text>` - Runs pasted chat transcripts through 4-provider swarm analysis
+- Extracts: decisions, action items, insights, risks, follow-ups
+- Auto-creates tasks in Asana from extracted action items
+- `/setproject <gid>` - Set target Asana project for task creation
+- ASANA_PAT loaded from 1Password vault at startup
+
 ## Recent Changes
+- Added /extract command for AI-powered content analysis + Asana task creation
+- Added Asana API client with workspace/project/task management
 - Implemented self-healing protocol: circuit breakers, health monitor, /selfheal and /healcheck commands
 - Added 1Password integration for automatic LLM API key loading at startup
 - Fixed OpenAI model resolver to avoid non-chat models (codex)

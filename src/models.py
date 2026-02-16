@@ -51,5 +51,6 @@ class UserSettings(Base):
     user_id = Column(BigInteger, unique=True, nullable=False, index=True)
     authorized = Column(Boolean, default=False)
     timezone = Column(String(50), default="UTC")
+    asana_project_gid = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

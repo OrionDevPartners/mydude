@@ -16,7 +16,37 @@ class Integrations:
         return f"[STUB] terraform_apply for env={env}. Blocked unless policy allows + has_plan=True."
 
     async def asana_query(self, params: Dict[str, Any]) -> str:
-        return "[STUB] asana_query. Wire Asana PAT/OAuth in broker env; return task graph summaries."
+        import os
+        token = os.getenv("ASANA_PAT")
+        if not token:
+            return "Asana not configured. Add ASANA_PAT to 1Password vault."
+        from src.asana_client import AsanaClient
+        client = AsanaClient(token)
+        action = params.get("action", "list_projects")
+        if action == "list_projects":
+            ws = client.get_default_workspace()
+            if not ws:
+                return "No Asana workspace found."
+            projects = client.get_projects(ws["gid"])
+            return "\n".join(f"- {p['name']} (gid: {p['gid']})" for p in projects) or "No projects."
+        elif action == "create_task":
+            project_gid = params.get("project_gid")
+            if not project_gid:
+                ws = client.get_default_workspace()
+                if not ws:
+                    return "No Asana workspace found."
+                proj = client.get_default_project(ws["gid"])
+                if not proj:
+                    return "Could not find or create Asana project."
+                project_gid = proj["gid"]
+            name = params.get("name", "Untitled Task")
+            notes = params.get("notes", "")
+            due_on = params.get("due_on")
+            result = client.create_task(project_gid, name, notes, due_on)
+            if "error" in result:
+                return f"Failed to create task: {result['error']}"
+            return f"Created task: {result.get('name', name)} (gid: {result.get('gid', 'unknown')})"
+        return f"Unknown asana action: {action}"
 
     async def op_read_scoped(self, params: Dict[str, Any]) -> str:
         item = params.get("item", "unknown")

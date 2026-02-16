@@ -2,7 +2,7 @@ import os
 import logging
 from telegram.ext import ApplicationBuilder
 from src.database import init_db
-from src.handlers import help, shell, tasks, notes, git, swarm
+from src.handlers import help, shell, tasks, notes, git, swarm, extract
 from src.handlers import selfheal as selfheal_handlers
 from src.selfheal import HealthMonitor
 
@@ -60,7 +60,10 @@ def run_bot():
     if _circuit_breaker:
         app.bot_data["circuit_breaker"] = _circuit_breaker
 
-    for module in [help, shell, tasks, notes, git, swarm, selfheal_handlers]:
+    if _llm_instance:
+        app.bot_data["llm_instance"] = _llm_instance
+
+    for module in [help, shell, tasks, notes, git, swarm, selfheal_handlers, extract]:
         for handler in module.get_handlers():
             app.add_handler(handler)
 
