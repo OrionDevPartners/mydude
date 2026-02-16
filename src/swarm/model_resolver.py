@@ -68,7 +68,11 @@ async def resolve_models(
     if openai_list_models and not _is_fresh(cache, "openai"):
         try:
             o_models = await openai_list_models()
-            openai_model = pick_latest_matching(o_models, r"^gpt-5(\.|$)") or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+            openai_model = (
+                pick_latest_matching(o_models, r"^gpt-4\.1(?!.*codex)") or
+                pick_latest_matching(o_models, r"^gpt-4o") or
+                os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+            )
             cache["openai"] = {"ts": time.time(), "model": openai_model}
         except Exception:
             openai_model = cache.get("openai", {}).get("model", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))

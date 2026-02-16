@@ -1,6 +1,7 @@
 import os
 import asyncio
 import random
+import time
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
 
@@ -20,6 +21,7 @@ except Exception:
     genai = None
 
 from src.swarm.model_resolver import resolve_models
+from src.selfheal.circuit_breaker import CircuitBreaker
 
 
 @dataclass
@@ -64,6 +66,7 @@ async def _backoff_retry(fn, max_tries=4):
 class MultiProviderLLM:
     def __init__(self):
         self.limiter = RateLimiter()
+        self.circuit_breaker = CircuitBreaker()
 
         self.openai_key = os.getenv("OPENAI_API_KEY")
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
@@ -152,13 +155,13 @@ class MultiProviderLLM:
 
     async def _fanout(self, system: str, user: str, roles_hint: Dict[str, str]) -> List[ProviderReply]:
         tasks = []
-        if self._openai:
+        if self._openai and await self.circuit_breaker.can_call("openai"):
             tasks.append(self._call_openai(system, user, roles_hint.get("openai")))
-        if self._anthropic:
+        if self._anthropic and await self.circuit_breaker.can_call("anthropic"):
             tasks.append(self._call_anthropic(system, user, roles_hint.get("anthropic")))
-        if genai and self.gemini_key:
+        if genai and self.gemini_key and await self.circuit_breaker.can_call("gemini"):
             tasks.append(self._call_gemini(system, user, roles_hint.get("gemini")))
-        if self._grok:
+        if self._grok and await self.circuit_breaker.can_call("grok"):
             tasks.append(self._call_grok(system, user, roles_hint.get("grok")))
 
         if not tasks:
@@ -177,9 +180,12 @@ class MultiProviderLLM:
                 )
                 return r.choices[0].message.content or ""
             try:
+                t0 = time.time()
                 text = await _backoff_retry(run)
+                await self.circuit_breaker.record_success("openai", time.time() - t0)
                 return ProviderReply("openai", self.openai_model, text, True)
             except Exception as e:
+                await self.circuit_breaker.record_failure("openai", str(e))
                 return ProviderReply("openai", self.openai_model, "", False, str(e))
 
     async def _call_anthropic(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
@@ -198,9 +204,12 @@ class MultiProviderLLM:
                         parts.append(b.text)
                 return "\n".join(parts).strip()
             try:
+                t0 = time.time()
                 text = await _backoff_retry(run)
+                await self.circuit_breaker.record_success("anthropic", time.time() - t0)
                 return ProviderReply("anthropic", self.anthropic_model, text, True)
             except Exception as e:
+                await self.circuit_breaker.record_failure("anthropic", str(e))
                 return ProviderReply("anthropic", self.anthropic_model, "", False, str(e))
 
     async def _call_gemini(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
@@ -211,9 +220,12 @@ class MultiProviderLLM:
                 r = await asyncio.to_thread(model.generate_content, msg)
                 return (getattr(r, "text", "") or "").strip()
             try:
+                t0 = time.time()
                 text = await _backoff_retry(run)
+                await self.circuit_breaker.record_success("gemini", time.time() - t0)
                 return ProviderReply("gemini", self.gemini_model, text, True)
             except Exception as e:
+                await self.circuit_breaker.record_failure("gemini", str(e))
                 return ProviderReply("gemini", self.gemini_model, "", False, str(e))
 
     async def _call_grok(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
@@ -227,9 +239,12 @@ class MultiProviderLLM:
                 )
                 return r.choices[0].message.content or ""
             try:
+                t0 = time.time()
                 text = await _backoff_retry(run)
+                await self.circuit_breaker.record_success("grok", time.time() - t0)
                 return ProviderReply("grok", self.grok_model, text, True)
             except Exception as e:
+                await self.circuit_breaker.record_failure("grok", str(e))
                 return ProviderReply("grok", self.grok_model, "", False, str(e))
 
     async def _judge_merge(self, system: str, user: str, replies: List[ProviderReply]) -> str:
