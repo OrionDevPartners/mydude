@@ -1,4 +1,5 @@
 import os
+import signal
 import logging
 from telegram.ext import ApplicationBuilder
 from src.database import init_db
@@ -31,8 +32,54 @@ except Exception:
     _llm_instance = None
 
 
+try:
+    from src.services.cognitive_state import CognitiveStatePersistence
+    _cognitive_persistence = CognitiveStatePersistence()
+except Exception:
+    logger.warning("Could not initialize CognitiveStatePersistence")
+    _cognitive_persistence = None
+
+
+async def _post_shutdown(app):
+    logger.info("Shutdown signal received - persisting cognitive state...")
+    try:
+        orchestrator = app.bot_data.get("last_orchestrator")
+        if orchestrator and _cognitive_persistence:
+            _cognitive_persistence.save_orchestrator_state(orchestrator)
+            logger.info("Cognitive state persisted to database.")
+        else:
+            if _cognitive_persistence:
+                _cognitive_persistence.store_swarm_memory(
+                    layer_type="shutdown_marker",
+                    content="Clean shutdown - no active orchestrator state to persist",
+                    summary="Bot shutdown marker",
+                    topic="lifecycle",
+                )
+            logger.info("No active orchestrator state to persist.")
+    except Exception as e:
+        logger.warning("Failed to persist cognitive state on shutdown: %s", e)
+
+
 async def _post_init(app):
     admin_chat_id = os.environ.get("ADMIN_USER_ID")
+
+    if _cognitive_persistence:
+        try:
+            snapshot = _cognitive_persistence.get_latest_snapshot()
+            if snapshot:
+                app.bot_data["last_cognitive_snapshot"] = snapshot
+                logger.info("Restored cognitive snapshot from %s", snapshot.get("saved_at", "unknown"))
+            else:
+                logger.info("No previous cognitive snapshot found - fresh start.")
+        except Exception as e:
+            logger.warning("Failed to restore cognitive snapshot: %s", e)
+
+    try:
+        from src.handlers.swarm import orchestrator as _swarm_orchestrator
+        app.bot_data["last_orchestrator"] = _swarm_orchestrator
+        logger.info("Stored rehydrated orchestrator in bot_data for shutdown persistence.")
+    except Exception as e:
+        logger.warning("Could not store orchestrator reference: %s", e)
 
     async def _alert_callback(msg: str):
         if admin_chat_id:
@@ -81,7 +128,7 @@ def run_bot():
     logger.info("Database initialized.")
 
     logger.info("Building bot application...")
-    app = ApplicationBuilder().token(token).post_init(_post_init).build()
+    app = ApplicationBuilder().token(token).post_init(_post_init).post_shutdown(_post_shutdown).build()
 
     if _circuit_breaker:
         app.bot_data["circuit_breaker"] = _circuit_breaker

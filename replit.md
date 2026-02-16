@@ -123,6 +123,12 @@ src/
 ```
 
 ## Recent Changes
+- 2026-02-16: Added perpetual consciousness - cognitive state persistence
+  - CognitiveStatePersistence service saves/restores orchestrator state to DB
+  - Provenance tree, auditor ledger, sentinel alerts persist across restarts
+  - Rehydration on startup: orchestrator loads previous cognitive state from DB
+  - Graceful shutdown handler persists state via post_shutdown hook
+  - Deployment configured as Reserved VM for 24/7 always-on operation
 - 2026-02-16: Enhanced cognitive architecture with v2.0 governance modules
   - Added provenance.py, auditor.py, sentinel.py
   - Enhanced compliance.py with NoveltyClassification and consensus_confidence_boost

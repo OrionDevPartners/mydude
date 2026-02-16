@@ -11,10 +11,22 @@ from src.models import UserSettings
 
 TELEGRAM_MAX = 3500
 
+import logging
+
+_swarm_logger = logging.getLogger(__name__)
+
 policy = PolicyEngine()
 integrations = Integrations()
 broker = CapabilityBroker(policy, integrations)
 orchestrator = WaveOrchestrator(broker)
+
+try:
+    from src.services.cognitive_state import CognitiveStatePersistence
+    _csp = CognitiveStatePersistence()
+    _csp.rehydrate_orchestrator(orchestrator)
+    _swarm_logger.info("Orchestrator rehydrated with previous cognitive state")
+except Exception as e:
+    _swarm_logger.warning("Could not rehydrate orchestrator: %s", e)
 
 
 def is_authorized(user_id: int) -> bool:
@@ -57,6 +69,18 @@ async def goal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         result = await orchestrator.run(goal_text)
+
+        try:
+            context.application.bot_data["last_orchestrator"] = orchestrator
+        except Exception:
+            pass
+
+        try:
+            if _csp:
+                _csp.save_orchestrator_state(orchestrator)
+        except Exception:
+            pass
+
         output = safe_json_dumps(result, limit=TELEGRAM_MAX)
         await update.message.reply_text(f"SWARM RESULT:\n\n{output}")
 
