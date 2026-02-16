@@ -22,6 +22,12 @@ except Exception:
 
 from src.swarm.model_resolver import resolve_models
 from src.selfheal.circuit_breaker import CircuitBreaker
+from src.swarm.compliance import analyze_agent_output, compute_effective_weight
+from src.swarm.hallucination import (
+    build_features_from_compliance, compute_hallucination_risk,
+    get_control_action, get_risk_tier, RiskTier
+)
+from src.swarm.constitution import CONSTITUTION_RULES, validate_language
 
 
 @dataclass
@@ -31,6 +37,8 @@ class ProviderReply:
     text: str
     ok: bool
     error: Optional[str] = None
+    compliance_score: int = 100
+    hallucination_risk: float = 0.0
 
 
 def _env_int(name: str, default: int) -> int:
@@ -141,6 +149,19 @@ class MultiProviderLLM:
 
         self._resolved = True
 
+    def score_replies(self, replies: List[ProviderReply]) -> List[ProviderReply]:
+        for r in replies:
+            if not r.ok or not r.text:
+                continue
+            try:
+                report = analyze_agent_output(r.text, intent_refs=[], mode="ANALYTIC")
+                r.compliance_score = report.score
+                features = build_features_from_compliance(report, replies, 0.0)
+                r.hallucination_risk = compute_hallucination_risk(features)
+            except Exception:
+                pass
+        return replies
+
     async def call_team(
         self,
         system: str,
@@ -150,8 +171,17 @@ class MultiProviderLLM:
         await self._resolve_once()
         roles_hint = roles_hint or {}
         replies = await self._fanout(system, user, roles_hint)
+        try:
+            replies = self.score_replies(replies)
+        except Exception:
+            pass
         merged = await self._judge_merge(system, user, replies)
-        return {"replies": replies, "merged": merged}
+        return {
+            "replies": replies,
+            "merged": merged,
+            "compliance_scores": {r.provider: r.compliance_score for r in replies if r.ok},
+            "hallucination_risks": {r.provider: r.hallucination_risk for r in replies if r.ok},
+        }
 
     async def _fanout(self, system: str, user: str, roles_hint: Dict[str, str]) -> List[ProviderReply]:
         tasks = []
@@ -249,10 +279,28 @@ class MultiProviderLLM:
 
     async def _judge_merge(self, system: str, user: str, replies: List[ProviderReply]) -> str:
         chunks = []
+        weights = {}
         for r in replies:
             status = "OK" if r.ok else f"ERR({r.error})"
-            chunks.append(f"### {r.provider}/{r.model} [{status}]\n{r.text[:6000]}")
+            chunks.append(f"### {r.provider}/{r.model} [{status}] [CS={r.compliance_score}, HR={r.hallucination_risk:.2f}]\n{r.text[:6000]}")
+            try:
+                weights[r.provider] = compute_effective_weight(1.0, r.compliance_score, 1.0 if r.ok else 0.0)
+            except Exception:
+                weights[r.provider] = 1.0 if r.ok else 0.0
         debate = "\n\n".join(chunks)
+
+        has_critical = False
+        try:
+            has_critical = any(
+                get_risk_tier(r.hallucination_risk) == RiskTier.CRITICAL
+                for r in replies if r.ok
+            )
+        except Exception:
+            pass
+
+        critical_warning = ""
+        if has_critical:
+            critical_warning = "\nWARNING: Critical hallucination risk detected. Require evidence for all claims. Downgrade unverified assertions.\n"
 
         judge_prompt = (
             "You are the MERGER/JUDGE.\n\n"
@@ -262,6 +310,9 @@ class MultiProviderLLM:
             "- strong security posture\n"
             "- concrete, actionable steps\n"
             "- minimal token bloat\n\n"
+            "Each provider's output includes compliance score (CS) and hallucination risk (HR).\n"
+            "WEIGHT providers by compliance score. Higher CS = more trustworthy. Reject claims from providers with CS < 65.\n"
+            f"{critical_warning}"
             "Return ONLY the final consolidated worker-format response:\n"
             "RESULT:\nARTIFACTS:\nCHECKS:\nRISKS:\nCAPABILITIES:\nCOMPRESSED_HANDOFF:\n\n"
             f"User request:\n{user}\n\n"

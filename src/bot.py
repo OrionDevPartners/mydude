@@ -11,6 +11,7 @@ from src.handlers import cron_handler
 from src.handlers import digest as digest_handler
 from src.handlers import integrations as integrations_handlers
 from src.handlers import selfheal as selfheal_handlers
+from src.handlers import cognition as cognition_handler
 from src.selfheal import HealthMonitor
 
 logging.basicConfig(
@@ -92,7 +93,7 @@ def run_bot():
         help, shell, tasks, notes, git, swarm, selfheal_handlers, extract,
         voice, ingest, rag, triage,
         audit_handler, memory_handler, goals_handler, cron_handler, digest_handler,
-        integrations_handlers,
+        integrations_handlers, cognition_handler,
     ]
     for module in all_handler_modules:
         for handler in module.get_handlers():

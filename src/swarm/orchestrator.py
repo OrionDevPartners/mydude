@@ -2,12 +2,27 @@ import os
 import asyncio
 import json
 import re
-from dataclasses import dataclass, replace
+import logging
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.swarm.prompts import PORTER_SYSTEM_PROMPT, WORKER_SYSTEM_PROMPT
 from src.swarm.utils import safe_json_dumps, clamp_list
 from src.swarm.broker import CapabilityBroker
+
+from src.swarm.constitution import ClaimLedger, CONSTITUTION_RULES, validate_language, StopCondition, IntentBinding
+from src.swarm.compliance import analyze_agent_output, compute_effective_weight, generate_correction_patch, ComplianceTier
+from src.swarm.hallucination import (
+    build_features_from_compliance, compute_hallucination_risk, get_control_action,
+    HallucinationMonitor, FailurePacket, RiskTier
+)
+from src.swarm.contract import (
+    CognitiveRole, map_wave_to_cognitive_roles, get_role_prompt_suffix,
+    get_debate_round_instruction, DebateRound, run_consensus, validate_synthesis,
+    compute_vote_weight, ROLE_BASE_WEIGHTS, DissentRecord
+)
+
+logger = logging.getLogger(__name__)
 
 WAVE_CONCURRENCY = int(os.getenv("WAVE_CONCURRENCY", "12"))
 AGENTS_PER_WAVE = int(os.getenv("AGENTS_PER_WAVE", "60"))
@@ -23,6 +38,8 @@ class Handoff:
     tasks: List[str]
     risks: List[str]
     next: List[str]
+    dissent: List[str] = field(default_factory=list)
+    claim_ledger_summary: str = ""
 
     def compress_json(self, limit: int = 1500) -> str:
         payload = {
@@ -47,6 +64,9 @@ class AgentResult:
     risks: List[str]
     handoff_json: str
     capability_requests: List[Tuple[str, Dict[str, Any]]]
+    compliance_score: int = 100
+    hallucination_risk: float = 0.0
+    cognitive_role: str = ""
 
 
 class LLM:
@@ -68,6 +88,12 @@ class LLM:
                 "CHECKS: \n"
                 "RISKS: rate limits; missing repo context\n"
                 "CAPABILITIES: git_status {}\n"
+                "MODE: ANALYTIC\n"
+                "CLAIM_LEDGER:\n"
+                "  - claim_id: CLM-001\n"
+                "    label: hypothesis\n"
+                "    confidence: 0.5\n"
+                "    text: \"Stub claim pending real LLM integration\"\n"
                 'COMPRESSED_HANDOFF: {"goal":"","facts":[],"decisions":[],"tasks":[],"risks":[],"next":[]}'
             )
 
@@ -85,11 +111,21 @@ class LLM:
         return out["merged"]
 
 
+class _StubProviderReply:
+    ok = True
+
+
 class WaveOrchestrator:
     def __init__(self, broker: CapabilityBroker):
         self.broker = broker
         self.llm = LLM()
         self.sem = asyncio.Semaphore(WAVE_CONCURRENCY)
+        self.hr_monitor = HallucinationMonitor()
+        self.intent = IntentBinding(
+            objective_id="GOAL-001",
+            success_criteria=["Complete user goal"],
+            active_constraints=["No raw secrets", "Policy gates enforced"],
+        )
 
     async def run(self, goal: str) -> Dict[str, Any]:
         handoff = Handoff(
@@ -114,9 +150,51 @@ class WaveOrchestrator:
         )
 
         all_caps: List[Tuple[str, Dict[str, Any], str]] = []
+        all_compliance_scores: List[Dict[str, Any]] = []
+        all_dissent: List[str] = []
+        aborted = False
 
         for w in range(MAX_WAVES):
             wave_results = await self._run_wave(w, handoff)
+
+            try:
+                for r in wave_results:
+                    try:
+                        report = analyze_agent_output(
+                            r.result,
+                            intent_refs=[self.intent.objective_id],
+                            mode=r.cognitive_role if r.cognitive_role else "ANALYTIC",
+                        )
+                        r.compliance_score = report.score
+
+                        features = build_features_from_compliance(
+                            report,
+                            provider_replies=[_StubProviderReply()],
+                            constraint_budget_ratio=report.metrics.constraint_violations / max(1, 5),
+                        )
+                        hr = compute_hallucination_risk(features)
+                        r.hallucination_risk = hr
+
+                        control = get_control_action(hr)
+                        self.hr_monitor.record(hr=hr, wave=w, agent=r.agent)
+
+                        all_compliance_scores.append({
+                            "agent": r.agent,
+                            "score": report.score,
+                            "tier": report.tier.value,
+                            "hr": round(hr, 3),
+                            "control": control.description[:100],
+                        })
+                    except Exception as e:
+                        logger.warning("Cognitive scoring failed for %s: %s", r.agent, e)
+
+                if self.hr_monitor.should_abort():
+                    logger.warning("Hallucination monitor triggered abort after wave %d", w)
+                    aborted = True
+                    break
+            except Exception as e:
+                logger.warning("Wave %d cognitive scoring sweep failed: %s", w, e)
+
             handoff = self._merge(handoff, wave_results)
 
             for r in wave_results:
@@ -126,6 +204,13 @@ class WaveOrchestrator:
 
                     if br.output:
                         handoff.facts.append(f"[cap:{cap}] {br.output[:200]}")
+
+            all_dissent.extend(handoff.dissent)
+
+        avg_hr = self.hr_monitor.get_average()
+        trend = self.hr_monitor.get_trend()
+        from src.swarm.hallucination import get_risk_tier
+        tier = get_risk_tier(avg_hr)
 
         final = {
             "GOAL": handoff.goal,
@@ -143,7 +228,23 @@ class WaveOrchestrator:
                 "wire LLM.call() to your provider, and add repo grounding (read files, run tests) "
                 "plus CI-based terraform plan/apply."
             ),
+            "COGNITIVE_ARCHITECTURE": "Constitution v1.0 - Epistemic Governance Active",
+            "COMPLIANCE_SCORES": all_compliance_scores,
+            "HALLUCINATION_RISK": {
+                "average": round(avg_hr, 3),
+                "trend": trend,
+                "tier": tier.value,
+            },
+            "DISSENT_LOG": all_dissent,
+            "CLAIM_LEDGER": handoff.claim_ledger_summary or "No claims recorded",
         }
+
+        if aborted:
+            final["ABORT_REASON"] = (
+                "Hallucination monitor detected 3+ consecutive CRITICAL risk scores. "
+                "Pipeline halted to prevent unreliable outputs."
+            )
+
         return final
 
     async def _run_wave(self, wave_idx: int, handoff: Handoff) -> List[AgentResult]:
@@ -155,7 +256,12 @@ class WaveOrchestrator:
                 user_prompt = self._worker_prompt(wave_idx, i, job, handoff)
                 text = await self.llm.call(WORKER_SYSTEM_PROMPT, user_prompt)
                 parsed = self._parse_worker(text)
-                updated = replace(parsed, agent=f"W{wave_idx}-A{i}-{job['role']}", wave=wave_idx)
+                updated = replace(
+                    parsed,
+                    agent=f"W{wave_idx}-A{i}-{job['role']}",
+                    wave=wave_idx,
+                    cognitive_role=job.get("cognitive_role_name", ""),
+                )
                 results.append(updated)
 
         await asyncio.gather(*(run_one(i, j) for i, j in enumerate(jobs)))
@@ -177,22 +283,49 @@ class WaveOrchestrator:
                 "Monetization Strategist",
             ]
 
+        try:
+            cognitive_roles = map_wave_to_cognitive_roles(wave_idx)
+        except Exception as e:
+            logger.warning("Failed to map cognitive roles for wave %d: %s", wave_idx, e)
+            cognitive_roles = [CognitiveRole.ARCHITECT]
+
         jobs = []
         for i in range(AGENTS_PER_WAVE):
             role = roles[i % len(roles)]
+            cog_role = cognitive_roles[i % len(cognitive_roles)]
+
+            try:
+                role_suffix = get_role_prompt_suffix(cog_role)
+            except Exception:
+                role_suffix = ""
+
+            task_desc = (
+                f"[Wave {wave_idx}] As {role}, produce mergeable outputs for: {goal}. "
+                f"Request broker capabilities rather than secrets. Provide checks and compressed handoff."
+            )
+            if role_suffix:
+                task_desc += f"\nCOGNITIVE DIRECTIVE: {role_suffix}"
+
             jobs.append(
                 {
                     "role": role,
-                    "task": (
-                        f"[Wave {wave_idx}] As {role}, produce mergeable outputs for: {goal}. "
-                        f"Request broker capabilities rather than secrets. Provide checks and compressed handoff."
-                    ),
+                    "task": task_desc,
+                    "cognitive_role_name": cog_role.value,
                 }
             )
         return jobs
 
     def _worker_prompt(self, wave: int, idx: int, job: Dict[str, str], handoff: Handoff) -> str:
-        return (
+        cog_role_name = job.get("cognitive_role_name", "")
+        is_creative = cog_role_name in ("creative_divergence", "exploratory")
+        mode = "EXPLORATORY" if is_creative else "ANALYTIC"
+
+        try:
+            role_suffix = get_role_prompt_suffix(CognitiveRole(cog_role_name)) if cog_role_name else ""
+        except (ValueError, Exception):
+            role_suffix = ""
+
+        prompt = (
             f"GOAL: {handoff.goal}\n"
             f"WAVE: {wave}\n"
             f"AGENT_INDEX: {idx}\n"
@@ -201,7 +334,20 @@ class WaveOrchestrator:
             f"TASK: {job['task']}\n"
             f"CONSTRAINTS: No raw secrets; request capabilities; small diffs; clear checks.\n"
             f"HANDOFF_SCHEMA: goal,facts,decisions,tasks,risks,next\n"
+            f"\n"
+            f"CONSTITUTION:\n{CONSTITUTION_RULES}\n"
+            f"\n"
+            f"INTENT_BINDING:\n"
+            f"  objective_id: {self.intent.objective_id}\n"
+            f"  constraints: {self.intent.active_constraints}\n"
+            f"\n"
+            f"MODE: {mode}\n"
         )
+
+        if role_suffix:
+            prompt += f"\nCOGNITIVE_ROLE_FOCUS: {role_suffix}\n"
+
+        return prompt
 
     def _parse_worker(self, text: str) -> AgentResult:
         def grab(label: str) -> str:
@@ -226,6 +372,42 @@ class WaveOrchestrator:
                 except Exception:
                     pass
 
+        mode_str = grab("MODE") or "ANALYTIC"
+
+        compliance_score = 100
+        hr_risk = 0.0
+
+        try:
+            ledger_match = re.search(r"CLAIM_LEDGER\s*:(.*?)(?=\n[A-Z_]+\s*:|$)", text, re.DOTALL)
+            if ledger_match:
+                ClaimLedger.from_text(ledger_match.group(1))
+        except Exception as e:
+            logger.warning("Claim ledger parse failed: %s", e)
+
+        try:
+            violations = validate_language(text)
+            if violations:
+                logger.info("Language violations: %s", violations)
+        except Exception as e:
+            logger.warning("Language validation failed: %s", e)
+
+        try:
+            report = analyze_agent_output(
+                text,
+                intent_refs=["GOAL-001"],
+                mode=mode_str,
+            )
+            compliance_score = report.score
+
+            features = build_features_from_compliance(
+                report,
+                provider_replies=[_StubProviderReply()],
+                constraint_budget_ratio=report.metrics.constraint_violations / max(1, 5),
+            )
+            hr_risk = compute_hallucination_risk(features)
+        except Exception as e:
+            logger.warning("Compliance scoring in parse failed: %s", e)
+
         return AgentResult(
             agent="AGENT",
             wave=0,
@@ -235,6 +417,9 @@ class WaveOrchestrator:
             risks=risks,
             handoff_json=handoff_json,
             capability_requests=caps,
+            compliance_score=compliance_score,
+            hallucination_risk=hr_risk,
+            cognitive_role=mode_str,
         )
 
     def _merge(self, prev: Handoff, results: List[AgentResult]) -> Handoff:
@@ -243,6 +428,8 @@ class WaveOrchestrator:
         tasks = prev.tasks[:]
         risks = prev.risks[:]
         nxt = prev.next[:]
+        dissent = prev.dissent[:]
+        ledger_parts: List[str] = []
 
         for r in results[:25]:
             if r.result and len(facts) < 25:
@@ -256,6 +443,52 @@ class WaveOrchestrator:
             for rr in r.risks[:1]:
                 if len(risks) < 10:
                     risks.append(f"{r.agent} risk: {rr[:180]}")
+
+        try:
+            votes: Dict[str, Dict] = {}
+            for r in results[:25]:
+                base_weight = 1.0
+                try:
+                    cog_role = CognitiveRole(r.cognitive_role) if r.cognitive_role else CognitiveRole.ARCHITECT
+                    base_weight = ROLE_BASE_WEIGHTS.get(cog_role, 1.0)
+                except (ValueError, Exception):
+                    pass
+
+                w = compute_vote_weight(
+                    base_role_weight=base_weight,
+                    compliance_score=r.compliance_score,
+                    evidence_strength=0.7,
+                    hallucination_risk=r.hallucination_risk,
+                )
+                votes[r.agent] = {
+                    "weight": w,
+                    "accept": r.compliance_score >= 65,
+                    "reason": f"score={r.compliance_score}, hr={r.hallucination_risk:.2f}",
+                }
+
+            consensus = run_consensus(votes)
+
+            if consensus.dissent:
+                for d in consensus.dissent:
+                    dissent_str = f"Dissent from {', '.join(d.dissenters[:3])}: {d.reason[:200]} (risk={d.risk_level})"
+                    dissent.append(dissent_str)
+        except Exception as e:
+            logger.warning("Consensus computation failed: %s", e)
+
+        try:
+            for r in results[:10]:
+                ledger_match = re.search(r"CLAIM_LEDGER\s*:(.*?)(?=\n[A-Z_]+\s*:|$)", r.result, re.DOTALL)
+                if ledger_match:
+                    ledger = ClaimLedger.from_text(ledger_match.group(1))
+                    load_bearing = ledger.get_load_bearing_claims()
+                    for claim in load_bearing[:3]:
+                        ledger_parts.append(f"[{claim.claim_id}] {claim.label.value} c={claim.confidence}: {claim.text[:100]}")
+        except Exception as e:
+            logger.warning("Claim ledger merge failed: %s", e)
+
+        claim_ledger_summary = prev.claim_ledger_summary
+        if ledger_parts:
+            claim_ledger_summary = (claim_ledger_summary + "\n" if claim_ledger_summary else "") + "\n".join(ledger_parts)
 
         if not risks:
             risks = [
@@ -280,4 +513,6 @@ class WaveOrchestrator:
             tasks=tasks[:40],
             risks=risks[:10],
             next=nxt[:15],
+            dissent=dissent[:20],
+            claim_ledger_summary=claim_ledger_summary[:2000] if claim_ledger_summary else "",
         )

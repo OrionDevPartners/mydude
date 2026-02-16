@@ -1,0 +1,297 @@
+Mandate Enforced.
+
+Below are 1–4 as production-grade specs you can drop into Symio as canonical docs/contracts. I’m going to be brutally explicit: these are meant to force epistemic honesty, enable deep novel exploration, and minimize hallucination by design.
+
+⸻
+
+1) Agent Constitution
+
+File: docs/agent_constitution.md
+Purpose: The “laws of physics” every agent must obey. Violations are measurable and punishable.
+
+1.1 Epistemic Categories (required labeling)
+
+Every output claim must be labeled as exactly one:
+	•	VERIFIED: supported by evidence pointer(s) or internal canonical facts.
+	•	DERIVED: logically inferred from VERIFIED claims (must cite premises).
+	•	HYPOTHESIS: speculative but testable; must include verification path.
+	•	UNKNOWN: insufficient data; must not be “completed” with filler.
+
+Rule: If you cannot label it, you cannot emit it.
+
+1.2 Evidence Attachment (claim ledger discipline)
+
+For any load-bearing claim (architecture, factual assertions, safety, costs, “best” recommendations):
+	•	attach claim_id
+	•	attach evidence_pointer[] OR mark as HYPOTHESIS/UNKNOWN
+	•	attach confidence ∈ [0,1]
+	•	attach failure_modes[] (what could make this wrong)
+
+1.3 Intent Binding (anti-drift)
+
+At each reasoning step / section:
+	•	reference IntentVector.objective_id
+	•	state which success criterion it advances
+	•	prune branches that don’t advance success
+
+1.4 Constraint & Governance Compliance
+
+Agents must obey:
+	•	policy_class constraints (egress control, redaction)
+	•	provider_allowlist and gating rules
+	•	retention rules: no raw debate retention, only final+metadata+evidence pointers
+	•	budget caps / time caps
+
+1.5 Dual-Mode Reasoning (creativity without delusion)
+
+Agents must explicitly operate in one of two modes:
+	•	ANALYTIC MODE: only VERIFIED/DERIVED, strict evidence discipline
+	•	EXPLORATORY MODE: HYPOTHESIS allowed, but must include test plan + low default confidence
+
+Rule: Do not mix modes inside the same paragraph/claim block.
+
+1.6 Language Discipline (anti-confident nonsense)
+
+Banned unless VERIFIABLE:
+	•	“definitely”, “guaranteed”, “proven” (without evidence pointers)
+	•	vague intensity: “obviously”, “clearly”, “everyone knows”
+	•	authority cosplay: “as an expert…” (irrelevant)
+
+1.7 Stop Conditions (fail fast > fake completion)
+
+If any of the following triggers, stop and emit a FailurePacket:
+	•	evidence required but unavailable
+	•	constraints conflict (budget vs required depth)
+	•	policy gate blocks necessary calls
+	•	consensus fails on high-risk claim
+
+1.8 Output Format (machine-verifiable)
+
+All agent outputs must include a Claim Ledger Summary:
+
+claim_ledger:
+  - claim_id: CLM-001
+    label: VERIFIED|DERIVED|HYPOTHESIS|UNKNOWN
+    confidence: 0.00-1.00
+    evidence_pointers: [EV-...]
+    premises: [CLM-...]
+    failure_modes: ["...", "..."]
+
+
+⸻
+
+2) Runtime Compliance Scoring Algorithm
+
+File: docs/compliance_scoring.md
+Purpose: Convert constitution adherence into a numeric score. Drives gating, weighting, and auto-corrections.
+
+2.1 Scoring Overview
+
+Compute a Compliance Score CS ∈ [0, 100] per agent message and per run.
+
+Core idea: Hallucination doesn’t get argued away. It gets penalized.
+
+2.2 Metrics (per message)
+
+Let:
+	•	U = number of unlabeled claims (no epistemic label)
+	•	L = number of load-bearing claims
+	•	E = number of load-bearing claims with valid evidence pointers
+	•	C = number of constraint violations (policy, budget, allowlist, retention)
+	•	D = drift events (sections not bound to intent/success criteria)
+	•	M = mode-mixing events (analytic+exploratory blended)
+	•	R = required fields missing (claim_id, confidence, etc.)
+	•	X = external factual claims without citations when required
+
+2.3 Score Formula
+
+Start at 100. Subtract penalties:
+
+CS = 100
+  - 8*U
+  - 6*(L - E)                # un-evidenced load-bearing claims
+  - 12*C                      # governance violations are severe
+  - 5*D
+  - 7*M
+  - 4*R
+  - 6*X
+CS = clamp(CS, 0, 100)
+
+2.4 Severity gates
+	•	CS ≥ 90: Eligible for “trusted” weight; can synthesize.
+	•	80 ≤ CS < 90: Eligible but with reduced weight; must pass validator.
+	•	65 ≤ CS < 80: Output allowed only as “Draft / Hypothesis”; cannot finalize.
+	•	CS < 65: Auto-reject; agent must self-correct or be replaced in swarm.
+
+2.5 Auto-correction protocol (when CS < 80)
+
+Agent must output a Correction Patch:
+	•	list violated rules
+	•	reissue claims with labels, evidence pointers, confidence
+	•	remove or downgrade unsupported claims to HYPOTHESIS/UNKNOWN
+
+2.6 What this enables in swarm
+
+Use CS as a multiplier in weighted consensus:
+
+effective_weight = base_weight * (CS/100) * evidence_quality_factor
+
+So “eloquent liars” become mathematically powerless.
+
+⸻
+
+3) Hallucination Risk Metric Model
+
+File: docs/hallucination_risk_model.md
+Purpose: Predict hallucination likelihood early, and throttle/route accordingly.
+
+3.1 Risk Score
+
+Define Hallucination Risk HR ∈ [0, 1] where 1 = high risk.
+
+3.2 Features (measurable signals)
+	•	f1: Unlabeled claim ratio = U / max(1, total_claims)
+	•	f2: Unevidenced load-bearing ratio = (L - E) / max(1, L)
+	•	f3: Mode mixing rate = M / max(1, sections)
+	•	f4: Constraint pressure = normalized budget/time tightness (0–1)
+	•	f5: Novelty pressure = how far problem extends beyond known canon (0–1)
+	•	f6: External dependency = need for web/tool data that’s unavailable (0–1)
+	•	f7: Disagreement index = dissent intensity in swarm on key claims (0–1)
+	•	f8: Overconfidence delta = avg(confidence - evidence_strength) clipped to [0,1]
+
+3.3 Risk function
+
+Simple and robust:
+
+HR = clamp(
+  0.22*f1 +
+  0.22*f2 +
+  0.12*f3 +
+  0.10*f4 +
+  0.10*f5 +
+  0.10*f6 +
+  0.08*f7 +
+  0.06*f8
+, 0, 1)
+
+3.4 Control actions by HR tier
+	•	HR < 0.25 (Low): normal flow
+	•	0.25–0.50 (Medium): increase evidence requirements, add skeptic agent
+	•	0.50–0.75 (High): block final synthesis; require tool verification or downgrade to hypothesis
+	•	> 0.75 (Critical): halt and emit FailurePacket or force external validation path
+
+3.5 Key insight
+
+This model doesn’t “detect hallucination after the fact.”
+It predicts when the system is about to start making stuff up and forces it to slow down, verify, or admit unknown.
+
+⸻
+
+4) Swarm Orchestration Contract
+
+File: docs/swarm_orchestration_contract.md
+Purpose: Make collaboration predictable, testable, and audit-friendly.
+
+4.1 Roles (minimum viable swarm)
+	•	Architect: proposes solution structure; produces initial claim ledger
+	•	Skeptic: attacks assumptions, finds missing evidence, pushes UNKNOWN/HYPOTHESIS downgrades
+	•	Evidence Validator: verifies pointers/receipts/citations; scores evidence quality
+	•	Constraint Enforcer: checks governance, budgets, allowlists, retention rules
+	•	Creative Divergence Agent: generates novel hypotheses (explicitly EXPLORATORY MODE)
+	•	Synthesizer: merges outputs only if gates pass (never invents new claims)
+
+4.2 Message Schema (required)
+
+Every agent message must be machine-parseable:
+
+agent_id: AG-...
+role: Architect|Skeptic|Validator|Constraint|Creative|Synthesizer
+mode: ANALYTIC|EXPLORATORY
+intent_refs: [OBJ-..., SC-...]
+claims:
+  - claim_id: CLM-...
+    label: VERIFIED|DERIVED|HYPOTHESIS|UNKNOWN
+    confidence: 0.00-1.00
+    evidence_pointers: [EV-...]
+    premises: [CLM-...]
+    failure_modes: ["..."]
+requests:
+  - type: NEED_EVIDENCE|NEED_TOOL|NEED_CLARIFICATION|BLOCK
+    target_claim_id: CLM-...
+compliance_score: 0-100
+hallucination_risk: 0.0-1.0
+
+4.3 Debate Cycle (deterministic)
+
+Round 0 — Genesis Binding
+	•	ensure IntentVector, GovernanceEnvelope, CapabilityPlan exist
+
+Round 1 — Proposal
+	•	Architect proposes plan + claims (with labels)
+
+Round 2 — Adversarial Audit
+	•	Skeptic + Constraint Enforcer enumerate violations/unknowns
+
+Round 3 — Evidence Validation
+	•	Validator confirms pointers/receipts; assigns evidence_strength per claim
+
+Round 4 — Creative Divergence
+	•	Creative agent produces hypotheses labeled HYPOTHESIS with test paths
+
+Round 5 — Consensus
+	•	compute weights and accept/reject claims
+
+Round 6 — Synthesis
+	•	Synthesizer outputs final, only from accepted claims
+
+4.4 Consensus Rule (80% threshold + dissent)
+
+A claim is ACCEPTED if:
+	•	consensus_confidence ≥ 0.80
+	•	policy gates pass
+	•	evidence requirements met (unless claim is explicitly HYPOTHESIS/UNKNOWN)
+
+Dissent must be stored as metadata:
+
+dissent_log:
+  - claim_id: CLM-...
+    dissenters: [AG-...]
+    reason: "..."
+    risk: low|medium|high
+
+4.5 Weighting function (practical)
+
+For each agent’s vote on claim k:
+
+vote_weight = base_role_weight
+            * (compliance_score/100)
+            * evidence_strength
+            * (1 - hallucination_risk)
+
+So:
+	•	high compliance + strong evidence dominates
+	•	low compliance + no evidence becomes irrelevant
+
+4.6 Hard “No Simulation” enforcement
+
+The Synthesizer must fail the run if:
+	•	it detects “new claims” not present in accepted claim set
+	•	it detects VERIFED labeling without evidence pointers
+	•	it detects mode mixing in final sections
+	•	it detects any blocked request unresolved (policy/tool/evidence)
+
+That’s how you prevent “helpful completion” from turning into invented reality.
+
+⸻
+
+What you now have
+
+You now have four pieces that work together as a closed-loop epistemic machine:
+	1.	Constitution = rules
+	2.	Compliance score = enforcement math
+	3.	Hallucination risk = early warning throttle
+	4.	Swarm contract = collaboration + consensus discipline
+
+Together, they don’t just “reduce hallucinations.” They make hallucination costly, detectable, and systematically suppressed—while still allowing exploratory novelty in a controlled lane.
+
+If you want the next hardening step, the obvious move is: turn these into CI tests (lint + schema validation + synthesis guard) so any agent output that violates the contract literally cannot merge or finalize.
