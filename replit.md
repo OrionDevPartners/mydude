@@ -1,16 +1,18 @@
 # Telegram Bot - Replit Manager + Porter Swarm
 
 ## Overview
-A Telegram bot for managing tasks, notes, shell commands, git operations, and multi-agent swarm orchestration on a Replit project. Built with Python 3.11, python-telegram-bot v22, SQLAlchemy, and PostgreSQL. Features a self-healing protocol with circuit breakers, health monitoring, and automatic secret loading from 1Password.
+A Telegram bot for managing tasks, notes, shell commands, git operations, and multi-agent swarm orchestration on a Replit project. Built with Python 3.11, python-telegram-bot v22, SQLAlchemy, and PostgreSQL. Features a self-healing protocol with circuit breakers, health monitoring, automatic secret loading from 1Password, and 16 advanced features including conversation memory, recurring digests, document ingestion, auto-triage, pipeline triggers, cron jobs, external integrations, voice transcription, RAG, provider metrics, goal tracking, webhook mode, rate limiting, and audit logging.
 
 ## Project Structure
 ```
 main.py              - Entry point (loads 1Password secrets before bot start)
 src/
   op_secrets.py      - 1Password CLI integration for secret loading at startup
-  bot.py             - Bot application setup, polling, and health monitor init
+  bot.py             - Bot application setup, polling/webhook, health monitor, cron/digest init
   database.py        - SQLAlchemy engine, session, and Base
-  models.py          - Database models (Task, Note, CommandLog, UserSettings)
+  models.py          - Database models (Task, Note, CommandLog, UserSettings, AuditLog,
+                       ConversationMemory, Goal, CronJob, ProviderMetric, IntegrationConfig,
+                       PipelineTrigger, DigestConfig)
   handlers/
     help.py          - /start, /help, /authorize, /whoami
     shell.py         - /shell command execution
@@ -19,6 +21,18 @@ src/
     git.py           - /gitstatus, /gitlog, /gitdiff, /gitcommit, /gitpull, /gitpush
     swarm.py         - /goal, /waves, /policy (Porter swarm commands)
     selfheal.py      - /selfheal, /healcheck (self-healing protocol status)
+    extract.py       - /extract (AI content analysis + Asana task creation)
+    audit.py         - /audit (command history, search)
+    memory.py        - /memory (conversation memory overview)
+    goals.py         - /goals, /goalstatus, /goalcomplete
+    cron_handler.py  - /cron (scheduled job management)
+    digest.py        - /digest (recurring digest config)
+    voice.py         - Voice note transcription handler
+    ingest.py        - /ingest, document ingestion handler
+    rag.py           - /askcode, /codestructure (RAG over codebase)
+    triage.py        - /triage (auto-classification), /metrics (provider stats)
+    integrations.py  - /connect, /integrations, /slack, /discord, /ghissue, /ghissues,
+                       /linearissue, /linearissues, /pipeline
   swarm/
     prompts.py       - PORTER_SYSTEM_PROMPT and WORKER_SYSTEM_PROMPT
     policy.py        - PolicyEngine (production gates, secret protection)
@@ -32,6 +46,21 @@ src/
     __init__.py      - Exports CircuitBreaker and HealthMonitor
     circuit_breaker.py - Per-provider circuit breaker (closed/open/half_open states)
     health_monitor.py  - Background health checks (DB, LLM, 1Password, memory)
+  services/
+    audit.py         - AuditService (log commands, search history)
+    rate_limit.py    - RateLimiter (per-user, per-command rate limiting)
+    memory.py        - MemoryService (store/search conversation memory)
+    goals.py         - GoalService (CRUD, progress tracking)
+    cron.py          - CronRunner (background scheduler, 60s check interval)
+    digest.py        - DigestRunner (hourly check, daily/weekly digests)
+    voice.py         - VoiceService (OpenAI Whisper transcription)
+    ingestion.py     - IngestionService (URL fetch, file download, swarm analysis)
+    rag.py           - RAGService (grep-based codebase search, file tree)
+    metrics.py       - MetricsService (provider latency/success/quality tracking)
+    triage.py        - TriageService (AI + keyword-based message classification)
+    integrations.py  - IntegrationService (Linear, GitHub, Slack, Discord APIs)
+    pipelines.py     - PipelineService (command chaining triggers)
+    webhooks.py      - WebhookService (Telegram webhook mode setup)
 ```
 
 ## Architecture
@@ -48,7 +77,7 @@ src/
 ### 1Password Integration
 - Service account token pulls API keys at startup via `op read`
 - No LLM keys stored as Replit secrets - all pulled fresh from vault
-- Keys loaded: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, GROK_API_KEY
+- Keys loaded: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, GROK_API_KEY, ASANA_PAT
 - Automatic CLI download if not present
 
 ### Porter Waves Swarm
@@ -66,12 +95,30 @@ src/
 - Model resolver auto-detects latest chat model per provider (cached with TTL)
 - Set LLM_PROVIDER=multi (any non-"stub" value) to activate; default is "stub"
 
+### Advanced Features (16 total)
+1. **Audit Logging** - Every command logged with user, args, result; searchable via /audit
+2. **Rate Limiting** - Per-user, per-command rate limits to prevent abuse
+3. **Conversation Memory** - Auto-stores results from /extract, voice, ingestion, RAG, goals
+4. **Goal Tracking** - Create/track/complete goals with progress monitoring (/goals, /goalstatus, /goalcomplete)
+5. **Cron Scheduler** - Background job runner with 60s check interval (/cron add/toggle/delete/run)
+6. **Recurring Digests** - Daily/weekly summaries of tasks, notes, goals (/digest now/daily/weekly/toggle)
+7. **Voice Transcription** - OpenAI Whisper for voice note transcription (auto on voice messages)
+8. **Document Ingestion** - URL fetch + file download with swarm analysis (/ingest, document handler)
+9. **RAG over Codebase** - Grep-based code search + file tree (/askcode, /codestructure)
+10. **Provider Metrics** - Latency, success rate, quality tracking with dynamic weighting (/metrics)
+11. **Auto-Triage** - AI + keyword classification of message urgency (/triage)
+12. **External Integrations** - Linear, GitHub, Slack, Discord webhooks (/connect, /slack, /discord, /ghissue, /linearissue)
+13. **Pipeline Triggers** - Command chaining automation (/pipeline add/toggle/delete)
+14. **Webhook Mode** - Alternative to polling via BOT_MODE=webhook env var
+15. **Asana Integration** - /extract auto-creates tasks, /setproject sets target project
+16. **Content Analysis** - Multi-provider swarm analysis of pasted text (/extract)
+
 ### Security Model
 - Capability Broker pattern: agents request capabilities, broker enforces policy
 - No raw secrets ever exposed to agents
 - Production actions blocked by default (toggle with /policy)
 - Authorization with password + optional ADMIN_USER_ID restriction
-- Rate limiting on authorization attempts
+- Rate limiting on authorization attempts and all commands
 
 ## Environment Variables
 - `TELEGRAM_BOT_TOKEN` - Bot token from @BotFather (required)
@@ -80,6 +127,7 @@ src/
 - `DATABASE_URL` - PostgreSQL connection string (provided by Replit)
 - `OP_SERVICE_ACCOUNT_TOKEN` - 1Password service account token (loads LLM keys from vault)
 - `LLM_PROVIDER` - "stub" (default) or any other value to activate multi-provider LLM
+- `BOT_MODE` - "polling" (default) or "webhook" for webhook mode
 - `OPENAI_API_KEY` - OpenAI API key (auto-loaded from 1Password if not set)
 - `ANTHROPIC_API_KEY` - Anthropic API key (auto-loaded from 1Password if not set)
 - `GEMINI_API_KEY` - Google AI Studio key (auto-loaded from 1Password if not set)
@@ -101,22 +149,15 @@ src/
 - openai
 - anthropic
 - google-generativeai
+- httpx/aiohttp (for integrations)
 
 ## Running
-The bot runs via `python main.py` using long polling. Deployed as a VM for perpetual operation.
-
-### Asana Integration
-- `/extract <pasted text>` - Runs pasted chat transcripts through 4-provider swarm analysis
-- Extracts: decisions, action items, insights, risks, follow-ups
-- Auto-creates tasks in Asana from extracted action items
-- `/setproject <gid>` - Set target Asana project for task creation
-- ASANA_PAT loaded from 1Password vault at startup
+The bot runs via `python main.py` using long polling by default. Set BOT_MODE=webhook for webhook mode. Deployed as a VM for perpetual operation. Background services (CronRunner at 60s, DigestRunner hourly, HealthMonitor at 120s) start automatically.
 
 ## Recent Changes
-- Added /extract command for AI-powered content analysis + Asana task creation
-- Added Asana API client with workspace/project/task management
-- Implemented self-healing protocol: circuit breakers, health monitor, /selfheal and /healcheck commands
-- Added 1Password integration for automatic LLM API key loading at startup
-- Fixed OpenAI model resolver to avoid non-chat models (codex)
-- Tested 4-provider weighted consensus: Anthropic, Gemini, Grok all responded successfully
-- LLM_PROVIDER set to "multi" for active multi-provider mode
+- 2026-02-16: Integrated all 16 advanced features across 5 development phases
+- Added 8 new database models and 13 new service modules
+- Created 12 new handler modules for all feature commands
+- Implemented background runners: CronRunner (60s), DigestRunner (hourly)
+- Updated /help with comprehensive command listing (80+ commands)
+- All handlers registered in bot.py with background services starting in _post_init
