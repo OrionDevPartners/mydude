@@ -1,0 +1,14 @@
+{
+  "openai": {
+    "ts": 1771224570.406001,
+    "model": "gpt-4.1-2025-04-14"
+  },
+  "gemini": {
+    "ts": 1771224570.7619486,
+    "model": "models/gemini-2.5-flash"
+  },
+  "grok": {
+    "ts": 1771224570.933172,
+    "model": "grok-2-vision-1212"
+  }
+}
