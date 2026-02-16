@@ -71,20 +71,33 @@ async def waves_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         import os
+        providers = {
+            "OpenAI": bool(os.getenv("OPENAI_API_KEY")),
+            "Anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "Gemini": bool(os.getenv("GEMINI_API_KEY")),
+            "Grok": bool(os.getenv("GROK_API_KEY")),
+        }
+        provider_lines = "\n".join(
+            f"  {name}: {'ACTIVE' if active else 'not configured'}"
+            for name, active in providers.items()
+        )
+        llm_mode = os.getenv("LLM_PROVIDER", "stub")
         info = (
             "PORTER SWARM STATUS\n\n"
-            f"LLM Provider: {os.getenv('LLM_PROVIDER', 'stub')}\n"
+            f"LLM Mode: {llm_mode}\n"
             f"Wave Concurrency: {os.getenv('WAVE_CONCURRENCY', '12')}\n"
             f"Agents Per Wave: {os.getenv('AGENTS_PER_WAVE', '60')}\n"
             f"Max Waves: {os.getenv('MAX_WAVES', '4')}\n"
             f"Production Policy: {'ENABLED' if policy.allow_prod else 'BLOCKED'}\n\n"
+            f"LLM Providers:\n{provider_lines}\n\n"
             "Capabilities available:\n"
             "- git_status\n"
             "- terraform_plan\n"
             "- terraform_apply (requires plan first)\n"
             "- asana_query\n"
             "- op_read_scoped\n\n"
-            "Use /goal <objective> to launch a swarm run."
+            "Use /goal <objective> to launch a swarm run.\n"
+            "Set LLM_PROVIDER=multi to use multi-provider LLM team."
         )
         await update.message.reply_text(info)
     except Exception as e:

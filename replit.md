@@ -23,6 +23,8 @@ src/
     broker.py        - CapabilityBroker (agents request, broker enforces + executes)
     integrations.py  - Safe integration layer (git, terraform, asana, 1password stubs)
     orchestrator.py  - WaveOrchestrator + LLM + Handoff compression
+    llm_multi.py     - MultiProviderLLM (OpenAI, Anthropic, Gemini, Grok fanout + judge merge)
+    model_resolver.py - Auto-resolve latest model per provider family
     utils.py         - safe_json_dumps, clamp_list
 ```
 
@@ -34,6 +36,13 @@ src/
 - Wave 2 (Build): implement diffs + tests; create branches + PRs
 - Wave 3 (Verify+Ship): run checks; Terraform plan; staged deploy; smoke tests
 - Wave 4 (Scale+Monetize): instrumentation, KPIs, cost controls, growth loops
+
+### Multi-Provider LLM
+- Fans out to OpenAI + Anthropic + Gemini + Grok in parallel
+- Per-provider concurrency caps and retry with backoff
+- Judge/merger step synthesizes outputs into single handoff
+- Model resolver auto-detects latest model per provider family (cached with TTL)
+- Set LLM_PROVIDER=multi (any non-"stub" value) to activate; default is "stub"
 
 ### Security Model
 - Capability Broker pattern: agents request capabilities, broker enforces policy
@@ -47,21 +56,34 @@ src/
 - `ADMIN_PASSWORD` - Password for authorizing users (required)
 - `ADMIN_USER_ID` - Optional Telegram user ID for extra auth security
 - `DATABASE_URL` - PostgreSQL connection string (provided by Replit)
-- `LLM_PROVIDER` - LLM provider: "stub" (default) or implement your own
+- `LLM_PROVIDER` - "stub" (default) or any other value to activate multi-provider LLM
+- `OPENAI_API_KEY` - OpenAI API key (optional, for multi-provider)
+- `ANTHROPIC_API_KEY` - Anthropic API key (optional, for multi-provider)
+- `GEMINI_API_KEY` - Google AI Studio key (optional, for multi-provider)
+- `GROK_API_KEY` - xAI/Grok API key (optional, for multi-provider)
+- `GROK_BASE_URL` - Grok API base URL (default: https://api.x.ai/v1)
+- `OPENAI_MODEL` - Override OpenAI model (default: gpt-4.1-mini)
+- `ANTHROPIC_MODEL` - Override Anthropic model (default: claude-sonnet-4-20250514)
+- `GEMINI_MODEL` - Override Gemini model (default: gemini-2.0-flash)
+- `GROK_MODEL` - Override Grok model (default: grok-2-latest)
 - `WAVE_CONCURRENCY` - Max parallel agents per wave (default 12)
 - `AGENTS_PER_WAVE` - Virtual agents per wave (default 60)
 - `MAX_WAVES` - Maximum cascade waves (default 4)
+- `PROVIDER_BUDGET_TOKENS` - Max tokens per provider call (default 1200)
 
 ## Dependencies
 - python-telegram-bot==22.6
 - SQLAlchemy>=2.0
 - psycopg2-binary>=2.9
+- openai
+- anthropic
+- google-generativeai
 
 ## Running
 The bot runs via `python main.py` using long polling. Deployed as a VM for perpetual operation.
 
 ## Recent Changes
-- Integrated Porter waves swarm architecture with cascading wave orchestration
-- Added capability broker with policy engine for safe privileged operations
-- Added integration stubs for Git, Terraform, Asana, 1Password
-- LLM provider is stubbed; wire your provider in src/swarm/orchestrator.py LLM.call()
+- Added multi-provider LLM with debate + weighted consensus + judge merge
+- Added model resolver for auto-detecting latest models per provider
+- Per-provider concurrency caps and exponential backoff retries
+- Integrated into WaveOrchestrator: set LLM_PROVIDER to any non-"stub" value to activate

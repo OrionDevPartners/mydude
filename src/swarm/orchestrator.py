@@ -50,6 +50,15 @@ class AgentResult:
 
 
 class LLM:
+    def __init__(self):
+        self._team = None
+
+    def _get_team(self):
+        if self._team is None and LLM_PROVIDER != "stub":
+            from src.swarm.llm_multi import MultiProviderLLM
+            self._team = MultiProviderLLM()
+        return self._team
+
     async def call(self, system: str, user: str) -> str:
         if LLM_PROVIDER == "stub":
             await asyncio.sleep(0.02)
@@ -61,9 +70,19 @@ class LLM:
                 "CAPABILITIES: git_status {}\n"
                 'COMPRESSED_HANDOFF: {"goal":"","facts":[],"decisions":[],"tasks":[],"risks":[],"next":[]}'
             )
-        raise RuntimeError(
-            "LLM_PROVIDER is not implemented. Set LLM_PROVIDER=stub or implement provider in orchestrator.py."
-        )
+
+        team = self._get_team()
+        if team is None:
+            raise RuntimeError("LLM_PROVIDER is set but no API keys are configured.")
+
+        roles_hint = {
+            "openai": "Implementation + patches + practical code changes",
+            "anthropic": "Security review + architecture coherence + failure modes",
+            "gemini": "Edge cases + alternative approaches + high recall brainstorming",
+            "grok": "Creative solutions + unusual optimizations + growth/monetization angles",
+        }
+        out = await team.call_team(system, user, roles_hint=roles_hint)
+        return out["merged"]
 
 
 class WaveOrchestrator:
