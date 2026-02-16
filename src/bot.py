@@ -4,6 +4,7 @@ from telegram.ext import ApplicationBuilder
 from src.database import init_db
 from src.handlers import help, shell, tasks, notes, git, swarm, extract, voice, ingest
 from src.handlers import rag, triage
+from src.handlers import integrations as integrations_handlers
 from src.handlers import selfheal as selfheal_handlers
 from src.selfheal import HealthMonitor
 
@@ -64,9 +65,24 @@ def run_bot():
     if _llm_instance:
         app.bot_data["llm_instance"] = _llm_instance
 
-    for module in [help, shell, tasks, notes, git, swarm, selfheal_handlers, extract, voice, ingest, rag, triage]:
+    for module in [help, shell, tasks, notes, git, swarm, selfheal_handlers, extract, voice, ingest, rag, triage, integrations_handlers]:
         for handler in module.get_handlers():
             app.add_handler(handler)
 
-    logger.info("Starting bot polling...")
-    app.run_polling(drop_pending_updates=True)
+    mode = os.environ.get("BOT_MODE", "polling").lower()
+    
+    if mode == "webhook":
+        from src.services.webhooks import get_webhook_config
+        config = get_webhook_config()
+        logger.info(f"Starting bot in WEBHOOK mode on port {config['port']}...")
+        app.run_webhook(
+            listen=config["listen"],
+            port=config["port"],
+            url_path="/webhook",
+            webhook_url=config["webhook_url"] + "/webhook" if not config["webhook_url"].endswith("/webhook") else config["webhook_url"],
+            secret_token=config["webhook_secret"],
+            drop_pending_updates=True,
+        )
+    else:
+        logger.info("Starting bot polling...")
+        app.run_polling(drop_pending_updates=True)
