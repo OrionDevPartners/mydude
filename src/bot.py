@@ -2,7 +2,8 @@ import os
 import logging
 from telegram.ext import ApplicationBuilder
 from src.database import init_db
-from src.handlers import help, shell, tasks, notes, git, swarm, extract
+from src.handlers import help, shell, tasks, notes, git, swarm, extract, voice, ingest
+from src.handlers import rag, triage
 from src.handlers import selfheal as selfheal_handlers
 from src.selfheal import HealthMonitor
 
@@ -63,7 +64,7 @@ def run_bot():
     if _llm_instance:
         app.bot_data["llm_instance"] = _llm_instance
 
-    for module in [help, shell, tasks, notes, git, swarm, selfheal_handlers, extract]:
+    for module in [help, shell, tasks, notes, git, swarm, selfheal_handlers, extract, voice, ingest, rag, triage]:
         for handler in module.get_handlers():
             app.add_handler(handler)
 
