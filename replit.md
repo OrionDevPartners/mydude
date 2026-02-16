@@ -1,7 +1,97 @@
 # Telegram Bot - Replit Manager + Porter Swarm
 
 ## Overview
-A Telegram bot for managing tasks, notes, shell commands, git operations, and multi-agent swarm orchestration on a Replit project. Built with Python 3.11, python-telegram-bot v22, SQLAlchemy, and PostgreSQL. Features a self-healing protocol with circuit breakers, health monitoring, automatic secret loading from 1Password, 16 advanced features, and a full cognitive architecture for LLM epistemic governance including hallucination abolition, compliance scoring, and structured debate protocols.
+This project is a Telegram bot designed to manage tasks, notes, shell commands, git operations, and multi-agent swarm orchestration within a Replit environment. Its core purpose is to provide a comprehensive, intelligent interface for project management and autonomous development, featuring advanced AI governance for enhanced reliability and compliance. The bot aims to streamline development workflows, automate complex tasks, and facilitate robust multi-agent collaboration with built-in safeguards against common LLM pitfalls like hallucination.
+
+## User Preferences
+The user prefers a structured, high-governance approach to AI interaction, emphasizing epistemic discipline and transparent decision-making. The user also values robust error handling, self-healing capabilities, and clear audit trails for all bot actions. Prioritizes the prevention of unverified claims and desires a system that actively identifies and mitigates risks associated with LLM outputs.
+
+## System Architecture
+
+### Cognitive Architecture (LLM OS)
+The bot incorporates a sophisticated "Instructor Set" for epistemic governance, guiding how LLMs operate, debate, and produce results.
+
+#### Agent Constitution
+- **Epistemic Labels**: All claims must be labeled (VERIFIED, DERIVED, HYPOTHESIS, UNKNOWN).
+- **Reasoning Modes**: Supports both ANALYTIC (evidence-based) and EXPLORATORY (hypothesis-driven) reasoning.
+- **Banned Phrases**: Prohibits unverified definitive language.
+- **Stop Conditions**: Implements conditions to halt processing based on uncertainty or policy conflicts.
+- **Claim Ledger**: Tracks all claims with metadata like confidence, evidence, and potential failure modes.
+
+#### Compliance Scoring (CS)
+- **Formula-based Scoring**: A weighted formula calculates compliance (0-100) based on factors like unlabeled claims, constraint violations, and missing data.
+- **Tiers**: Classifies outputs into TRUSTED, REDUCED, DRAFT, and REJECTED tiers.
+- **Auto-correction**: Triggers automatic correction for low-scoring outputs.
+- **Effective Weighting**: Adjusts agent influence based on compliance score and evidence quality.
+
+#### Hallucination Risk Model (HR)
+- **Risk Score**: A weighted model assesses hallucination risk (0-1) considering factors like unlabeled ratios, mode mixing, and overconfidence.
+- **Tiers & Controls**: Defines tiers (LOW, MEDIUM, HIGH, CRITICAL) with corresponding control actions, including adding skeptics or halting synthesis.
+- **Predictive**: Designed to prevent hallucinations proactively.
+
+#### Swarm Orchestration Contract
+- **Cognitive Roles**: Employs 9 distinct roles (e.g., Architect, Skeptic, Red Team) for comprehensive analysis.
+- **Debate Cycle**: An 8-round debate process, from proposal to synthesis, ensures thorough vetting of claims.
+- **Weighted Consensus**: Decisions are made via weighted voting, preserving minority dissent.
+- **Synthesis Rules**: The synthesizer only produces outputs based on accepted, verified claims.
+
+#### Provenance Tracking
+- **Claim Provenance**: Tracks the origin and transformation lineage of every claim.
+- **Provenance Tree**: Visualizes claim lineage and risk paths.
+- **Consistency Checker**: Detects contradictions by cross-referencing verified facts.
+
+#### Reflexive Auditor & Governance Sentinel
+- **Meta-cognitive Monitoring**: Observes swarm performance, tracks trends, and generates system health assertions.
+- **Real-time Risk Monitoring**: Provides warnings and throttles when risk thresholds are exceeded.
+- **Red Team Agent**: Conducts adversarial vulnerability testing.
+
+### Self-Healing Protocol
+- **Circuit Breakers**: Implements per-LLM provider circuit breakers with closed/open/half_open states.
+- **Provider Isolation**: Automatically isolates failing providers.
+- **Health Monitor**: Background checks for database, LLM, and 1Password health.
+
+### Porter Waves Swarm
+- **Phased Execution**: Organizes complex tasks into sequential "waves" (Route+Clarify, Plan, Build, Verify+Ship, Scale+Monetize).
+- **Role Mapping**: Assigns cognitive roles dynamically across different waves.
+
+### Multi-Provider LLM
+- **Parallel Execution**: Fans out queries to OpenAI, Anthropic, Gemini, and Grok.
+- **Compliance-Weighted Consensus**: Merges provider outputs based on compliance and hallucination risk scores.
+
+### Advanced Features
+- **Audit Logging**: Comprehensive logging and search for all commands.
+- **Rate Limiting**: Per-user and per-command rate limits.
+- **Conversation Memory**: Stores key interactions and results.
+- **Goal Tracking**: Manages and tracks project goals.
+- **Cron Scheduler**: Background job execution.
+- **Recurring Digests**: Provides scheduled summaries.
+- **Voice Transcription**: Integrates OpenAI Whisper for voice messages.
+- **Document Ingestion**: Fetches and analyzes content from URLs and files.
+- **RAG over Codebase**: Enables grep-based code search and file tree analysis.
+- **Provider Metrics**: Tracks performance of LLM providers.
+- **Auto-Triage**: AI and keyword-based message classification.
+- **External Integrations**: Connects with Linear, GitHub, Slack, Discord.
+- **Pipeline Triggers**: Automates command chaining.
+- **Webhook Mode**: Supports webhook deployment.
+- **Asana Integration**: Auto-creates tasks in Asana from extracted content.
+- **Content Analysis**: Utilizes multi-provider swarm for content analysis.
+
+### Security Model
+- **Capability Broker**: Controls agent access to capabilities based on policy.
+- **Secret Protection**: Prevents raw secret exposure to agents.
+- **Production Gates**: Blocks production actions by default.
+- **Authorization**: Secure user authorization via password and optional ADMIN_USER_ID.
+
+## External Dependencies
+- **Telegram**: Main interaction platform.
+- **Python-Telegram-Bot**: Bot API wrapper.
+- **SQLAlchemy**: ORM for database interactions.
+- **PostgreSQL**: Primary data store.
+- **1Password**: Secure secret management for API keys (e.g., OpenAI, Anthropic, Gemini, Grok, Asana).
+- **OpenAI, Anthropic, Google Generative AI**: LLM providers.
+- **HTTPX/AIOHTTP**: For various external integrations.
+- **Asana**: Task management integration.
+- **Linear, GitHub, Slack, Discord**: Collaboration and issue tracking integrations.
 
 ## Project Structure
 ```
@@ -12,190 +102,33 @@ src/
   database.py        - SQLAlchemy engine, session, and Base
   models.py          - Database models (Task, Note, CommandLog, UserSettings, AuditLog,
                        ConversationMemory, Goal, CronJob, ProviderMetric, IntegrationConfig,
-                       PipelineTrigger, DigestConfig)
-  handlers/
-    help.py          - /start, /help, /authorize, /whoami
-    shell.py         - /shell command execution
-    tasks.py         - /addtask, /tasks, /donetask, /deltask
-    notes.py         - /addnote, /notes, /viewnote, /delnote
-    git.py           - /gitstatus, /gitlog, /gitdiff, /gitcommit, /gitpull, /gitpush
-    swarm.py         - /goal, /waves, /policy (Porter swarm commands)
-    selfheal.py      - /selfheal, /healcheck (self-healing protocol status)
-    extract.py       - /extract (AI content analysis + Asana task creation)
-    audit.py         - /audit (command history, search)
-    memory.py        - /memory (conversation memory overview)
-    goals.py         - /goals, /goalstatus, /goalcomplete
-    cron_handler.py  - /cron (scheduled job management)
-    digest.py        - /digest (recurring digest config)
-    voice.py         - Voice note transcription handler
-    ingest.py        - /ingest, document ingestion handler
-    rag.py           - /askcode, /codestructure (RAG over codebase)
-    triage.py        - /triage (auto-classification), /metrics (provider stats)
-    integrations.py  - /connect, /integrations, /slack, /discord, /ghissue, /ghissues,
-                       /linearissue, /linearissues, /pipeline
-    cognition.py     - /constitution, /cognition (cognitive architecture status)
+                       PipelineTrigger, DigestConfig, SwarmMemoryLayer, ClaimProvenanceRecord,
+                       PerformanceLedgerEntry, SentinelEvent)
+  handlers/          - Telegram command handlers (help, shell, tasks, notes, git, swarm, etc.)
   swarm/
-    prompts.py       - System prompts with constitution rules injected
-    constitution.py  - Agent Constitution: epistemic categories, claim ledger, intent binding,
-                       dual-mode reasoning, language discipline, stop conditions
-    compliance.py    - Runtime Compliance Scoring (CS 0-100): 8-term penalty formula,
-                       tier gates, auto-correction protocol
-    hallucination.py - Hallucination Risk Model (HR 0-1): 8 weighted features, tiered
-                       control actions, risk monitoring with abort capability
-    contract.py      - Swarm Orchestration Contract: 6 cognitive roles, 7-round debate
-                       cycle, weighted consensus, dissent preservation
+    prompts.py       - System prompts + role prompts (9 roles + novelty preservation)
+    constitution.py  - Agent Constitution: epistemic categories, claim ledger
+    compliance.py    - CS scoring + novelty classification + consensus boost
+    hallucination.py - HR model (0-1) with tiered controls
+    contract.py      - 9 cognitive roles, 8-round debate cycle
+    provenance.py    - ClaimProvenance tracking, ProvenanceTree, ConsistencyChecker
+    auditor.py       - ReflexiveAuditor, PerformanceLedger, MetaClaim generation
+    sentinel.py      - GovernanceSentinel, RedTeamAgent (5 attack vectors)
+    orchestrator.py  - WaveOrchestrator with full governance wiring
+    llm_multi.py     - MultiProviderLLM with novelty-aware consensus
     policy.py        - PolicyEngine (production gates, secret protection)
-    broker.py        - CapabilityBroker (agents request, broker enforces + executes)
-    integrations.py  - Safe integration layer (git, terraform, asana, 1password stubs)
-    orchestrator.py  - WaveOrchestrator + cognitive architecture integration
-    llm_multi.py     - MultiProviderLLM with compliance-weighted consensus
-    model_resolver.py - Auto-resolve latest model per provider family
-    utils.py         - safe_json_dumps, clamp_list
-  selfheal/
-    __init__.py      - Exports CircuitBreaker and HealthMonitor
-    circuit_breaker.py - Per-provider circuit breaker (closed/open/half_open states)
-    health_monitor.py  - Background health checks (DB, LLM, 1Password, memory)
-  services/
-    audit.py         - AuditService (log commands, search history)
-    rate_limit.py    - RateLimiter (per-user, per-command rate limiting)
-    memory.py        - MemoryService (store/search conversation memory)
-    goals.py         - GoalService (CRUD, progress tracking)
-    cron.py          - CronRunner (background scheduler, 60s check interval)
-    digest.py        - DigestRunner (hourly check, daily/weekly digests)
-    voice.py         - VoiceService (OpenAI Whisper transcription)
-    ingestion.py     - IngestionService (URL fetch, file download, swarm analysis)
-    rag.py           - RAGService (grep-based codebase search, file tree)
-    metrics.py       - MetricsService (provider latency/success/quality tracking)
-    triage.py        - TriageService (AI + keyword-based message classification)
-    integrations.py  - IntegrationService (Linear, GitHub, Slack, Discord APIs)
-    pipelines.py     - PipelineService (command chaining triggers)
-    webhooks.py      - WebhookService (Telegram webhook mode setup)
+    broker.py        - CapabilityBroker (agents request, broker enforces)
+  selfheal/          - Circuit breakers, health monitor
+  services/          - Audit, rate limiting, memory, goals, cron, digest, voice, RAG, etc.
 ```
 
-## Architecture
-
-### Cognitive Architecture (LLM OS)
-The swarm operates under a full epistemic governance framework - the "Instructor Set" - that shapes how LLMs think, debate, and produce outputs.
-
-#### Agent Constitution (constitution.py)
-- Every claim must carry an epistemic label: VERIFIED, DERIVED, HYPOTHESIS, or UNKNOWN
-- No blending categories; no rhetorical smoothing; if you can't label it, don't emit it
-- Load-bearing claims (architecture, safety, cost) require evidence pointers
-- Dual-mode reasoning: ANALYTIC (strict evidence) vs EXPLORATORY (hypothesis with test paths)
-- Banned phrases without verification: "definitely", "guaranteed", "proven", "obviously", "clearly"
-- Stop conditions: >50% unknown claims, constraint conflicts, policy blocks, consensus < 0.4
-- Claim Ledger: every claim tracked with claim_id, confidence, evidence pointers, premises, failure modes
-
-#### Compliance Scoring (compliance.py)
-- Formula: CS = 100 - 8*U - 6*(L-E) - 12*C - 5*D - 7*M - 4*R - 6*X
-  - U = unlabeled claims, L = load-bearing, E = evidenced, C = constraint violations
-  - D = drift events, M = mode mixing, R = missing required fields, X = uncited external claims
-- Tiers: TRUSTED (>=90), REDUCED (80-89), DRAFT (65-79), REJECTED (<65)
-- Auto-correction protocol when CS < 80: agent must reissue with proper labels/evidence
-- Effective weight = base_weight * (CS/100) * evidence_quality ("eloquent liars" become powerless)
-
-#### Hallucination Risk Model (hallucination.py)
-- Risk Score HR = 0.22*f1 + 0.22*f2 + 0.12*f3 + 0.10*f4 + 0.10*f5 + 0.10*f6 + 0.08*f7 + 0.06*f8
-  - f1: unlabeled ratio, f2: unevidenced ratio, f3: mode mixing rate
-  - f4: constraint pressure, f5: novelty pressure, f6: external dependency
-  - f7: disagreement index, f8: overconfidence delta
-- Tiers: LOW (<0.25, normal), MEDIUM (0.25-0.50, add skeptic), HIGH (0.50-0.75, block synthesis), CRITICAL (>0.75, halt)
-- Predictive: throttles before hallucination occurs, not after
-- HallucinationMonitor tracks trends and auto-aborts after 3 consecutive CRITICAL readings
-
-#### Swarm Orchestration Contract (contract.py)
-- 6 Cognitive Roles: Architect, Skeptic, Evidence Validator, Constraint Enforcer, Creative Divergence, Synthesizer
-- 7-Round Debate Cycle:
-  - Round 0: Genesis Binding (ensure intent, governance, capability plan)
-  - Round 1: Proposal (architect claims with labels)
-  - Round 2: Adversarial Audit (skeptic + constraint enforcer)
-  - Round 3: Evidence Validation (verify pointers, score evidence quality)
-  - Round 4: Creative Divergence (EXPLORATORY hypotheses with test paths)
-  - Round 5: Consensus (weighted votes, 80% threshold, dissent preservation)
-  - Round 6: Synthesis (final output from accepted claims only)
-- Vote weight = base_role_weight * (CS/100) * evidence_strength * (1 - HR)
-- Dissent preserved as metadata - innovation lives in minority disagreement
-- Synthesizer fails rather than invents: no new claims, no unverified labels, no mode mixing
-
-### Self-Healing Protocol
-- Circuit breaker per LLM provider with 3 states (closed/open/half_open)
-- Automatic provider isolation on repeated failures (threshold: 5)
-- Recovery timeout with half-open probing (300s default)
-- Background health monitor checking every 120s
-- Graceful degradation: skips unhealthy providers
-
-### 1Password Integration
-- Service account token pulls API keys at startup via `op read`
-- Keys loaded: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, GROK_API_KEY, ASANA_PAT
-
-### Porter Waves Swarm
-- Wave 0 (Route+Clarify): identify projects/repos, constraints, permissions
-- Wave 1 (Plan): architecture + task graph + acceptance criteria + risk
-- Wave 2 (Build): implement diffs + tests; create branches + PRs
-- Wave 3 (Verify+Ship): run checks; Terraform plan; staged deploy; smoke tests
-- Wave 4 (Scale+Monetize): instrumentation, KPIs, cost controls, growth loops
-- Cognitive roles mapped per wave: early waves use Architect/Skeptic/Constraint, later waves add all 6 roles
-
-### Multi-Provider LLM
-- Fans out to OpenAI + Anthropic + Gemini + Grok in parallel
-- Compliance-weighted consensus: provider outputs scored by CS and HR before merge
-- Judge/merger prompt includes compliance weighting instructions
-- Critical HR triggers warnings in synthesis step
-
-### Advanced Features (16 total)
-1. Audit Logging - Every command logged with user, args, result; searchable via /audit
-2. Rate Limiting - Per-user, per-command rate limits
-3. Conversation Memory - Auto-stores results from /extract, voice, ingestion, RAG, goals
-4. Goal Tracking - /goals, /goalstatus, /goalcomplete
-5. Cron Scheduler - Background job runner with 60s check interval (/cron)
-6. Recurring Digests - Daily/weekly summaries (/digest)
-7. Voice Transcription - OpenAI Whisper (auto on voice messages)
-8. Document Ingestion - URL fetch + file download with swarm analysis (/ingest)
-9. RAG over Codebase - Grep-based code search + file tree (/askcode, /codestructure)
-10. Provider Metrics - Latency, success rate, quality tracking (/metrics)
-11. Auto-Triage - AI + keyword classification (/triage)
-12. External Integrations - Linear, GitHub, Slack, Discord (/connect, /slack, /discord, /ghissue, /linearissue)
-13. Pipeline Triggers - Command chaining automation (/pipeline)
-14. Webhook Mode - BOT_MODE=webhook env var
-15. Asana Integration - /extract auto-creates tasks
-16. Content Analysis - Multi-provider swarm analysis (/extract)
-
-### Security Model
-- Capability Broker: agents request capabilities, broker enforces policy
-- No raw secrets ever exposed to agents
-- Production actions blocked by default
-- Authorization with password + optional ADMIN_USER_ID
-
-## Environment Variables
-- `TELEGRAM_BOT_TOKEN` - Bot token from @BotFather (required)
-- `ADMIN_PASSWORD` - Password for authorizing users (required)
-- `ADMIN_USER_ID` - Optional Telegram user ID for extra auth security
-- `DATABASE_URL` - PostgreSQL connection string (provided by Replit)
-- `OP_SERVICE_ACCOUNT_TOKEN` - 1Password service account token
-- `LLM_PROVIDER` - "stub" (default) or any other value to activate multi-provider LLM
-- `BOT_MODE` - "polling" (default) or "webhook"
-- `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `GROK_API_KEY` - LLM keys (auto-loaded from 1Password)
-- `OPENAI_MODEL` / `ANTHROPIC_MODEL` / `GEMINI_MODEL` / `GROK_MODEL` - Model overrides
-- `WAVE_CONCURRENCY` / `AGENTS_PER_WAVE` / `MAX_WAVES` / `PROVIDER_BUDGET_TOKENS` - Swarm tuning
-
-## Dependencies
-- python-telegram-bot==22.6
-- SQLAlchemy>=2.0
-- psycopg2-binary>=2.9
-- openai, anthropic, google-generativeai
-- httpx/aiohttp (for integrations)
-
-## Running
-The bot runs via `python main.py` using long polling by default. Background services (CronRunner at 60s, DigestRunner hourly, HealthMonitor at 120s) start automatically.
-
 ## Recent Changes
+- 2026-02-16: Enhanced cognitive architecture with v2.0 governance modules
+  - Added provenance.py, auditor.py, sentinel.py
+  - Enhanced compliance.py with NoveltyClassification and consensus_confidence_boost
+  - Enhanced contract.py: 9 roles (added Reflexive Auditor, Red Team, Falsifier) + 8 debate rounds
+  - Wired provenance/auditor/sentinel into orchestrator.py
+  - Enhanced llm_multi.py with novelty-aware scoring
+  - Added 4 new DB models
 - 2026-02-16: Integrated cognitive architecture (Instructor Set) into swarm OS
-  - Added Agent Constitution with epistemic categories and claim ledger discipline
-  - Added Compliance Scoring Algorithm (CS 0-100) with 8-term penalty formula
-  - Added Hallucination Risk Model (HR 0-1) with 8 weighted features and tiered controls
-  - Added Swarm Orchestration Contract with 6 cognitive roles and 7-round debate cycle
-  - Injected constitution rules into PORTER and WORKER system prompts
-  - Wired compliance gating and HR throttling into WaveOrchestrator
-  - Added compliance-weighted consensus to MultiProviderLLM judge/merge
-  - Added /constitution and /cognition Telegram commands
 - 2026-02-16: Integrated all 16 advanced features across 5 development phases

@@ -10,6 +10,9 @@ class CognitiveRole(Enum):
     CONSTRAINT_ENFORCER = "constraint_enforcer"
     CREATIVE_DIVERGENCE = "creative_divergence"
     SYNTHESIZER = "synthesizer"
+    REFLEXIVE_AUDITOR = "reflexive_auditor"
+    RED_TEAM = "red_team"
+    FALSIFIER = "falsifier"
 
 
 class DebateRound(Enum):
@@ -20,6 +23,7 @@ class DebateRound(Enum):
     CREATIVE_DIVERGENCE = 4
     CONSENSUS = 5
     SYNTHESIS = 6
+    ADVERSARIAL_TESTING = 7
 
 
 @dataclass
@@ -58,6 +62,9 @@ ROLE_BASE_WEIGHTS: Dict[CognitiveRole, float] = {
     CognitiveRole.CONSTRAINT_ENFORCER: 0.8,
     CognitiveRole.CREATIVE_DIVERGENCE: 0.6,
     CognitiveRole.SYNTHESIZER: 0.0,
+    CognitiveRole.REFLEXIVE_AUDITOR: 0.7,
+    CognitiveRole.RED_TEAM: 0.5,
+    CognitiveRole.FALSIFIER: 0.85,
 }
 
 
@@ -164,6 +171,9 @@ def get_role_prompt_suffix(role: CognitiveRole) -> str:
         CognitiveRole.CONSTRAINT_ENFORCER: "Check governance, budgets, allowlists, retention. Flag policy violations.",
         CognitiveRole.CREATIVE_DIVERGENCE: "EXPLORATORY MODE: Generate novel hypotheses with explicit test paths.",
         CognitiveRole.SYNTHESIZER: "Merge outputs only from accepted claims. Never invent new claims.",
+        CognitiveRole.REFLEXIVE_AUDITOR: "META-COGNITIVE MODE: Review CS/HR trends, detect drift, propose parameter adjustments. Output meta-claims about system performance.",
+        CognitiveRole.RED_TEAM: "ADVERSARIAL MODE: Test for prompt injection, evidence fabrication, constraint bypass. Report vulnerabilities without exploiting them.",
+        CognitiveRole.FALSIFIER: "FALSIFICATION MODE: Actively seek counterexamples and logical flaws in proposals. Stress-test claims. Successful falsification strengthens surviving claims.",
     }
     return suffixes.get(role, "")
 
@@ -177,19 +187,21 @@ def get_debate_round_instruction(round: DebateRound) -> str:
         DebateRound.CREATIVE_DIVERGENCE: "Round 4: Creative agent produces labeled HYPOTHESIS entries with explicit test paths. All outputs marked EXPLORATORY.",
         DebateRound.CONSENSUS: "Round 5: Compute weighted votes per claim. Accept claims meeting threshold. Record all dissent with reasons and risk levels.",
         DebateRound.SYNTHESIS: "Round 6: Synthesizer outputs final result from accepted claims only. No new claims. No unverified labels. No mixed modes.",
+        DebateRound.ADVERSARIAL_TESTING: "Round 7: Red Team runs adversarial probes against the synthesis output. Falsifier attempts to break surviving claims. Reflexive Auditor logs meta-claims about cycle quality.",
     }
     return instructions.get(round, "")
 
 
 def map_wave_to_cognitive_roles(wave_idx: int) -> List[CognitiveRole]:
     if wave_idx == 0:
-        return [CognitiveRole.ARCHITECT, CognitiveRole.SKEPTIC, CognitiveRole.CONSTRAINT_ENFORCER]
+        return [CognitiveRole.ARCHITECT, CognitiveRole.SKEPTIC, CognitiveRole.CONSTRAINT_ENFORCER, CognitiveRole.FALSIFIER]
     elif wave_idx == 1:
         return [
             CognitiveRole.ARCHITECT,
             CognitiveRole.EVIDENCE_VALIDATOR,
             CognitiveRole.CONSTRAINT_ENFORCER,
             CognitiveRole.CREATIVE_DIVERGENCE,
+            CognitiveRole.FALSIFIER,
         ]
     elif wave_idx == 2:
         return [
@@ -197,6 +209,7 @@ def map_wave_to_cognitive_roles(wave_idx: int) -> List[CognitiveRole]:
             CognitiveRole.SKEPTIC,
             CognitiveRole.EVIDENCE_VALIDATOR,
             CognitiveRole.CREATIVE_DIVERGENCE,
+            CognitiveRole.RED_TEAM,
         ]
     else:
         return [
@@ -206,4 +219,6 @@ def map_wave_to_cognitive_roles(wave_idx: int) -> List[CognitiveRole]:
             CognitiveRole.CONSTRAINT_ENFORCER,
             CognitiveRole.CREATIVE_DIVERGENCE,
             CognitiveRole.SYNTHESIZER,
+            CognitiveRole.RED_TEAM,
+            CognitiveRole.REFLEXIVE_AUDITOR,
         ]

@@ -22,7 +22,7 @@ except Exception:
 
 from src.swarm.model_resolver import resolve_models
 from src.selfheal.circuit_breaker import CircuitBreaker
-from src.swarm.compliance import analyze_agent_output, compute_effective_weight
+from src.swarm.compliance import analyze_agent_output, compute_effective_weight, classify_novelty, consensus_confidence_boost, NoveltyClassification
 from src.swarm.hallucination import (
     build_features_from_compliance, compute_hallucination_risk,
     get_control_action, get_risk_tier, RiskTier
@@ -160,6 +160,21 @@ class MultiProviderLLM:
                 r.hallucination_risk = compute_hallucination_risk(features)
             except Exception:
                 pass
+        try:
+            ok_texts = [r.text for r in replies if r.ok and r.text]
+            for r in replies:
+                if not r.ok or not r.text:
+                    continue
+                try:
+                    novelty = classify_novelty(r.text)
+                    if novelty != NoveltyClassification.STANDARD:
+                        boost = consensus_confidence_boost(ok_texts, r.text, threshold=3)
+                        if boost["boosted"]:
+                            r.compliance_score = min(100, r.compliance_score + 15)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         return replies
 
     async def call_team(
@@ -287,6 +302,12 @@ class MultiProviderLLM:
                 weights[r.provider] = compute_effective_weight(1.0, r.compliance_score, 1.0 if r.ok else 0.0)
             except Exception:
                 weights[r.provider] = 1.0 if r.ok else 0.0
+            try:
+                novelty = classify_novelty(r.text) if r.ok else NoveltyClassification.STANDARD
+                if novelty != NoveltyClassification.STANDARD and r.ok:
+                    weights[r.provider] = compute_effective_weight(1.0, r.compliance_score, 1.0 if r.ok else 0.0, novelty_bonus=0.3)
+            except Exception:
+                pass
         debate = "\n\n".join(chunks)
 
         has_critical = False
@@ -312,6 +333,8 @@ class MultiProviderLLM:
             "- minimal token bloat\n\n"
             "Each provider's output includes compliance score (CS) and hallucination risk (HR).\n"
             "WEIGHT providers by compliance score. Higher CS = more trustworthy. Reject claims from providers with CS < 65.\n"
+            "NOVEL HYPOTHESES: Do NOT reject novel ideas or creative theories just because they lack traditional evidence.\n"
+            "If 3+ providers converge on a novel concept, treat it as HIGH CONFIDENCE. Innovation lives in the edges.\n"
             f"{critical_warning}"
             "Return ONLY the final consolidated worker-format response:\n"
             "RESULT:\nARTIFACTS:\nCHECKS:\nRISKS:\nCAPABILITIES:\nCOMPRESSED_HANDOFF:\n\n"

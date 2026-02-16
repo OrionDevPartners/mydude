@@ -13,6 +13,18 @@ from src.swarm.compliance import compute_compliance_score, ComplianceMetrics
 from src.swarm.hallucination import HallucinationFeatures, compute_hallucination_risk
 from src.swarm.contract import CognitiveRole, DebateRound
 
+try:
+    from src.swarm.contract import CognitiveRole as CR
+    NEW_ROLES = [r for r in CR if r.value in ("reflexive_auditor", "red_team", "falsifier")]
+except Exception:
+    NEW_ROLES = []
+
+try:
+    from src.swarm.compliance import NoveltyClassification
+    HAS_NOVELTY = True
+except Exception:
+    HAS_NOVELTY = False
+
 TELEGRAM_MAX = 4096
 
 
@@ -121,6 +133,24 @@ async def cognition_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "DEBATE CYCLE - 7 ROUNDS:\n"
             f"  {rounds}"
         )
+
+        # Add new enhancement info
+        enhancements = "\n\nENHANCEMENTS v2.0:"
+        if NEW_ROLES:
+            new_role_str = "\n  ".join([f"{r.name}: {r.value}" for r in NEW_ROLES])
+            enhancements += f"\n\nNEW COGNITIVE ROLES:\n  {new_role_str}"
+        enhancements += "\n\nACTIVE MODULES:"
+        enhancements += "\n  Provenance Tree: Tracks claim origins + transformations"
+        enhancements += "\n  Consistency Checker: Cross-references verified facts"
+        enhancements += "\n  Reflexive Auditor: Meta-cognitive performance monitoring"
+        enhancements += "\n  Governance Sentinel: Real-time risk monitoring"
+        enhancements += "\n  Red Team Agent: Adversarial vulnerability testing"
+        if HAS_NOVELTY:
+            enhancements += "\n\nNOVELTY POLICY:"
+            enhancements += "\n  Novel hypotheses PROTECTED from compliance penalties"
+            enhancements += "\n  3/4 provider consensus = 100% confidence boost"
+            enhancements += "\n  Innovation preserved at knowledge edges"
+        text += enhancements
 
         await update.message.reply_text(text[:TELEGRAM_MAX])
 

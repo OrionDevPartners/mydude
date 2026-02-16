@@ -162,3 +162,65 @@ class DigestConfig(Base):
     enabled = Column(Boolean, default=True)
     last_sent = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SwarmMemoryLayer(Base):
+    __tablename__ = "swarm_memory_layers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    layer_type = Column(String(30), nullable=False)
+    content = Column(Text, nullable=False)
+    summary = Column(Text, nullable=True)
+    topic = Column(String(255), nullable=True)
+    compliance_score = Column(Integer, default=100)
+    hallucination_risk = Column(Float, default=0.0)
+    access_count = Column(Integer, default=0)
+    decay_factor = Column(Float, default=1.0)
+    session_id = Column(String(100), nullable=True)
+    wave_idx = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_accessed = Column(DateTime, nullable=True)
+
+
+class ClaimProvenanceRecord(Base):
+    __tablename__ = "claim_provenance"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    claim_id = Column(String(50), nullable=False, index=True)
+    origin_provider = Column(String(30), nullable=True)
+    origin_role = Column(String(50), nullable=True)
+    wave_idx = Column(Integer, nullable=True)
+    claim_text = Column(Text, nullable=True)
+    evidence_json = Column(Text, nullable=True)
+    parent_claim_ids = Column(Text, nullable=True)
+    hr_at_creation = Column(Float, default=0.0)
+    cs_at_creation = Column(Integer, default=100)
+    transformations_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PerformanceLedgerEntry(Base):
+    __tablename__ = "performance_ledger"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    wave_idx = Column(Integer, nullable=False)
+    avg_cs = Column(Float, nullable=False)
+    avg_hr = Column(Float, nullable=False)
+    agent_count = Column(Integer, default=0)
+    consensus_confidence = Column(Float, default=0.0)
+    dissent_count = Column(Integer, default=0)
+    meta_claims_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SentinelEvent(Base):
+    __tablename__ = "sentinel_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alert_id = Column(String(50), nullable=False, index=True)
+    alert_type = Column(String(50), nullable=False)
+    severity = Column(String(20), nullable=False)
+    description = Column(Text, nullable=True)
+    recommended_action = Column(Text, nullable=True)
+    acknowledged = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

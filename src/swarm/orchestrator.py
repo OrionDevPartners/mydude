@@ -22,6 +22,30 @@ from src.swarm.contract import (
     compute_vote_weight, ROLE_BASE_WEIGHTS, DissentRecord
 )
 
+try:
+    from src.swarm.provenance import ProvenanceTree, ConsistencyChecker
+except Exception:
+    ProvenanceTree = None
+    ConsistencyChecker = None
+
+try:
+    from src.swarm.auditor import ReflexiveAuditor
+except Exception:
+    ReflexiveAuditor = None
+
+try:
+    from src.swarm.sentinel import GovernanceSentinel, RedTeamAgent
+except Exception:
+    GovernanceSentinel = None
+    RedTeamAgent = None
+
+try:
+    from src.swarm.compliance import classify_novelty, consensus_confidence_boost, NoveltyClassification
+except Exception:
+    classify_novelty = None
+    consensus_confidence_boost = None
+    NoveltyClassification = None
+
 logger = logging.getLogger(__name__)
 
 WAVE_CONCURRENCY = int(os.getenv("WAVE_CONCURRENCY", "12"))
@@ -127,6 +151,36 @@ class WaveOrchestrator:
             active_constraints=["No raw secrets", "Policy gates enforced"],
         )
 
+        try:
+            self.provenance = ProvenanceTree() if ProvenanceTree else None
+        except Exception as e:
+            logger.warning("ProvenanceTree init failed: %s", e)
+            self.provenance = None
+
+        try:
+            self.consistency = ConsistencyChecker() if ConsistencyChecker else None
+        except Exception as e:
+            logger.warning("ConsistencyChecker init failed: %s", e)
+            self.consistency = None
+
+        try:
+            self.auditor = ReflexiveAuditor() if ReflexiveAuditor else None
+        except Exception as e:
+            logger.warning("ReflexiveAuditor init failed: %s", e)
+            self.auditor = None
+
+        try:
+            self.sentinel = GovernanceSentinel() if GovernanceSentinel else None
+        except Exception as e:
+            logger.warning("GovernanceSentinel init failed: %s", e)
+            self.sentinel = None
+
+        try:
+            self.red_team = RedTeamAgent() if RedTeamAgent else None
+        except Exception as e:
+            logger.warning("RedTeamAgent init failed: %s", e)
+            self.red_team = None
+
     async def run(self, goal: str) -> Dict[str, Any]:
         handoff = Handoff(
             goal=goal.strip(),
@@ -185,6 +239,21 @@ class WaveOrchestrator:
                             "hr": round(hr, 3),
                             "control": control.description[:100],
                         })
+                        try:
+                            if self.provenance is not None:
+                                self.provenance.add_provenance(
+                                    claim_id=f"W{w}-{r.agent}",
+                                    provider=r.agent.split("-")[-1] if "-" in r.agent else "unknown",
+                                    role=r.cognitive_role or "unknown",
+                                    wave=w,
+                                    evidence=[],
+                                    parent_ids=[],
+                                    hr=r.hallucination_risk,
+                                    cs=r.compliance_score,
+                                )
+                        except Exception as e:
+                            logger.warning("Provenance tracking failed: %s", e)
+
                     except Exception as e:
                         logger.warning("Cognitive scoring failed for %s: %s", r.agent, e)
 
@@ -196,6 +265,32 @@ class WaveOrchestrator:
                 logger.warning("Wave %d cognitive scoring sweep failed: %s", w, e)
 
             handoff = self._merge(handoff, wave_results)
+
+            try:
+                if self.auditor is not None:
+                    cs_list = [r.compliance_score for r in wave_results]
+                    self.auditor.audit_wave(
+                        wave_idx=w,
+                        agent_results=[{"agent": r.agent, "result": r.result[:200], "cs": r.compliance_score, "hr": r.hallucination_risk, "role": r.cognitive_role} for r in wave_results],
+                        compliance_scores=cs_list,
+                        dissent_log=handoff.dissent,
+                    )
+            except Exception as e:
+                logger.warning("Reflexive auditor failed for wave %d: %s", w, e)
+
+            try:
+                if self.sentinel is not None:
+                    self.sentinel.evaluate(
+                        wave_idx=w,
+                        compliance_scores=[r.compliance_score for r in wave_results],
+                        hallucination_risks=[r.hallucination_risk for r in wave_results],
+                        dissent_count=len(handoff.dissent),
+                        provider_statuses={},
+                    )
+                    if self.sentinel.should_escalate():
+                        logger.warning("Sentinel ESCALATION triggered at wave %d", w)
+            except Exception as e:
+                logger.warning("Sentinel evaluation failed: %s", w, e)
 
             for r in wave_results:
                 for cap, params in r.capability_requests:
@@ -237,6 +332,10 @@ class WaveOrchestrator:
             },
             "DISSENT_LOG": all_dissent,
             "CLAIM_LEDGER": handoff.claim_ledger_summary or "No claims recorded",
+            "PROVENANCE_SUMMARY": self.provenance.to_summary() if self.provenance else "N/A",
+            "AUDITOR_STATUS": self.auditor.get_status() if self.auditor else {},
+            "SENTINEL_ALERTS": [{"type": a.alert_type, "severity": a.severity, "desc": a.description[:200]} for a in (self.sentinel.get_active_alerts() if self.sentinel else [])],
+            "META_CLAIMS": [{"category": mc.category, "severity": mc.severity, "desc": mc.description[:150]} for mc in (self.auditor.get_meta_claims() if self.auditor else [])][:10],
         }
 
         if aborted:

@@ -4,6 +4,89 @@ from enum import Enum
 from typing import List
 
 
+class NoveltyClassification(Enum):
+    STANDARD = "STANDARD"
+    NOVEL_HYPOTHESIS = "NOVEL_HYPOTHESIS"
+    CREATIVE_DIVERGENCE = "CREATIVE_DIVERGENCE"
+
+
+_NOVELTY_EXPLORATORY = re.compile(
+    r"\b(what if|could potentially|novel approach|unexplored|hypothesis|theorize|propose|new paradigm|rethink|reimagine|innovative|unconventional)\b",
+    re.IGNORECASE,
+)
+_NOVELTY_CREATIVE = re.compile(
+    r"\b(brainstorm|explore|imagine|consider)\b",
+    re.IGNORECASE,
+)
+_NOVELTY_VIOLATION = re.compile(
+    r"\b(bypass|override|ignore policy)\b",
+    re.IGNORECASE,
+)
+
+_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "it", "as", "be", "was", "are",
+    "been", "being", "have", "has", "had", "do", "does", "did", "will",
+    "would", "could", "should", "may", "might", "shall", "can", "this",
+    "that", "these", "those", "not", "no", "nor", "so", "if", "then",
+    "than", "too", "very", "just", "about", "above", "after", "again",
+    "all", "also", "any", "because", "before", "between", "both", "each",
+    "few", "more", "most", "other", "some", "such", "only", "own", "same",
+    "into", "over", "under", "until", "while", "during", "through", "here",
+    "there", "when", "where", "which", "who", "whom", "what", "how", "its",
+})
+
+
+def classify_novelty(text: str) -> NoveltyClassification:
+    if _NOVELTY_VIOLATION.search(text):
+        return NoveltyClassification.STANDARD
+    has_exploratory = bool(_NOVELTY_EXPLORATORY.search(text))
+    has_creative = bool(_NOVELTY_CREATIVE.search(text))
+    if has_exploratory and has_creative:
+        return NoveltyClassification.CREATIVE_DIVERGENCE
+    if has_exploratory or has_creative:
+        return NoveltyClassification.NOVEL_HYPOTHESIS
+    return NoveltyClassification.STANDARD
+
+
+def _extract_keywords(text: str) -> set:
+    tokens = re.split(r"[\s\W]+", text.lower())
+    return {t for t in tokens if len(t) > 3 and t not in _STOPWORDS}
+
+
+def _jaccard_similarity(set_a: set, set_b: set) -> float:
+    if not set_a and not set_b:
+        return 1.0
+    if not set_a or not set_b:
+        return 0.0
+    return len(set_a & set_b) / len(set_a | set_b)
+
+
+def consensus_confidence_boost(
+    provider_texts: list, claim_text: str, threshold: int = 3
+) -> dict:
+    claim_keywords = _extract_keywords(claim_text)
+    total = len(provider_texts)
+    agreeing = 0
+    for provider_text in provider_texts:
+        provider_keywords = _extract_keywords(provider_text)
+        if _jaccard_similarity(claim_keywords, provider_keywords) > 0.4:
+            agreeing += 1
+    if agreeing >= threshold:
+        return {
+            "boosted": True,
+            "confidence": 1.0,
+            "agreeing_providers": agreeing,
+            "total_providers": total,
+        }
+    return {
+        "boosted": False,
+        "confidence": agreeing / max(total, 1),
+        "agreeing_providers": agreeing,
+        "total_providers": total,
+    }
+
+
 @dataclass
 class ComplianceMetrics:
     unlabeled_claims: int = 0
@@ -14,6 +97,7 @@ class ComplianceMetrics:
     mode_mixing_events: int = 0
     missing_required_fields: int = 0
     uncited_external_claims: int = 0
+    novel_claims_count: int = 0
 
 
 def compute_compliance_score(metrics: ComplianceMetrics) -> int:
@@ -109,11 +193,16 @@ def analyze_agent_output(
 
     claim_count = 0
     unlabeled = 0
+    novel_claims = 0
     for sent in sentences:
         if _CLAIM_PATTERN.search(sent) or _LOAD_BEARING_PATTERN.search(sent):
             claim_count += 1
             if not _EPISTEMIC_LABELS.search(sent):
-                unlabeled += 1
+                novelty = classify_novelty(sent)
+                if novelty in (NoveltyClassification.NOVEL_HYPOTHESIS, NoveltyClassification.CREATIVE_DIVERGENCE):
+                    novel_claims += 1
+                else:
+                    unlabeled += 1
 
     if not sentences:
         claim_count = max(1, len(sections))
@@ -177,6 +266,8 @@ def analyze_agent_output(
         violations.append(f"{missing_required} missing required field(s) (claim_id, confidence)")
     if uncited_external > 0:
         violations.append(f"{uncited_external} external factual claim(s) without citations")
+    if novel_claims > 0:
+        violations.append(f"{novel_claims} novel hypothesis claim(s) detected (preserved, not penalized)")
 
     metrics = ComplianceMetrics(
         unlabeled_claims=unlabeled,
@@ -187,6 +278,7 @@ def analyze_agent_output(
         mode_mixing_events=mode_mixing,
         missing_required_fields=missing_required,
         uncited_external_claims=uncited_external,
+        novel_claims_count=novel_claims,
     )
 
     score = compute_compliance_score(metrics)
@@ -202,9 +294,13 @@ def analyze_agent_output(
 
 
 def compute_effective_weight(
-    base_weight: float, compliance_score: int, evidence_quality: float
+    base_weight: float, compliance_score: int, evidence_quality: float,
+    novelty_bonus: float = 0.0
 ) -> float:
-    return base_weight * (compliance_score / 100) * evidence_quality
+    weight = base_weight * (compliance_score / 100) * evidence_quality
+    if novelty_bonus > 0:
+        weight = min(weight + novelty_bonus, 2.0)
+    return weight
 
 
 def generate_correction_patch(report: ComplianceReport) -> str:
@@ -220,6 +316,11 @@ def generate_correction_patch(report: ComplianceReport) -> str:
     ]
 
     m = report.metrics
+
+    if m.novel_claims_count > 0:
+        lines.append(f"[INFO] {m.novel_claims_count} novel hypothesis claim(s) detected.")
+        lines.append(f"  Novel hypotheses preserved - creativity not constrained.")
+        lines.append("")
 
     if m.unlabeled_claims > 0:
         lines.append(f"[RULE] Epistemic Labeling Required")
