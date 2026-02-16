@@ -1,0 +1,225 @@
+You can do “use the best latest model from each vendor, as a team” — but your exact names don’t all exist the way you wrote them.
+	•	OpenAI: the docs currently show GPT-5.2 as the latest GPT-5 family entry (I don’t see GPT-5.3 listed).  ￼
+	•	Anthropic: Claude Opus 4.6 exists, and Anthropic supports aliases that always point to the latest.  ￼
+	•	Google: Gemini 3 Pro exists.  ￼
+	•	xAI: Grok 4.1 Fast exists (and is positioned for tool-calling/agent workflows).  ￼
+
+So: we’ll implement “latest” correctly by using vendor-supported aliases when available, and otherwise a model resolver that polls each provider’s /models list and picks the newest matching your policy.
+
+Below is the final approach + code to drop into your Replit bot.
+
+⸻
+
+What you actually want: “Model Policy” + “Resolver”
+
+You define families you want:
+	•	OpenAI: gpt-5 family → pick highest available version (today likely gpt-5.2)  ￼
+	•	Anthropic: opus → use alias that always points to newest opus (Anthropic already supports this pattern)  ￼
+	•	Gemini: gemini-3-pro (or whatever the API names it)  ￼
+	•	Grok: grok-4.1-fast (or latest in the grok-4.* line)  ￼
+
+Then at runtime:
+	1.	Resolve “latest allowed model” per provider
+	2.	Fan out calls across providers
+	3.	Merge/judge into one handoff
+
+⸻
+
+Drop-in code: model_resolver.py
+
+import os, re, time, json
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Tuple
+
+CACHE_PATH = "model_cache.json"
+CACHE_TTL_SECONDS = int(os.getenv("MODEL_CACHE_TTL_SECONDS", "21600"))  # 6 hours default
+
+@dataclass(frozen=True)
+class ResolvedModels:
+    openai: str
+    anthropic: str
+    gemini: str
+    grok: str
+
+def _load_cache() -> dict:
+    try:
+        with open(CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_cache(d: dict) -> None:
+    with open(CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+
+def _is_fresh(cache: dict, key: str) -> bool:
+    ts = cache.get(key, {}).get("ts", 0)
+    return (time.time() - ts) < CACHE_TTL_SECONDS
+
+def _semver_key(name: str) -> Tuple[int, int, int]:
+    """
+    Extracts x.y.z from strings like 'gpt-5.2' or 'claude-opus-4-6' (maps 4-6 -> 4.6.0).
+    Non-matching => (0,0,0).
+    """
+    # gpt-5.2 or gpt-5.2.1
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", name)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+    # claude-opus-4-6 style
+    m2 = re.search(r"opus-(\d+)-(\d+)(?:-(\d+))?", name)
+    if m2:
+        return (int(m2.group(1)), int(m2.group(2)), int(m2.group(3) or 0))
+    return (0, 0, 0)
+
+def pick_latest_matching(model_ids: List[str], prefix_regex: str) -> Optional[str]:
+    pat = re.compile(prefix_regex)
+    candidates = [m for m in model_ids if pat.search(m)]
+    if not candidates:
+        return None
+    candidates.sort(key=_semver_key, reverse=True)
+    return candidates[0]
+
+async def resolve_models(
+    openai_list_models,
+    anthropic_alias: Optional[str],
+    gemini_list_models,
+    grok_list_models
+) -> ResolvedModels:
+    """
+    openai_list_models: async fn -> List[str]
+    gemini_list_models: async fn -> List[str]
+    grok_list_models: async fn -> List[str]
+    anthropic_alias: if provided, use it (Anthropic aliases can track latest)  [oai_citation:8‡Claude Code](https://code.claude.com/docs/en/model-config?utm_source=chatgpt.com)
+    """
+    cache = _load_cache()
+
+    # --- OpenAI ---
+    if _is_fresh(cache, "openai"):
+        openai_model = cache["openai"]["model"]
+    else:
+        o_models = await openai_list_models()
+        # Policy: use latest gpt-5.x (today docs show gpt-5.2 exists)  [oai_citation:9‡OpenAI Developers](https://developers.openai.com/api/docs/models/gpt-5.2?utm_source=chatgpt.com)
+        openai_model = pick_latest_matching(o_models, r"^gpt-5(\.|$)") or "gpt-5.2"
+        cache["openai"] = {"ts": time.time(), "model": openai_model}
+
+    # --- Anthropic ---
+    # Best practice: use alias that always points to latest Opus if you want auto-rotate  [oai_citation:10‡Claude Code](https://code.claude.com/docs/en/model-config?utm_source=chatgpt.com)
+    anthropic_model = anthropic_alias or os.getenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-6")
+
+    # --- Gemini ---
+    if _is_fresh(cache, "gemini"):
+        gemini_model = cache["gemini"]["model"]
+    else:
+        g_models = await gemini_list_models()
+        # Policy: latest Gemini 3 Pro  [oai_citation:11‡Google AI for Developers](https://ai.google.dev/gemini-api/docs/models?utm_source=chatgpt.com)
+        gemini_model = pick_latest_matching(g_models, r"gemini.*3.*pro") or "gemini-3-pro"
+        cache["gemini"] = {"ts": time.time(), "model": gemini_model}
+
+    # --- Grok ---
+    if _is_fresh(cache, "grok"):
+        grok_model = cache["grok"]["model"]
+    else:
+        x_models = await grok_list_models()
+        # Policy: prefer Grok 4.1 Fast (agentic tool calling)  [oai_citation:12‡xAI](https://x.ai/news/grok-4-1-fast?utm_source=chatgpt.com)
+        grok_model = pick_latest_matching(x_models, r"grok.*4\.1.*fast") or "grok-4.1-fast"
+        cache["grok"] = {"ts": time.time(), "model": grok_model}
+
+    _save_cache(cache)
+
+    return ResolvedModels(
+        openai=openai_model,
+        anthropic=anthropic_model,
+        gemini=gemini_model,
+        grok=grok_model
+    )
+
+
+⸻
+
+Update your multi-provider client to use the resolver
+
+In your llm_multi.py, instead of hardcoding model names like “GPT 5.3”, do this:
+	1.	Add async list-model functions:
+
+	•	OpenAI: /v1/models via the OpenAI SDK
+	•	Gemini: genai.list_models() (or Vertex equivalent)
+	•	Grok: OpenAI-compatible /v1/models if using OpenAI SDK w/ base_url
+
+	2.	Resolve once per run (or cache TTL).
+
+Here’s the minimal patch you can apply conceptually:
+
+from model_resolver import resolve_models
+
+# inside MultiProviderLLM.__init__:
+self.anthropic_opus_alias = os.getenv("ANTHROPIC_OPUS_ALIAS", "claude-opus")  # alias tracks latest  [oai_citation:13‡Claude Code](https://code.claude.com/docs/en/model-config?utm_source=chatgpt.com)
+
+async def _openai_list(self):
+    r = await self._openai.models.list()
+    return [m.id for m in r.data]
+
+async def _grok_list(self):
+    r = await self._grok.models.list()
+    return [m.id for m in r.data]
+
+async def _gemini_list(self):
+    # google-generativeai list_models is sync; run in thread
+    ms = await asyncio.to_thread(genai.list_models)
+    return [m.name for m in ms]
+
+async def resolve(self):
+    return await resolve_models(
+        openai_list_models=self._openai_list,
+        anthropic_alias=self.anthropic_opus_alias,  # alias = auto-rotate  [oai_citation:14‡Claude Code](https://code.claude.com/docs/en/model-config?utm_source=chatgpt.com)
+        gemini_list_models=self._gemini_list,
+        grok_list_models=self._grok_list
+    )
+
+Then, before fanning out, call models = await self.resolve() and use:
+	•	models.openai
+	•	models.anthropic
+	•	models.gemini
+	•	models.grok
+
+Important: this gives you “auto-rotate to newest” without you editing code, as long as the provider exposes the new model via the models list / alias.
+
+⸻
+
+The truth bomb: “GPT-5.3 / Grok 4.1 / etc.” must be real IDs
+
+You asked for:
+	•	GPT 5.3 (not currently shown in OpenAI’s model list docs; latest shown is GPT-5.2)  ￼
+	•	Claude Opus 4.6 (real)  ￼
+	•	Gemini 3 Pro (real)  ￼
+	•	Grok 4.1 (real, specifically “Grok 4.1 Fast”)  ￼
+
+So the resolver makes your intent true: “use the newest in each family” even when the exact version changes.
+
+⸻
+
+“Use each for what they’re best at” (routing)
+
+Do this per task:
+	•	OpenAI GPT-5.x → implementation, diffs, test writing (your build engine)  ￼
+	•	Claude Opus → architecture coherence, security review, long-workflow reliability  ￼
+	•	Gemini 3 Pro → multimodal/repo-scale comprehension + broad reasoning  ￼
+	•	Grok 4.1 Fast → tool-calling / agentic execution speed  ￼
+
+You don’t need “rotate to reduce rate limiting” if you also:
+	•	cap concurrency per provider
+	•	retry with backoff
+	•	if provider fails: skip and let judge merge remaining outputs
+
+⸻
+
+One constraint you can’t hand-wave away
+
+I can’t safely help you build “agents that automatically pull secrets from 1Password and deploy to prod” without strong capability gates + least-privilege, because it’s exactly how people get breached. The design above keeps you fast and not reckless: secrets stay brokered; prod requires explicit policy allow.
+
+⸻
+
+If you paste your current llm_multi.py (or just the part where you call providers), I’ll give you a single consolidated final file with:
+	•	model-family auto-resolution (cache + TTL),
+	•	per-provider concurrency,
+	•	fanout + judge merge,
+	•	and a clean “latest-only” policy matching what you asked for.

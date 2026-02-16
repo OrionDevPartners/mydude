@@ -1,0 +1,374 @@
+You can do this cleanly by making one “MultiProvider LLM” that:
+	1.	fans out the same task to OpenAI + Anthropic + Gemini + Grok (in parallel, but rate-limited per provider)
+	2.	runs a judge/merger step to compress into a single handoff
+	3.	uses provider routing so each model is asked to do what it’s best at (and so you don’t hit one vendor’s rate limits as hard)
+
+Below is a drop-in upgrade for the scaffold I gave you: it adds multi-LLM debate + weighted consensus + per-provider concurrency caps + retries/backoff.
+
+⸻
+
+Environment variables (Replit Secrets)
+
+Add these:
+	•	OPENAI_API_KEY
+	•	ANTHROPIC_API_KEY
+	•	GEMINI_API_KEY  (Google AI Studio key)
+	•	GROK_API_KEY    (xAI key; if you don’t have it yet, leave blank and it auto-skips)
+
+Optional tuning:
+	•	OPENAI_MODEL (default gpt-4.1-mini)
+	•	ANTHROPIC_MODEL (default claude-3-5-sonnet-20241022)
+	•	GEMINI_MODEL (default gemini-2.0-flash)
+	•	GROK_MODEL (default grok-2-latest)
+	•	PROVIDER_BUDGET_TOKENS (default 1200)
+	•	OPENAI_CONCURRENCY (default 4)
+	•	ANTHROPIC_CONCURRENCY (default 3)
+	•	GEMINI_CONCURRENCY (default 3)
+	•	GROK_CONCURRENCY (default 3)
+
+⸻
+
+Install packages (Replit “Packages”)
+	•	openai
+	•	anthropic
+	•	google-generativeai
+	•	(optional) httpx (nice for custom calls; not required)
+
+⸻
+
+Drop-in file: llm_multi.py
+
+Create a new file llm_multi.py:
+
+import os
+import asyncio
+import random
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, List, Tuple
+
+# --- Optional deps (install via Replit Packages) ---
+# openai
+# anthropic
+# google-generativeai
+try:
+    from openai import AsyncOpenAI
+except Exception:
+    AsyncOpenAI = None
+
+try:
+    import anthropic
+except Exception:
+    anthropic = None
+
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
+
+
+@dataclass
+class ProviderReply:
+    provider: str
+    model: str
+    text: str
+    ok: bool
+    error: Optional[str] = None
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+class RateLimiter:
+    """Per-provider concurrency caps (simple + effective)."""
+    def __init__(self):
+        self.sems = {
+            "openai": asyncio.Semaphore(_env_int("OPENAI_CONCURRENCY", 4)),
+            "anthropic": asyncio.Semaphore(_env_int("ANTHROPIC_CONCURRENCY", 3)),
+            "gemini": asyncio.Semaphore(_env_int("GEMINI_CONCURRENCY", 3)),
+            "grok": asyncio.Semaphore(_env_int("GROK_CONCURRENCY", 3)),
+        }
+
+    def sem(self, provider: str) -> asyncio.Semaphore:
+        return self.sems[provider]
+
+
+async def _backoff_retry(fn, max_tries=4):
+    base = 0.6
+    for attempt in range(max_tries):
+        try:
+            return await fn()
+        except Exception as e:
+            if attempt == max_tries - 1:
+                raise
+            # jittered exponential backoff
+            await asyncio.sleep((base * (2 ** attempt)) + random.random() * 0.25)
+
+
+class MultiProviderLLM:
+    """
+    Fans out to multiple providers in parallel, then merges with a judge step.
+    - Reduces single-vendor rate limiting
+    - Produces a stronger, more stable answer
+    """
+    def __init__(self):
+        self.limiter = RateLimiter()
+
+        self.openai_key = os.getenv("OPENAI_API_KEY")
+        self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        self.gemini_key = os.getenv("GEMINI_API_KEY")
+        self.grok_key = os.getenv("GROK_API_KEY")
+
+        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+        self.anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        self.grok_model = os.getenv("GROK_MODEL", "grok-2-latest")
+
+        self.budget_tokens = _env_int("PROVIDER_BUDGET_TOKENS", 1200)
+
+        self._openai = AsyncOpenAI(api_key=self.openai_key) if (AsyncOpenAI and self.openai_key) else None
+        self._anthropic = anthropic.AsyncAnthropic(api_key=self.anthropic_key) if (anthropic and self.anthropic_key) else None
+
+        if genai and self.gemini_key:
+            genai.configure(api_key=self.gemini_key)
+
+        # NOTE: Grok/xAI has an OpenAI-compatible API in many setups, but endpoints vary.
+        # We'll support it via OpenAI-compatible client if you set GROK_BASE_URL.
+        self.grok_base_url = os.getenv("GROK_BASE_URL")  # e.g. https://api.x.ai/v1 (example)
+        self._grok = AsyncOpenAI(api_key=self.grok_key, base_url=self.grok_base_url) if (AsyncOpenAI and self.grok_key and self.grok_base_url) else None
+
+    def available(self) -> Dict[str, bool]:
+        return {
+            "openai": bool(self._openai),
+            "anthropic": bool(self._anthropic),
+            "gemini": bool(genai and self.gemini_key),
+            "grok": bool(self._grok),
+        }
+
+    async def call_team(
+        self,
+        system: str,
+        user: str,
+        roles_hint: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """
+        roles_hint: optional per-provider specialization instruction.
+        Example:
+          {"openai":"implement code", "anthropic":"review/security", "gemini":"edge-cases", "grok":"creative alternatives"}
+        """
+        roles_hint = roles_hint or {}
+
+        replies = await self._fanout(system, user, roles_hint)
+        merged = await self._judge_merge(system, user, replies)
+        return {"replies": replies, "merged": merged}
+
+    async def _fanout(self, system: str, user: str, roles_hint: Dict[str, str]) -> List[ProviderReply]:
+        tasks = []
+        if self._openai:
+            tasks.append(self._call_openai(system, user, roles_hint.get("openai")))
+        if self._anthropic:
+            tasks.append(self._call_anthropic(system, user, roles_hint.get("anthropic")))
+        if genai and self.gemini_key:
+            tasks.append(self._call_gemini(system, user, roles_hint.get("gemini")))
+        if self._grok:
+            tasks.append(self._call_grok(system, user, roles_hint.get("grok")))
+
+        if not tasks:
+            return [ProviderReply("none", "none", "No providers configured. Add API keys.", False, "no_providers")]
+
+        return await asyncio.gather(*tasks)
+
+    async def _call_openai(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
+        async with self.limiter.sem("openai"):
+            async def run():
+                msg = user if not hint else f"[Specialization: {hint}]\n{user}"
+                r = await self._openai.chat.completions.create(
+                    model=self.openai_model,
+                    messages=[{"role": "system", "content": system}, {"role": "user", "content": msg}],
+                    max_tokens=self.budget_tokens,
+                )
+                return r.choices[0].message.content or ""
+            try:
+                text = await _backoff_retry(run)
+                return ProviderReply("openai", self.openai_model, text, True)
+            except Exception as e:
+                return ProviderReply("openai", self.openai_model, "", False, str(e))
+
+    async def _call_anthropic(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
+        async with self.limiter.sem("anthropic"):
+            async def run():
+                msg = user if not hint else f"[Specialization: {hint}]\n{user}"
+                r = await self._anthropic.messages.create(
+                    model=self.anthropic_model,
+                    max_tokens=self.budget_tokens,
+                    system=system,
+                    messages=[{"role": "user", "content": msg}],
+                )
+                # Anthropic returns a list of content blocks
+                parts = []
+                for b in r.content:
+                    if getattr(b, "type", None) == "text":
+                        parts.append(b.text)
+                return "\n".join(parts).strip()
+            try:
+                text = await _backoff_retry(run)
+                return ProviderReply("anthropic", self.anthropic_model, text, True)
+            except Exception as e:
+                return ProviderReply("anthropic", self.anthropic_model, "", False, str(e))
+
+    async def _call_gemini(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
+        async with self.limiter.sem("gemini"):
+            async def run():
+                msg = user if not hint else f"[Specialization: {hint}]\n{user}"
+                model = genai.GenerativeModel(self.gemini_model, system_instruction=system)
+                r = await asyncio.to_thread(model.generate_content, msg)
+                return (getattr(r, "text", "") or "").strip()
+            try:
+                text = await _backoff_retry(run)
+                return ProviderReply("gemini", self.gemini_model, text, True)
+            except Exception as e:
+                return ProviderReply("gemini", self.gemini_model, "", False, str(e))
+
+    async def _call_grok(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
+        async with self.limiter.sem("grok"):
+            async def run():
+                msg = user if not hint else f"[Specialization: {hint}]\n{user}"
+                r = await self._grok.chat.completions.create(
+                    model=self.grok_model,
+                    messages=[{"role": "system", "content": system}, {"role": "user", "content": msg}],
+                    max_tokens=self.budget_tokens,
+                )
+                return r.choices[0].message.content or ""
+            try:
+                text = await _backoff_retry(run)
+                return ProviderReply("grok", self.grok_model, text, True)
+            except Exception as e:
+                return ProviderReply("grok", self.grok_model, "", False, str(e))
+
+    async def _judge_merge(self, system: str, user: str, replies: List[ProviderReply]) -> str:
+        """
+        Judge step: pick one stable judge model (OpenAI by default if available),
+        and ask it to merge into the required schema. If OpenAI not available, fallback to Anthropic.
+        """
+        # Build a compact debate transcript
+        chunks = []
+        for r in replies:
+            status = "OK" if r.ok else f"ERR({r.error})"
+            chunks.append(f"### {r.provider}/{r.model} [{status}]\n{r.text[:6000]}")
+        debate = "\n\n".join(chunks)
+
+        judge_prompt = f"""
+You are the MERGER/JUDGE.
+
+Goal:
+Synthesize the providers' outputs into one best answer with:
+- high correctness
+- strong security posture
+- concrete, actionable steps
+- minimal token bloat
+
+Return ONLY the final consolidated worker-format response:
+RESULT:
+ARTIFACTS:
+CHECKS:
+RISKS:
+CAPABILITIES:
+COMPRESSED_HANDOFF:
+
+User request:
+{user}
+
+Providers' outputs:
+{debate}
+""".strip()
+
+        # Prefer OpenAI as judge if configured
+        if self._openai:
+            r = await self._openai.chat.completions.create(
+                model=self.openai_model,
+                messages=[{"role":"system","content":system}, {"role":"user","content":judge_prompt}],
+                max_tokens=self.budget_tokens,
+            )
+            return r.choices[0].message.content or ""
+
+        if self._anthropic:
+            r = await self._anthropic.messages.create(
+                model=self.anthropic_model,
+                max_tokens=self.budget_tokens,
+                system=system,
+                messages=[{"role":"user","content":judge_prompt}],
+            )
+            parts = []
+            for b in r.content:
+                if getattr(b, "type", None) == "text":
+                    parts.append(b.text)
+            return "\n".join(parts).strip()
+
+        # Last resort: return concatenation
+        return debate[:7000]
+
+
+⸻
+
+Replace your stub LLM in swarm.py
+
+In your swarm.py, replace the current LLM class with this version that uses the team:
+
+from llm_multi import MultiProviderLLM
+
+class LLM:
+    def __init__(self):
+        self.team = MultiProviderLLM()
+
+    async def call(self, system: str, user: str) -> str:
+        # Specialize by wave/role later; this baseline already reduces rate limiting by load spreading.
+        roles_hint = {
+            "openai": "Implementation + patches + practical code changes",
+            "anthropic": "Security review + architecture coherence + failure modes",
+            "gemini": "Edge cases + alternative approaches + high recall brainstorming",
+            "grok": "Creative solutions + unusual optimizations + growth/monetization angles",
+        }
+        out = await self.team.call_team(system, user, roles_hint=roles_hint)
+        # Return the merged judge response in the worker schema
+        return out["merged"]
+
+That’s it: now every agent call becomes a team call with a merged output, and your waves stay coherent because the merger outputs a single compressed handoff.
+
+⸻
+
+Grok note (so you don’t get stuck)
+
+Grok/xAI API endpoints can vary. This implementation expects you to set:
+	•	GROK_BASE_URL to the OpenAI-compatible base URL your key supports.
+
+If you don’t have that yet, Grok will be skipped automatically and the other three providers still work.
+
+⸻
+
+How this reduces rate limiting (in practice)
+	•	Each “agent” call is fanned out, BUT per-provider concurrency is capped.
+	•	If OpenAI is rate-limited, Anthropic/Gemini/Grok still run, and the judge merges what succeeded.
+	•	You can go further by making it adaptive:
+	•	if OpenAI errors → reroute judge to Anthropic
+	•	if Gemini errors → don’t retry Gemini for that run
+	•	keep rolling counters per provider
+
+(If you want, I can add an adaptive “health score” router in ~30 lines.)
+
+⸻
+
+One more guardrail you should keep
+
+Even with multi-provider swarms: do not let workers touch secrets or prod deploy directly.
+	•	Workers ask: CAPABILITIES: terraform_plan {"env":"staging"}
+	•	Broker does it, logs it, returns safe output
+	•	Apply requires: {"has_plan": true, "env":"prod"} AND policy allow
+
+That’s how you scale fast without turning AWS into a crater.
+
+⸻
+
+If you paste what you’re using for Grok (base URL format), I’ll tailor the Grok adapter to match exactly and add an adaptive provider router (auto-spreads load by failure rate + latency) so the swarm gets smoother under heavy parallel usage.
