@@ -12,6 +12,11 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
+        from src.op_secrets import load_secrets_from_1password
+        loaded = load_secrets_from_1password()
+        if loaded:
+            print(f"Loaded {len(loaded)} secret(s) from 1Password: {', '.join(loaded.keys())}")
+
         from src.bot import run_bot
         run_bot()
     except ValueError as e:
