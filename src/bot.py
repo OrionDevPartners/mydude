@@ -2,7 +2,7 @@ import os
 import logging
 from telegram.ext import ApplicationBuilder
 from src.database import init_db
-from src.handlers import help, shell, tasks, notes, git
+from src.handlers import help, shell, tasks, notes, git, swarm
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -26,7 +26,7 @@ def run_bot():
     logger.info("Building bot application...")
     app = ApplicationBuilder().token(token).build()
 
-    for module in [help, shell, tasks, notes, git]:
+    for module in [help, shell, tasks, notes, git, swarm]:
         for handler in module.get_handlers():
             app.add_handler(handler)
 

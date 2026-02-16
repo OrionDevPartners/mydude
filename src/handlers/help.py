@@ -37,7 +37,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📋 *Tasks* - Track your to-dos\n"
             "📝 *Notes* - Save quick notes\n"
             "🖥️ *Shell* - Run commands on the Replit server\n"
-            "🔀 *Git* - Manage your repository\n\n"
+            "🔀 *Git* - Manage your repository\n"
+            "🤖 *Swarm* - Porter waves multi-agent orchestration\n\n"
             "Use /help to see all available commands.\n"
             "Use /authorize <password> to unlock shell and git commands."
         )
@@ -74,7 +75,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/gitdiff - Show diff\n"
             "/gitcommit <msg> - Add all & commit\n"
             "/gitpull - Pull changes\n"
-            "/gitpush - Push changes"
+            "/gitpush - Push changes\n\n"
+            "*Swarm (authorized only)*\n"
+            "/goal <objective> - Launch Porter swarm\n"
+            "/waves - Swarm status & config\n"
+            "/policy - View/toggle production policy"
         )
         await update.message.reply_text(help_text, parse_mode="Markdown")
     except Exception as e:

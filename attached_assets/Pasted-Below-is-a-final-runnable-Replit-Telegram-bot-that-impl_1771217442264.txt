@@ -1,0 +1,688 @@
+Below is a final, runnable Replit Telegram bot that implements your “Porter waves” swarm with real guardrails:
+	•	Wave orchestration (cascading waves, compression handoffs)
+	•	100+ “virtual agents” with bounded concurrency
+	•	Capability Broker (agents request actions; broker enforces policy)
+	•	Git/Terraform/Asana/1Password are integrated as interfaces with safe “no-direct-secrets” defaults
+	•	Works today on Replit via polling.
+	•	You can plug in your LLM provider (OpenAI/Anthropic/etc.) in one function.
+
+It’s intentionally built so the “god mode” is real and doesn’t turn into “oops we leaked the vault / nuked prod”.
+
+⸻
+
+1) GOD MODE PROMPTS (Porter + Subagent)
+
+Put these in prompts.py (included below). Use them as system prompts for your orchestrator + workers.
+
+PORTER_SYSTEM_PROMPT (the orchestrator):
+
+You are PORTER, the orchestration mind of a multi-agent coding swarm operating across multiple repos and environments.
+
+Mission:
+Convert the user’s goal into a correct, testable, secure implementation and deployment plan, then execute via controlled capabilities.
+
+Non-negotiables:
+- No raw secrets exposure. Agents request capabilities; a broker performs privileged actions.
+- No direct production changes without policy gates: plan → review → apply.
+- Evidence-first: use repo contents, diffs, tests, logs, Terraform plans, CI results, and task trackers.
+- Always compress and hand off state between waves; avoid token bloat.
+
+Cascading Waves:
+Wave 0 (Route+Clarify): identify projects/repos, constraints, success criteria, required permissions.
+Wave 1 (Plan): architecture + task graph + acceptance criteria + risk.
+Wave 2 (Build): implement diffs + tests; create branches + PRs.
+Wave 3 (Verify+Ship): run checks; Terraform plan; staged deploy; smoke tests; rollback plan.
+Wave 4 (Scale+Monetize): instrumentation, KPIs, cost controls, growth loops.
+
+Output format (always):
+PORTER_STATE:
+- GOAL: (1–2 lines)
+- FACTS: (bullet facts only)
+- DECISIONS: (bullet)
+- TASK_GRAPH: (atomic tasks, with owners/roles)
+- RISKS: (top 5)
+- CAPABILITY_REQUESTS: (exact privileged actions needed)
+- NEXT_WAVE_HANDOFF: (compressed JSON <= 1500 chars)
+- USER_OUTPUT: (concise summary + next commands)
+
+WORKER_SYSTEM_PROMPT (each agent):
+
+You are a specialized software agent in a coordinated swarm.
+
+You receive: GOAL, FACTS, TASK, CONSTRAINTS, HANDOFF_SCHEMA.
+You must return:
+- RESULT: what you produced
+- ARTIFACTS: diffs/commands/files (patch-style when possible)
+- CHECKS: tests/lints/plans you ran or propose to run
+- RISKS: any hazards/unknowns
+- COMPRESSED_HANDOFF: JSON <= 1200 chars with fields:
+  goal,facts,decisions,tasks,risks,next
+
+Rules:
+- Do not request raw secrets. Request capabilities (e.g., “deploy_staging”, “read_github_repo”, “terraform_plan”).
+- Prefer small mergeable changes with a clear test path.
+- If uncertain, propose a verification step (read file, run test, inspect plan).
+
+
+⸻
+
+2) FINAL CODE (Replit-ready)
+
+Replit setup
+	1.	Create a Python Repl.
+	2.	Add Replit Secrets:
+
+	•	TELEGRAM_BOT_TOKEN = token from BotFather
+	•	Optional:
+	•	WAVE_CONCURRENCY (default 12)
+	•	AGENTS_PER_WAVE (default 60)
+	•	MAX_WAVES (default 4)
+	•	LLM_PROVIDER (default “stub”)
+	•	Provider keys if you wire them (e.g., OPENAI_API_KEY)
+
+	3.	Add package: python-telegram-bot==21.*
+
+⸻
+
+File tree
+
+Create these files:
+
+main.py
+prompts.py
+swarm.py
+broker.py
+integrations.py
+policy.py
+utils.py
+
+
+⸻
+
+prompts.py
+
+PORTER_SYSTEM_PROMPT = """You are PORTER, the orchestration mind of a multi-agent coding swarm operating across multiple repos and environments.
+
+Mission:
+Convert the user’s goal into a correct, testable, secure implementation and deployment plan, then execute via controlled capabilities.
+
+Non-negotiables:
+- No raw secrets exposure. Agents request capabilities; a broker performs privileged actions.
+- No direct production changes without policy gates: plan → review → apply.
+- Evidence-first: use repo contents, diffs, tests, logs, Terraform plans, CI results, and task trackers.
+- Always compress and hand off state between waves; avoid token bloat.
+
+Cascading Waves:
+Wave 0 (Route+Clarify): identify projects/repos, constraints, success criteria, required permissions.
+Wave 1 (Plan): architecture + task graph + acceptance criteria + risk.
+Wave 2 (Build): implement diffs + tests; create branches + PRs.
+Wave 3 (Verify+Ship): run checks; Terraform plan; staged deploy; smoke tests; rollback plan.
+Wave 4 (Scale+Monetize): instrumentation, KPIs, cost controls, growth loops.
+
+Output format (always):
+PORTER_STATE:
+- GOAL: (1–2 lines)
+- FACTS: (bullet facts only)
+- DECISIONS: (bullet)
+- TASK_GRAPH: (atomic tasks, with owners/roles)
+- RISKS: (top 5)
+- CAPABILITY_REQUESTS: (exact privileged actions needed)
+- NEXT_WAVE_HANDOFF: (compressed JSON <= 1500 chars)
+- USER_OUTPUT: (concise summary + next commands)
+"""
+
+WORKER_SYSTEM_PROMPT = """You are a specialized software agent in a coordinated swarm.
+
+You receive: GOAL, FACTS, TASK, CONSTRAINTS, HANDOFF_SCHEMA.
+You must return:
+- RESULT: what you produced
+- ARTIFACTS: diffs/commands/files (patch-style when possible)
+- CHECKS: tests/lints/plans you ran or propose to run
+- RISKS: any hazards/unknowns
+- COMPRESSED_HANDOFF: JSON <= 1200 chars with fields:
+  goal,facts,decisions,tasks,risks,next
+
+Rules:
+- Do not request raw secrets. Request capabilities (e.g., “deploy_staging”, “read_github_repo”, “terraform_plan”).
+- Prefer small mergeable changes with a clear test path.
+- If uncertain, propose a verification step (read file, run test, inspect plan).
+"""
+
+
+⸻
+
+policy.py
+
+from dataclasses import dataclass
+from typing import Dict, Any
+
+@dataclass
+class PolicyDecision:
+    allowed: bool
+    reason: str
+
+class PolicyEngine:
+    """
+    Minimal policy engine.
+    Upgrade later to OPA/Cedar, but this is enough to enforce:
+    - no prod without explicit allow flag
+    - no raw secrets
+    - terraform apply requires plan first
+    """
+    def __init__(self):
+        self.allow_prod = False  # set True only when you explicitly want it
+
+    def evaluate(self, capability: str, params: Dict[str, Any]) -> PolicyDecision:
+        if capability in ("read_secret_raw", "dump_vault", "export_all_secrets"):
+            return PolicyDecision(False, "Raw secret export is forbidden.")
+
+        env = params.get("env")
+        if env == "prod" and not self.allow_prod:
+            return PolicyDecision(False, "Production actions are blocked by policy.")
+
+        if capability == "terraform_apply" and not params.get("has_plan"):
+            return PolicyDecision(False, "terraform_apply requires a prior terraform_plan.")
+
+        return PolicyDecision(True, "Allowed by policy.")
+
+
+⸻
+
+broker.py
+
+from dataclasses import dataclass
+from typing import Dict, Any, Optional
+
+from policy import PolicyEngine, PolicyDecision
+
+@dataclass
+class BrokerResult:
+    ok: bool
+    decision: PolicyDecision
+    output: Optional[str] = None
+
+class CapabilityBroker:
+    """
+    Only component allowed to touch privileged operations.
+    Agents request capabilities; broker enforces policy and executes integrations.
+    """
+    def __init__(self, policy: PolicyEngine, integrations: "Integrations"):
+        self.policy = policy
+        self.integrations = integrations
+
+    async def request(self, capability: str, params: Dict[str, Any]) -> BrokerResult:
+        decision = self.policy.evaluate(capability, params)
+        if not decision.allowed:
+            return BrokerResult(False, decision, None)
+
+        # Route to integrations. These are safe placeholders until you wire credentials.
+        if capability == "git_status":
+            out = await self.integrations.git_status(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "terraform_plan":
+            out = await self.integrations.terraform_plan(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "terraform_apply":
+            out = await self.integrations.terraform_apply(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "asana_query":
+            out = await self.integrations.asana_query(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "op_read_scoped":
+            # Returns masked/scoped info by default (NOT raw secrets unless you explicitly implement it).
+            out = await self.integrations.op_read_scoped(params)
+            return BrokerResult(True, decision, out)
+
+        return BrokerResult(True, decision, f"Capability executed (stub): {capability} {params}")
+
+
+⸻
+
+integrations.py
+
+import asyncio
+import subprocess
+from typing import Dict, Any
+
+class Integrations:
+    """
+    Safe-by-default integration layer.
+
+    IMPORTANT:
+    - Do NOT wire raw secret access into workers.
+    - Prefer: broker executes privileged operations and returns non-sensitive outputs.
+    """
+
+    async def git_status(self, params: Dict[str, Any]) -> str:
+        # This runs in the Replit filesystem. If your repo is in the Repl, git works.
+        return await _run_cmd("git status --porcelain=v1 -b")
+
+    async def terraform_plan(self, params: Dict[str, Any]) -> str:
+        # Safe stub; wire real terraform later. Keep env separation.
+        env = params.get("env", "dev")
+        # Example: terraform -chdir=infra plan -var-file=environments/dev.tfvars
+        return f"[STUB] terraform_plan for env={env}. Wire terraform CLI + remote state."
+
+    async def terraform_apply(self, params: Dict[str, Any]) -> str:
+        env = params.get("env", "dev")
+        return f"[STUB] terraform_apply for env={env}. Blocked unless policy allows + has_plan=True."
+
+    async def asana_query(self, params: Dict[str, Any]) -> str:
+        # Wire Asana API later via broker-only.
+        return "[STUB] asana_query. Wire Asana PAT/OAuth in broker env; return task graph summaries."
+
+    async def op_read_scoped(self, params: Dict[str, Any]) -> str:
+        """
+        Safe pattern:
+        - Return masked/metadata only.
+        - Or broker uses secret internally to perform an action and returns result.
+        """
+        item = params.get("item", "unknown")
+        return f"[STUB] 1Password scoped read for item={item} (no raw secret returned)."
+
+async def _run_cmd(cmd: str) -> str:
+    # Run shell commands safely. Upgrade to structured execution later.
+    def run():
+        try:
+            p = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
+            out = (p.stdout or "") + (p.stderr or "")
+            return out.strip()[:4000]
+        except Exception as e:
+            return f"Command failed: {type(e).__name__}: {e}"
+
+    return await asyncio.to_thread(run)
+
+
+⸻
+
+utils.py
+
+import json
+from dataclasses import asdict
+from typing import Any, Dict
+
+def safe_json_dumps(obj: Any, limit: int = 3500) -> str:
+    s = json.dumps(obj, ensure_ascii=False, indent=2)
+    return s[:limit]
+
+def clamp_list(xs, n: int):
+    return xs[:n] if xs else []
+
+
+⸻
+
+swarm.py
+
+import os
+import asyncio
+import json
+import re
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
+from prompts import PORTER_SYSTEM_PROMPT, WORKER_SYSTEM_PROMPT
+from utils import safe_json_dumps, clamp_list
+from broker import CapabilityBroker
+
+WAVE_CONCURRENCY = int(os.getenv("WAVE_CONCURRENCY", "12"))
+AGENTS_PER_WAVE = int(os.getenv("AGENTS_PER_WAVE", "60"))  # “100+” virtual is fine; bounded concurrency does the real work
+MAX_WAVES = int(os.getenv("MAX_WAVES", "4"))
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "stub")
+
+
+@dataclass
+class Handoff:
+    goal: str
+    facts: List[str]
+    decisions: List[str]
+    tasks: List[str]
+    risks: List[str]
+    next: List[str]
+
+    def compress_json(self, limit: int = 1500) -> str:
+        payload = {
+            "goal": self.goal,
+            "facts": clamp_list(self.facts, 10),
+            "decisions": clamp_list(self.decisions, 8),
+            "tasks": clamp_list(self.tasks, 12),
+            "risks": clamp_list(self.risks, 6),
+            "next": clamp_list(self.next, 10),
+        }
+        s = json.dumps(payload, ensure_ascii=False)
+        return s[:limit]
+
+
+@dataclass
+class AgentResult:
+    agent: str
+    wave: int
+    result: str
+    artifacts: List[str]
+    checks: List[str]
+    risks: List[str]
+    handoff_json: str
+    capability_requests: List[Tuple[str, Dict[str, Any]]]
+
+
+class LLM:
+    """
+    Plug your real provider in call().
+    Keep the interface identical so orchestration logic stays stable.
+    """
+    async def call(self, system: str, user: str) -> str:
+        if LLM_PROVIDER == "stub":
+            await asyncio.sleep(0.02)
+            return (
+                "RESULT: Stub output. Wire LLM_PROVIDER.\n"
+                "ARTIFACTS: \n"
+                "CHECKS: \n"
+                "RISKS: rate limits; missing repo context\n"
+                "CAPABILITIES: git_status {}\n"
+                "COMPRESSED_HANDOFF: {\"goal\":\"\",\"facts\":[],\"decisions\":[],\"tasks\":[],\"risks\":[],\"next\":[]}"
+            )
+        # TODO: Implement your provider here (OpenAI/Anthropic/etc.)
+        # Keep it broker-safe: do not pass secrets; pass repo facts + diffs + tasks.
+        raise RuntimeError("LLM_PROVIDER is not implemented. Set LLM_PROVIDER=stub or implement provider in swarm.py.")
+
+
+class WaveOrchestrator:
+    def __init__(self, broker: CapabilityBroker):
+        self.broker = broker
+        self.llm = LLM()
+        self.sem = asyncio.Semaphore(WAVE_CONCURRENCY)
+
+    async def run(self, goal: str) -> Dict[str, Any]:
+        # Seed handoff
+        handoff = Handoff(
+            goal=goal.strip(),
+            facts=[
+                "Runtime: Telegram bot on Replit (polling).",
+                "Guardrails: brokered capabilities; policy gates; no raw secrets.",
+                "Target: multi-project swarm; git + terraform + asana + 1Password patterns."
+            ],
+            decisions=[
+                "Use Porter waves + compression to prevent token blowup.",
+                "Bound concurrency; simulate 100+ agents via queued microtasks."
+            ],
+            tasks=[
+                "Wave 0: route + clarify + enumerate impacted repos/environments",
+                "Wave 1: architecture + task graph",
+                "Wave 2: code diffs + tests + PR plan",
+                "Wave 3: verify + terraform plan + staged deploy"
+            ],
+            risks=[],
+            next=[]
+        )
+
+        all_caps: List[Tuple[str, Dict[str, Any], str]] = []
+
+        for w in range(MAX_WAVES):
+            wave_results = await self._run_wave(w, handoff)
+            handoff = self._merge(handoff, wave_results)
+
+            # Execute broker-approved capabilities requested by agents (safe subset)
+            for r in wave_results:
+                for cap, params in r.capability_requests:
+                    br = await self.broker.request(cap, params)
+                    all_caps.append((cap, params, (br.output or br.decision.reason)))
+
+                    # Add outputs as facts (trimmed) so next wave is evidence-grounded
+                    if br.output:
+                        handoff.facts.append(f"[cap:{cap}] {br.output[:200]}")
+
+        final = {
+            "GOAL": handoff.goal,
+            "FACTS": clamp_list(handoff.facts, 10),
+            "DECISIONS": clamp_list(handoff.decisions, 10),
+            "NEXT_TASKS": clamp_list(handoff.tasks, 12),
+            "RISKS": clamp_list(handoff.risks, 6),
+            "NEXT_NEEDS": clamp_list(handoff.next, 10),
+            "CAPABILITY_LOG": [
+                {"capability": c, "params": p, "output": o[:300]}
+                for (c, p, o) in all_caps[:25]
+            ],
+            "NOTE": (
+                "This is the governed swarm scaffold. To unlock real coding power: "
+                "wire LLM.call() to your provider, and add repo grounding (read files, run tests) "
+                "plus CI-based terraform plan/apply."
+            )
+        }
+        return final
+
+    async def _run_wave(self, wave_idx: int, handoff: Handoff) -> List[AgentResult]:
+        jobs = self._build_jobs(wave_idx, handoff.goal)
+        results: List[AgentResult] = []
+
+        async def run_one(i: int, job: Dict[str, str]):
+            async with self.sem:
+                user_prompt = self._worker_prompt(wave_idx, i, job, handoff)
+                text = await self.llm.call(WORKER_SYSTEM_PROMPT, user_prompt)
+                parsed = self._parse_worker(text)
+                results.append(parsed._replace(agent=f"W{wave_idx}-A{i}-{job['role']}", wave=wave_idx))
+
+        await asyncio.gather(*(run_one(i, j) for i, j in enumerate(jobs)))
+        return results
+
+    def _build_jobs(self, wave_idx: int, goal: str) -> List[Dict[str, str]]:
+        # Different focus per wave
+        if wave_idx == 0:
+            roles = ["Router", "Requirements Analyst", "Repo Scout", "Asana Planner", "Risk Analyst"]
+        elif wave_idx == 1:
+            roles = ["Architecture Lead", "API Designer", "Data Modeler", "DevOps Planner", "Security Reviewer"]
+        elif wave_idx == 2:
+            roles = ["Backend Builder", "Infra Builder", "Test Engineer", "Refactor Specialist", "PR Curator"]
+        else:
+            roles = ["Release Captain", "SRE Reviewer", "Terraform Planner", "Cost Engineer", "Monetization Strategist"]
+
+        jobs = []
+        for i in range(AGENTS_PER_WAVE):
+            role = roles[i % len(roles)]
+            jobs.append({
+                "role": role,
+                "task": f"[Wave {wave_idx}] As {role}, produce mergeable outputs for: {goal}. "
+                        f"Request broker capabilities rather than secrets. Provide checks and compressed handoff."
+            })
+        return jobs
+
+    def _worker_prompt(self, wave: int, idx: int, job: Dict[str, str], handoff: Handoff) -> str:
+        return (
+            f"GOAL: {handoff.goal}\n"
+            f"WAVE: {wave}\n"
+            f"AGENT_INDEX: {idx}\n"
+            f"FACTS: {handoff.facts}\n"
+            f"DECISIONS: {handoff.decisions}\n"
+            f"TASK: {job['task']}\n"
+            f"CONSTRAINTS: No raw secrets; request capabilities; small diffs; clear checks.\n"
+            f"HANDOFF_SCHEMA: goal,facts,decisions,tasks,risks,next\n"
+        )
+
+    def _parse_worker(self, text: str) -> AgentResult:
+        def grab(label: str) -> str:
+            m = re.search(rf"{label}\s*:\s*(.*)", text)
+            return m.group(1).strip() if m else ""
+
+        result = grab("RESULT") or text[:300]
+        artifacts = [x.strip() for x in grab("ARTIFACTS").split(";") if x.strip()] if grab("ARTIFACTS") else []
+        checks = [x.strip() for x in grab("CHECKS").split(";") if x.strip()] if grab("CHECKS") else []
+        risks = [x.strip() for x in grab("RISKS").split(";") if x.strip()] if grab("RISKS") else []
+        handoff_json = grab("COMPRESSED_HANDOFF") or "{}"
+
+        # Capabilities format: "CAPABILITIES: cap1 {json} ; cap2 {json}"
+        capline = grab("CAPABILITIES")
+        caps: List[Tuple[str, Dict[str, Any]]] = []
+        if capline:
+            parts = [p.strip() for p in capline.split(";") if p.strip()]
+            for p in parts:
+                # e.g. "git_status {}"
+                try:
+                    cap, j = p.split(" ", 1)
+                    params = json.loads(j.strip())
+                    caps.append((cap.strip(), params))
+                except Exception:
+                    # ignore malformed
+                    pass
+
+        # Use a lightweight trick to “mutate” named fields without importing replace
+        ar = AgentResult(agent="AGENT", wave=0, result=result, artifacts=artifacts, checks=checks,
+                         risks=risks, handoff_json=handoff_json, capability_requests=caps)
+        # monkey: create a simple _replace
+        ar._replace = lambda **kw: AgentResult(
+            agent=kw.get("agent", ar.agent),
+            wave=kw.get("wave", ar.wave),
+            result=kw.get("result", ar.result),
+            artifacts=kw.get("artifacts", ar.artifacts),
+            checks=kw.get("checks", ar.checks),
+            risks=kw.get("risks", ar.risks),
+            handoff_json=kw.get("handoff_json", ar.handoff_json),
+            capability_requests=kw.get("capability_requests", ar.capability_requests),
+        )
+        return ar
+
+    def _merge(self, prev: Handoff, results: List[AgentResult]) -> Handoff:
+        facts = prev.facts[:]
+        decisions = prev.decisions[:]
+        tasks = prev.tasks[:]
+        risks = prev.risks[:]
+        nxt = prev.next[:]
+
+        # Merge best-effort (judge model can replace this later)
+        for r in results[:25]:
+            if r.result and len(facts) < 25:
+                facts.append(f"{r.agent}: {r.result[:140]}")
+            for a in r.artifacts[:2]:
+                if len(tasks) < 35:
+                    tasks.append(f"{r.agent} artifact: {a[:180]}")
+            for c in r.checks[:2]:
+                if len(decisions) < 20:
+                    decisions.append(f"{r.agent} check: {c[:180]}")
+            for rr in r.risks[:1]:
+                if len(risks) < 10:
+                    risks.append(f"{r.agent} risk: {rr[:180]}")
+
+        if not risks:
+            risks = [
+                "Parallel LLM calls can hit rate limits; keep bounded concurrency + backoff.",
+                "Without repo grounding (file reads/tests), agents may drift from reality.",
+                "Terraform apply must be gated by plan + policy + environment."
+            ]
+
+        if not nxt:
+            nxt = [
+                "Wire LLM provider in LLM.call().",
+                "Add repo grounding: read file tree + open key files + run tests.",
+                "Move terraform to CI with remote state; broker triggers plan/apply pipelines.",
+                "Wire 1Password Connect (broker only) and never return raw secrets to agents.",
+                "Wire Asana ingestion → task graph → updates back via broker."
+            ]
+
+        return Handoff(
+            goal=prev.goal,
+            facts=facts[:30],
+            decisions=decisions[:22],
+            tasks=tasks[:40],
+            risks=risks[:10],
+            next=nxt[:15]
+        )
+
+
+⸻
+
+main.py
+
+import os
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+from policy import PolicyEngine
+from integrations import Integrations
+from broker import CapabilityBroker
+from swarm import WaveOrchestrator
+from utils import safe_json_dumps
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_MAX = 3500
+
+
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "PORTER swarm online.\n"
+        "Commands:\n"
+        "  /swarm <goal>\n"
+        "Example:\n"
+        "  /swarm Add CI that runs tests and terraform plan for staging, then deploy."
+    )
+
+async def swarm_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    goal = " ".join(context.args).strip()
+    if not goal:
+        await update.message.reply_text("Usage: /swarm <what you want done>")
+        return
+
+    await update.message.reply_text("Launching cascading waves (bounded concurrency + brokered capabilities)…")
+
+    policy = PolicyEngine()
+    integrations = Integrations()
+    broker = CapabilityBroker(policy, integrations)
+    porter = WaveOrchestrator(broker)
+
+    try:
+        final = await porter.run(goal)
+        text = safe_json_dumps(final, limit=TELEGRAM_MAX)
+        await update.message.reply_text(text)
+    except Exception as e:
+        await update.message.reply_text(f"Swarm error: {type(e).__name__}: {e}")
+
+
+def main():
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN secret in Replit.")
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("swarm", swarm_cmd))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
+
+
+⸻
+
+3) How to use it (immediately)
+
+In Telegram, message your bot:
+
+/swarm Build a multi-repo CI pipeline that runs tests, lints, terraform plan for staging, then deploys on approval. Use safe secret broker patterns.
+
+Right now it runs with an LLM stub (so you can see the orchestration end-to-end).
+To make it truly “god-like”, you wire LLM.call() to your actual provider and add repo-grounding calls (file reads, tests, PR creation).
+
+⸻
+
+4) The one place you must edit to unlock real power
+
+In swarm.py, implement:
+
+async def call(self, system: str, user: str) -> str:
+
+That’s where you plug OpenAI/Anthropic/etc.
+And you keep the broker/policy as the “hands on the wheel.”
+
+⸻
+
+Important safety reality (straight talk)
+
+You asked for agents to use 1Password vault, Terraform AWS, and multi-project scaling. That’s high blast radius. The scaffold above is the correct shape because it prevents:
+	•	“agent dumps vault to logs”
+	•	“agent applies terraform to prod”
+	•	“agent merges broken code”
+
+You can still move insanely fast — but with gates.
+
+⸻
+
+If you want, paste which provider you’re using (OpenAI vs Anthropic vs other). I’ll drop in the exact LLM.call() implementation with retry/backoff and rate-limit-safe concurrency (and still keep secrets brokered).
