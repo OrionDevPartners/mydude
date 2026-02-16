@@ -4,6 +4,11 @@ from telegram.ext import ApplicationBuilder
 from src.database import init_db
 from src.handlers import help, shell, tasks, notes, git, swarm, extract, voice, ingest
 from src.handlers import rag, triage
+from src.handlers import audit as audit_handler
+from src.handlers import memory as memory_handler
+from src.handlers import goals as goals_handler
+from src.handlers import cron_handler
+from src.handlers import digest as digest_handler
 from src.handlers import integrations as integrations_handlers
 from src.handlers import selfheal as selfheal_handlers
 from src.selfheal import HealthMonitor
@@ -43,6 +48,24 @@ async def _post_init(app):
     await health_monitor.start(interval=120)
     logger.info("HealthMonitor background task started.")
 
+    try:
+        from src.services.cron import CronRunner
+        cron_runner = CronRunner(bot_app=app)
+        app.bot_data["cron_runner"] = cron_runner
+        await cron_runner.start(check_interval=60)
+        logger.info("CronRunner background task started.")
+    except Exception:
+        logger.warning("Failed to start CronRunner")
+
+    try:
+        from src.services.digest import DigestRunner
+        digest_runner = DigestRunner(bot_app=app)
+        app.bot_data["digest_runner"] = digest_runner
+        await digest_runner.start()
+        logger.info("DigestRunner background task started.")
+    except Exception:
+        logger.warning("Failed to start DigestRunner")
+
 
 def run_bot():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -65,7 +88,13 @@ def run_bot():
     if _llm_instance:
         app.bot_data["llm_instance"] = _llm_instance
 
-    for module in [help, shell, tasks, notes, git, swarm, selfheal_handlers, extract, voice, ingest, rag, triage, integrations_handlers]:
+    all_handler_modules = [
+        help, shell, tasks, notes, git, swarm, selfheal_handlers, extract,
+        voice, ingest, rag, triage,
+        audit_handler, memory_handler, goals_handler, cron_handler, digest_handler,
+        integrations_handlers,
+    ]
+    for module in all_handler_modules:
         for handler in module.get_handlers():
             app.add_handler(handler)
 
