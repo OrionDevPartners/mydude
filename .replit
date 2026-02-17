@@ -30,8 +30,9 @@ args = "echo \"Bot is deployed in production. Run 'python main.py' here only for
 outputType = "console"
 
 [deployment]
-deploymentTarget = "vm"
+deploymentTarget = "gce"
 run = ["python", "main.py"]
+ignorePorts = true
 
 [userenv]
 
