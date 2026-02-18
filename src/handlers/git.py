@@ -1,3 +1,4 @@
+import shlex
 import subprocess
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
@@ -107,7 +108,7 @@ async def git_commit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         message = " ".join(context.args)
-        cmd = f'git add -A && git commit -m "{message}"'
+        cmd = f'git add -A && git commit -m {shlex.quote(message)}'
         output, status = run_git_command(cmd)
         log_command(user_id, cmd, output, status)
 
