@@ -36,7 +36,8 @@ def _sync_missing_columns():
                     elif isinstance(val, (int, float)):
                         default_clause = f" DEFAULT {val}"
                     elif isinstance(val, str):
-                        default_clause = f" DEFAULT '{val}'"
+                        escaped = val.replace("'", "''")
+                        default_clause = f" DEFAULT '{escaped}'"
                 sql = f'ALTER TABLE "{table_name}" ADD COLUMN IF NOT EXISTS "{col.name}" {col_type}{default_clause}'
                 try:
                     with engine.begin() as conn:
