@@ -17,8 +17,10 @@ def is_authorized(user_id):
 
 def run_git_command(cmd):
     try:
+        if isinstance(cmd, str):
+            cmd = shlex.split(cmd)
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30
+            cmd, shell=False, capture_output=True, text=True, timeout=30
         )
         output = ""
         if result.stdout:
@@ -108,9 +110,14 @@ async def git_commit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         message = " ".join(context.args)
-        cmd = f'git add -A && git commit -m {shlex.quote(message)}'
+        add_output, add_status = run_git_command(["git", "add", "-A"])
+        if add_status != "success":
+            log_command(user_id, "git add -A", add_output, add_status)
+            await update.message.reply_text(add_output)
+            return
+        cmd = ["git", "commit", "-m", message]
         output, status = run_git_command(cmd)
-        log_command(user_id, cmd, output, status)
+        log_command(user_id, "git add -A && git commit", output, status)
 
         if len(output) > 4000:
             output = output[:4000] + "\n... (truncated)"
