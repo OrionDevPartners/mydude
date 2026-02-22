@@ -19,7 +19,7 @@ async def search_codebase(query: str, max_results: int = 10) -> list:
                 cmd = ["grep", "-rl", "--include=*.py", "--include=*.js", "--include=*.ts",
                        "--include=*.html", "--include=*.css", "--include=*.json",
                        "--include=*.md", "--include=*.yaml", "--include=*.yml",
-                       "-i", query, WORKSPACE]
+                       "-i", "--", query, WORKSPACE]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
                 files = result.stdout.strip().split("\n")[:max_results]
                 for f in files:
