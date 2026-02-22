@@ -6,17 +6,20 @@ from src.database import SessionLocal
 from src.models import CommandLog, UserSettings
 
 
-def is_authorized(user_id):
+def is_authorized(user_id: int) -> bool:
     session = SessionLocal()
     try:
         settings = session.query(UserSettings).filter_by(user_id=user_id).first()
-        return settings and settings.authorized
+        return settings is not None and bool(settings.authorized)
     finally:
         session.close()
 
 
 async def shell_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        if update.effective_user is None or update.message is None:
+            return
+
         user_id = update.effective_user.id
 
         if not is_authorized(user_id):
@@ -63,7 +66,8 @@ async def shell_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(output)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        if update.message is not None:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
 
 def get_handlers():
