@@ -95,7 +95,14 @@ class MultiProviderLLM:
             genai.configure(api_key=self.gemini_key)
 
         self.grok_base_url = os.getenv("GROK_BASE_URL", "https://api.x.ai/v1")
-        self._grok = AsyncOpenAI(api_key=self.grok_key, base_url=self.grok_base_url) if (AsyncOpenAI and self.grok_key) else None
+        self._grok = (
+            AsyncOpenAI(
+                api_key=self.grok_key,
+                base_url=self.grok_base_url,
+            )
+            if (AsyncOpenAI and self.grok_key)
+            else None
+        )
 
         self._resolved = False
 

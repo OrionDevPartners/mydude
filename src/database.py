@@ -18,6 +18,24 @@ SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 
+_BOOL_DEFAULTS = {True: "TRUE", False: "FALSE"}
+
+
+def _compile_default_clause(col):
+    if col.default is None or col.default.arg is None:
+        return "", {}
+    val = col.default.arg
+    if callable(val):
+        return "", {}
+    if isinstance(val, bool):
+        return " DEFAULT " + _BOOL_DEFAULTS[val], {}
+    if isinstance(val, (int, float)):
+        return " DEFAULT :default_val", {"default_val": val}
+    if isinstance(val, str):
+        return " DEFAULT :default_val", {"default_val": val}
+    return "", {}
+
+
 def _sync_missing_columns():
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
@@ -28,28 +46,18 @@ def _sync_missing_columns():
         db_cols = {c["name"] for c in inspector.get_columns(table_name)}
         for col in table.columns:
             if col.name not in db_cols:
-                col_type = col.type.compile(engine.dialect)
                 safe_table = preparer.quote_identifier(table_name)
                 safe_col = preparer.quote_identifier(col.name)
-                default_clause = ""
-                params = {}
-                if col.default is not None and col.default.arg is not None:
-                    val = col.default.arg
-                    if isinstance(val, bool):
-                        default_clause = " DEFAULT TRUE" if val else " DEFAULT FALSE"
-                    elif isinstance(val, (int, float)):
-                        default_clause = " DEFAULT :default_val"
-                        params["default_val"] = val
-                    elif isinstance(val, str):
-                        default_clause = " DEFAULT :default_val"
-                        params["default_val"] = val
-                sql = text(
-                    f"ALTER TABLE {safe_table} ADD COLUMN IF NOT EXISTS"
-                    f" {safe_col} {col_type}{default_clause}"
+                col_type = col.type.compile(engine.dialect)
+                default_clause, params = _compile_default_clause(col)
+                stmt = text(
+                    "ALTER TABLE " + safe_table
+                    + " ADD COLUMN IF NOT EXISTS " + safe_col
+                    + " " + str(col_type) + default_clause
                 )
                 try:
                     with engine.begin() as conn:
-                        conn.execute(sql, params)
+                        conn.execute(stmt, params)
                     logger.info("Added missing column %s.%s", table_name, col.name)
                 except Exception as e:
                     logger.warning("Failed to add column %s.%s: %s", table_name, col.name, e)

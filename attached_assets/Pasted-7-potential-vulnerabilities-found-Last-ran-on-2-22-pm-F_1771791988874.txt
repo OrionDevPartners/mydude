@@ -1,0 +1,40 @@
+7 potential vulnerabilities found.
+Last ran on
+ 
+2:22 pm, Feb 22, 2026
+Security
+Avoid sqlalchemy.text() with dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. The constructed SQL is passed to the database mostly unchanged, making it vulnerable when user input is involved. Replace f-strings/concatenation with named parameters like `text("... :param_name")` and pass parameters separately to execute().
+Avoid sqlalchemy.text() with dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. The constructed SQL is passed to the database mostly unchanged, making it vulnerable when user input is involved. Replace f-strings/concatenation with named parameters like `text("... :param_name")` and pass parameters separately to execute().
+src/database.py
+                sql = text(
+                    f"ALTER TABLE {safe_table} ADD COLUMN IF NOT EXISTS"
+                    f" {safe_col} {col_type}{default_clause}"
+                )
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Found 'subprocess' function 'run' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.
+Found 'subprocess' function 'run' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.
+src/handlers/git.py
+            cmd, shell=True, capture_output=True, text=True, timeout=30
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Found 'subprocess' function 'run' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Found 'subprocess' function 'run' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.
+Privacy
+Auth Token exposed to OpenAI OpenAI
+Auth Token exposed to OpenAI OpenAI
+Associated Compliance Framework
+GDPR-A5-28, CCPA, NIST-800-53
+Remediation Strategy:
+Verify that shared data aligns with the sensitive data types defined in your privacy notice and data processing agreement. Adjust or restrict sharing as necessary to maintain compliance and minimize privacy risks.
+src/swarm/llm_multi.py
+AsyncOpenAI(api_key=self.grok_key, base_url=self.grok_base_url)
+Privacy
+Auth Token exposed to OpenAI OpenAI

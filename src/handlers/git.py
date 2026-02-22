@@ -1,9 +1,12 @@
-import shlex
 import subprocess
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 from src.database import SessionLocal
 from src.models import CommandLog, UserSettings
+
+ALLOWED_GIT_SUBCOMMANDS = frozenset({
+    "status", "log", "diff", "add", "commit", "pull", "push",
+})
 
 
 def is_authorized(user_id):
@@ -17,8 +20,12 @@ def is_authorized(user_id):
 
 def run_git_command(cmd):
     try:
-        if isinstance(cmd, str):
-            cmd = shlex.split(cmd)
+        if not isinstance(cmd, list):
+            raise ValueError("Commands must be passed as a list, not a string")
+        if not cmd or cmd[0] != "git":
+            raise ValueError("Only git commands are allowed")
+        if len(cmd) < 2 or cmd[1] not in ALLOWED_GIT_SUBCOMMANDS:
+            raise ValueError(f"Git subcommand not allowed: {cmd[1] if len(cmd) > 1 else '(none)'}")
         result = subprocess.run(
             cmd, shell=False, capture_output=True, text=True, timeout=30
         )
@@ -32,7 +39,7 @@ def run_git_command(cmd):
         status = "success" if result.returncode == 0 else "error"
         return output.strip(), status
     except subprocess.TimeoutExpired:
-        return "⏰ Command timed out after 30 seconds.", "timeout"
+        return "Command timed out after 30 seconds.", "timeout"
     except Exception as e:
         return f"Error: {str(e)}", "error"
 
@@ -54,7 +61,7 @@ async def git_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⛔ Not authorized. Use /authorize <password> first.")
             return
 
-        output, status = run_git_command("git status")
+        output, status = run_git_command(["git", "status"])
         log_command(user_id, "git status", output, status)
 
         if len(output) > 4000:
@@ -71,7 +78,7 @@ async def git_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⛔ Not authorized. Use /authorize <password> first.")
             return
 
-        output, status = run_git_command("git log --oneline -10")
+        output, status = run_git_command(["git", "log", "--oneline", "-10"])
         log_command(user_id, "git log --oneline -10", output, status)
 
         if len(output) > 4000:
@@ -88,7 +95,7 @@ async def git_diff(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⛔ Not authorized. Use /authorize <password> first.")
             return
 
-        output, status = run_git_command("git diff")
+        output, status = run_git_command(["git", "diff"])
         log_command(user_id, "git diff", output, status)
 
         if len(output) > 4000:
@@ -133,7 +140,7 @@ async def git_pull(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⛔ Not authorized. Use /authorize <password> first.")
             return
 
-        output, status = run_git_command("git pull")
+        output, status = run_git_command(["git", "pull"])
         log_command(user_id, "git pull", output, status)
 
         if len(output) > 4000:
@@ -150,7 +157,7 @@ async def git_push(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⛔ Not authorized. Use /authorize <password> first.")
             return
 
-        output, status = run_git_command("git push")
+        output, status = run_git_command(["git", "push"])
         log_command(user_id, "git push", output, status)
 
         if len(output) > 4000:
