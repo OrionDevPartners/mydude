@@ -1,11 +1,12 @@
 import asyncio
+import shlex
 import subprocess
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 
 class Integrations:
     async def git_status(self, params: Dict[str, Any]) -> str:
-        return await _run_cmd("git status --porcelain=v1 -b")
+        return await _run_cmd(["git", "status", "--porcelain=v1", "-b"])
 
     async def terraform_plan(self, params: Dict[str, Any]) -> str:
         env = params.get("env", "dev")
@@ -53,10 +54,10 @@ class Integrations:
         return f"[STUB] 1Password scoped read for item={item} (no raw secret returned)."
 
 
-async def _run_cmd(cmd: str) -> str:
+async def _run_cmd(cmd: List[str]) -> str:
     def run():
         try:
-            p = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True, timeout=30)
+            p = subprocess.run(cmd, shell=False, check=False, capture_output=True, text=True, timeout=30)
             out = (p.stdout or "") + (p.stderr or "")
             return out.strip()[:4000]
         except Exception as e:
