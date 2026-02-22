@@ -1,3 +1,4 @@
+import shlex
 import subprocess
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
@@ -31,7 +32,7 @@ async def shell_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=30
+                shlex.split(cmd), capture_output=True, text=True, timeout=30
             )
             output = ""
             if result.stdout:
