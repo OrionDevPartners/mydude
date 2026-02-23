@@ -4,7 +4,7 @@ expertMode = true
 
 [nix]
 channel = "stable-25_05"
-packages = ["unzip"]
+packages = ["cargo", "libiconv", "libxcrypt", "openssl", "pkg-config", "rustc", "unzip"]
 
 [workflows]
 runButton = "Project"
@@ -16,18 +16,19 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Telegram Bot"
+args = "Start application"
 
 [[workflows.workflow]]
-name = "Telegram Bot"
+name = "Start application"
 author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "echo \"Bot is deployed in production. Run 'python main.py' here only for local testing (will conflict with deployment).\""
+args = "python main.py"
+waitForPort = 5000
 
 [workflows.workflow.metadata]
-outputType = "console"
+outputType = "webview"
 
 [deployment]
 deploymentTarget = "gce"
@@ -38,3 +39,7 @@ ignorePorts = true
 
 [userenv.shared]
 LLM_PROVIDER = "multi"
+
+[[ports]]
+localPort = 5000
+externalPort = 80

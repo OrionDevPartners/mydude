@@ -1,0 +1,49 @@
+import os
+import secrets
+from fastapi import APIRouter, Request, Form, HTTPException
+from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+
+router = APIRouter()
+templates = Jinja2Templates(directory="templates")
+
+_SESSION_SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
+_serializer = URLSafeTimedSerializer(_SESSION_SECRET)
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
+SESSION_MAX_AGE = 86400
+
+
+def require_auth(request: Request):
+    token = request.cookies.get("session_token")
+    if not token:
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    try:
+        data = _serializer.loads(token, max_age=SESSION_MAX_AGE)
+        if data.get("authenticated") is not True:
+            raise HTTPException(status_code=303, headers={"Location": "/login"})
+    except (BadSignature, SignatureExpired):
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    return data
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
+
+@router.post("/login")
+async def login_submit(request: Request, password: str = Form(...)):
+    if password == ADMIN_PASSWORD:
+        token = _serializer.dumps({"authenticated": True})
+        response = RedirectResponse(url="/", status_code=303)
+        response.set_cookie("session_token", token, httponly=True, max_age=SESSION_MAX_AGE, samesite="lax")
+        return response
+    return templates.TemplateResponse("login.html", {"request": request, "error": "Invalid password"})
+
+
+@router.get("/logout")
+async def logout():
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie("session_token")
+    return response

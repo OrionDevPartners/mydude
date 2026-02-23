@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Task History - BoBot AI{% endblock %}
+{% block header_title %}Task History{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h3>All Task Runs</h3>
+    </div>
+    <div class="card-body">
+        {% if tasks %}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Date</th>
+                    <th>Prompt</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in tasks %}
+                <tr class="clickable-row" onclick="window.location='/tasks/{{ task.id }}'">
+                    <td>#{{ task.id }}</td>
+                    <td>{{ task.created_at.strftime('%Y-%m-%d %H:%M') if task.created_at else '-' }}</td>
+                    <td class="truncate">{{ task.prompt[:100] }}{% if task.prompt|length > 100 %}...{% endif %}</td>
+                    <td><span class="status-badge status-{{ task.status }}">{{ task.status }}</span></td>
+                    <td>{{ task.execution_time_ms or '-' }}{% if task.execution_time_ms %}ms{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% if total_pages > 1 %}
+        <div class="pagination">
+            {% if page > 1 %}
+            <a href="/tasks/history?page={{ page - 1 }}" class="btn btn-sm btn-outline">Previous</a>
+            {% endif %}
+            <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+            {% if page < total_pages %}
+            <a href="/tasks/history?page={{ page + 1 }}" class="btn btn-sm btn-outline">Next</a>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% else %}
+        <p class="empty-state">No tasks have been run yet. Go to the <a href="/">Dashboard</a> to run your first task.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

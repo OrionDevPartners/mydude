@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Task #{{ task.id }} - BoBot AI{% endblock %}
+{% block header_title %}Task Detail{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h3>Task #{{ task.id }}
+            <span class="status-badge status-{{ task.status }}">{{ task.status }}</span>
+        </h3>
+        <a href="/tasks/history" class="btn btn-sm btn-outline">Back to History</a>
+    </div>
+    <div class="card-body">
+        <div class="detail-grid">
+            <div class="detail-row">
+                <span class="detail-label">Created</span>
+                <span class="detail-value">{{ task.created_at.strftime('%Y-%m-%d %H:%M:%S') if task.created_at else '-' }}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Status</span>
+                <span class="detail-value"><span class="status-badge status-{{ task.status }}">{{ task.status }}</span></span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Execution Time</span>
+                <span class="detail-value">{{ task.execution_time_ms or '-' }}{% if task.execution_time_ms %}ms{% endif %}</span>
+            </div>
+        </div>
+
+        <div class="detail-section">
+            <h4>Prompt</h4>
+            <div class="prompt-display">{{ task.prompt }}</div>
+        </div>
+
+        {% if scores %}
+        <div class="detail-section">
+            <h4>Provider Scores</h4>
+            {% if scores.get('hallucination_risk') %}
+            <div class="scores-grid">
+                <div class="score-item">
+                    <span class="score-label">Avg Hallucination Risk</span>
+                    <span class="score-value">{{ scores['hallucination_risk'].get('average', 'N/A') }}</span>
+                </div>
+                <div class="score-item">
+                    <span class="score-label">Risk Tier</span>
+                    <span class="score-value">{{ scores['hallucination_risk'].get('tier', 'N/A') }}</span>
+                </div>
+                <div class="score-item">
+                    <span class="score-label">Trend</span>
+                    <span class="score-value">{{ scores['hallucination_risk'].get('trend', 'N/A') }}</span>
+                </div>
+            </div>
+            {% endif %}
+            {% if scores.get('compliance') %}
+            <details class="score-details">
+                <summary>Compliance Details ({{ scores['compliance']|length }} agents)</summary>
+                <pre class="result-output">{{ scores['compliance'] | tojson(indent=2) }}</pre>
+            </details>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="detail-section">
+            <h4>Result</h4>
+            <pre class="result-output">{{ task.result or 'No result available' }}</pre>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -224,3 +224,27 @@ class SentinelEvent(Base):
     recommended_action = Column(Text, nullable=True)
     acknowledged = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(50), nullable=False)
+    label = Column(String(100), nullable=True)
+    encrypted_key = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TaskRun(Base):
+    __tablename__ = "task_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    prompt = Column(Text, nullable=False)
+    result = Column(Text, nullable=True)
+    status = Column(String(30), default="pending")
+    provider_scores = Column(Text, nullable=True)
+    execution_time_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
