@@ -31,7 +31,7 @@ waitForPort = 5000
 outputType = "webview"
 
 [deployment]
-deploymentTarget = "gce"
+deploymentTarget = "cloudrun"
 run = ["python", "main.py"]
 
 [userenv]
