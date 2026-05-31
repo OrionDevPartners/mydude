@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Connected Services - BoBot AI{% endblock %}
+{% block header_title %}Connected Services{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-body">
+        <p class="meta">These services support one-click OAuth through Replit Integrations — no key pasting required. Status below is read live from your Replit account.</p>
+        {% if not proxy_available %}
+        <div class="flash flash-warning" style="margin-top:12px">The Replit connector service isn't reachable from this environment, so live status can't be shown right now.</div>
+        {% else %}
+        <p class="meta" style="margin-top:8px"><strong>{{ connected_count }}</strong> of {{ total_count }} services connected.</p>
+        {% endif %}
+        <div class="flash flash-warning" style="margin-top:12px">
+            To connect a new service, ask the assistant in chat to "connect {service}" (for example, "connect Stripe"). OAuth must be authorized through Replit, after which it appears here automatically.
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h3>Available Integrations</h3></div>
+    <div class="card-body">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Service</th>
+                    <th>Category</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr>
+                    <td><span class="provider-badge provider-{{ row.connector }}">{{ row.name }}</span></td>
+                    <td><span class="category-badge">{{ row.category }}</span></td>
+                    <td>
+                        {% if row.connected %}
+                        <span class="conn-dot conn-on"></span><span class="status-badge status-completed">Connected</span>
+                        {% else %}
+                        <span class="conn-dot conn-off"></span><span class="status-badge status-pending">Not connected</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

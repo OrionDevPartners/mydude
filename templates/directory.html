@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Service Directory - BoBot AI{% endblock %}
+{% block header_title %}Service Directory{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-body">
+        <p class="meta">Browse supported services, grab your API key from the provider, and follow the steps to add it to your vault. Each "Add to Vault" button pre-selects the service for you.</p>
+    </div>
+</div>
+
+{% for category, services in grouped %}
+<div class="card">
+    <div class="card-header"><h3>{{ category }}</h3></div>
+    <div class="card-body">
+        <div class="service-grid">
+            {% for s in services %}
+            <div class="service-card">
+                <div class="service-card-head">
+                    <span class="provider-badge provider-{{ s.slug }}">{{ s.name }}</span>
+                    {% if s.saved %}<span class="status-badge status-completed">In Vault</span>{% endif %}
+                </div>
+                {% if s.steps %}
+                <ol class="steps">
+                    {% for step in s.steps %}<li>{{ step }}</li>{% endfor %}
+                </ol>
+                {% endif %}
+                <div class="service-card-actions">
+                    {% if s.key_url %}<a href="{{ s.key_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline">Get your key ↗</a>{% endif %}
+                    <a href="/keys?service={{ s.slug }}" class="btn btn-sm btn-primary">Add to Vault</a>
+                </div>
+                {% if s.connector %}
+                <div class="meta service-connector-note">Also available as a one-click connection on the <a href="/connected">Connected Services</a> page.</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Key Audit Log - BoBot AI{% endblock %}
+{% block header_title %}Key Audit Log{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h3>Recent Activity</h3>
+        <a href="/keys" class="btn btn-sm btn-outline">← Back to Vault</a>
+    </div>
+    <div class="card-body">
+        {% if entries %}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>When (UTC)</th>
+                    <th>Action</th>
+                    <th>Service</th>
+                    <th>Label</th>
+                    <th>Detail</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in entries %}
+                <tr>
+                    <td class="meta">{{ e.created_at.strftime('%Y-%m-%d %H:%M:%S') if e.created_at else '-' }}</td>
+                    <td><span class="audit-action audit-{{ e.action }}">{{ e.action }}</span></td>
+                    <td>{{ e.provider }}</td>
+                    <td>{{ e.label or '-' }}</td>
+                    <td class="meta">{{ e.detail }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty-state">No key activity recorded yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

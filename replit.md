@@ -83,6 +83,11 @@ static/
 - Circuit breakers and self-healing for provider isolation
 
 ## Recent Changes
+- 2026-05-31: Upgraded API key management into a full credential vault
+  - API Vault (/keys): any service, categories, search, expiry/rotation reminders, per-key env var, notes, reveal (Cache-Control: no-store), rotation, usage audit log (/keys/audit)
+  - Connected Services (/connected): live Replit integration status via the connector proxy at runtime (src/web/connectors.py)
+  - Service Directory (/directory): guided signup helper with provider links + step-by-step, pre-fills the vault add form
+  - New: src/web/service_catalog.py (curated services), src/web/routes_services.py; ApiKey extended (category, env_var, notes, expires_at, rotation_days, last_used_at, last_rotated_at); new KeyAuditLog model (auto-migrated via _sync_missing_columns)
 - 2026-02-23: Transformed from Telegram bot to FastAPI web application (Phase 1 MVP)
   - Built complete web dashboard with dark theme UI
   - Added authentication, API key management, AI task runner

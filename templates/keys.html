@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}API Keys - BoBot AI{% endblock %}
-{% block header_title %}API Keys{% endblock %}
+{% block title %}API Vault - BoBot AI{% endblock %}
+{% block header_title %}API Vault{% endblock %}
 
 {% block content %}
 {% if msg %}
@@ -10,49 +10,98 @@
 <div class="flash flash-error">{{ err }}</div>
 {% endif %}
 
+{% if reminders %}
+<div class="card">
+    <div class="card-header"><h3>🔔 Reminders</h3></div>
+    <div class="card-body">
+        {% for r in reminders %}
+        <div class="flash {% if r.level == 'danger' %}flash-error{% else %}flash-warning{% endif %}" style="margin-bottom:8px">{{ r.text }}</div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 <div class="card">
     <div class="card-header">
-        <h3>Add New API Key</h3>
+        <h3>Add Key to Vault</h3>
+        <a href="/directory" class="btn btn-sm btn-outline">Need a key? Open Service Directory →</a>
     </div>
     <div class="card-body">
-        <form method="post" action="/keys" class="form-inline-grid">
-            <div class="form-group">
-                <label for="provider">Provider</label>
-                <select id="provider" name="provider" required>
-                    <option value="openai">OpenAI</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="gemini">Gemini</option>
-                    <option value="grok">Grok</option>
-                    <option value="custom">Custom</option>
-                </select>
+        <form method="post" action="/keys">
+            <div class="vault-form-grid">
+                <div class="form-group">
+                    <label for="provider">Service</label>
+                    <select id="provider" name="provider" required>
+                        {% for s in catalog %}
+                        <option value="{{ s.slug }}" {% if request.query_params.get('service') == s.slug %}selected{% endif %}>{{ s.name }} — {{ s.category }}</option>
+                        {% endfor %}
+                        <option value="custom">Custom / Other</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="label">Label (optional)</label>
+                    <input type="text" id="label" name="label" placeholder="e.g. Production Key">
+                </div>
+                <div class="form-group">
+                    <label for="category">Category (optional)</label>
+                    <input type="text" id="category" name="category" list="category-list" placeholder="Auto from service">
+                    <datalist id="category-list">
+                        {% for c in categories %}<option value="{{ c }}">{% endfor %}
+                    </datalist>
+                </div>
+                <div class="form-group">
+                    <label for="env_var">Environment Variable (optional)</label>
+                    <input type="text" id="env_var" name="env_var" placeholder="Auto from service">
+                </div>
+                <div class="form-group vault-form-wide">
+                    <label for="api_key">API Key / Secret</label>
+                    <input type="password" id="api_key" name="api_key" placeholder="Paste the secret value" required>
+                </div>
+                <div class="form-group">
+                    <label for="expires_at">Expires On (optional)</label>
+                    <input type="text" id="expires_at" name="expires_at" placeholder="YYYY-MM-DD">
+                </div>
+                <div class="form-group">
+                    <label for="rotation_days">Rotate Every N Days (optional)</label>
+                    <input type="text" id="rotation_days" name="rotation_days" placeholder="e.g. 90">
+                </div>
+                <div class="form-group vault-form-wide">
+                    <label for="notes">Notes (optional)</label>
+                    <input type="text" id="notes" name="notes" placeholder="Where this key is used, scopes, etc.">
+                </div>
             </div>
-            <div class="form-group">
-                <label for="label">Label (optional)</label>
-                <input type="text" id="label" name="label" placeholder="e.g. Production Key">
-            </div>
-            <div class="form-group">
-                <label for="api_key">API Key</label>
-                <input type="password" id="api_key" name="api_key" placeholder="sk-..." required>
-            </div>
-            <div class="form-group form-actions">
-                <button type="submit" class="btn btn-primary">Add Key</button>
-            </div>
+            <button type="submit" class="btn btn-primary">Save to Vault</button>
         </form>
     </div>
 </div>
 
 <div class="card">
     <div class="card-header">
-        <h3>Configured Keys</h3>
+        <h3>Stored Keys <span class="badge">{{ total_count }}</span></h3>
+        <a href="/keys/audit" class="btn btn-sm btn-outline">View Audit Log</a>
     </div>
     <div class="card-body">
+        <form method="get" action="/keys" class="vault-search">
+            <input type="text" name="q" value="{{ q }}" placeholder="Search by service, label, env var…">
+            <select name="category">
+                <option value="">All categories</option>
+                {% for c in used_categories %}
+                <option value="{{ c }}" {% if c == active_category %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-outline btn-sm">Search</button>
+            {% if q or active_category %}<a href="/keys" class="btn btn-outline btn-sm">Clear</a>{% endif %}
+        </form>
+
         {% if keys %}
         <table class="table">
             <thead>
                 <tr>
-                    <th>Provider</th>
+                    <th>Service</th>
                     <th>Label</th>
+                    <th>Category</th>
                     <th>Key</th>
+                    <th>Env Var</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
@@ -60,32 +109,57 @@
             <tbody>
                 {% for key in keys %}
                 <tr>
-                    <td><span class="provider-badge provider-{{ key.provider }}">{{ key.provider }}</span></td>
+                    <td><span class="provider-badge provider-{{ key.provider }}">{{ key.name }}</span></td>
                     <td>{{ key.label or '-' }}</td>
-                    <td class="mono">{{ key.masked_key }}</td>
+                    <td><span class="category-badge">{{ key.category }}</span></td>
+                    <td class="mono">
+                        {% if key.revealed %}{{ key.revealed }}{% else %}{{ key.masked_key }}{% endif %}
+                    </td>
+                    <td class="mono">{{ key.env_var or '-' }}</td>
                     <td>
                         {% if key.is_active %}
                         <span class="status-badge status-completed">Active</span>
                         {% else %}
                         <span class="status-badge status-failed">Inactive</span>
                         {% endif %}
+                        {% if key.expires_at %}<div class="meta">exp {{ key.expires_at.strftime('%Y-%m-%d') }}</div>{% endif %}
                     </td>
                     <td class="actions">
+                        {% if not key.revealed %}
+                        <a href="/keys?reveal={{ key.id }}{% if q %}&q={{ q }}{% endif %}" class="btn btn-sm btn-outline">Reveal</a>
+                        {% else %}
+                        <a href="/keys{% if q %}?q={{ q }}{% endif %}" class="btn btn-sm btn-outline">Hide</a>
+                        {% endif %}
                         <form method="post" action="/keys/{{ key.id }}/toggle" style="display:inline">
-                            <button type="submit" class="btn btn-sm btn-outline">
-                                {% if key.is_active %}Disable{% else %}Enable{% endif %}
-                            </button>
+                            <button type="submit" class="btn btn-sm btn-outline">{% if key.is_active %}Disable{% else %}Enable{% endif %}</button>
                         </form>
                         <form method="post" action="/keys/{{ key.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this key?')">
                             <button type="submit" class="btn btn-sm btn-danger">Delete</button>
                         </form>
                     </td>
                 </tr>
+                {% if key.notes %}
+                <tr class="notes-row"><td colspan="7" class="meta">📝 {{ key.notes }}</td></tr>
+                {% endif %}
+                <tr class="rotate-row">
+                    <td colspan="7">
+                        <details>
+                            <summary class="rotate-summary">Rotate this key</summary>
+                            <form method="post" action="/keys/{{ key.id }}/rotate" class="rotate-form">
+                                <input type="password" name="api_key" placeholder="New secret value" required>
+                                <button type="submit" class="btn btn-sm btn-primary">Rotate</button>
+                            </form>
+                        </details>
+                    </td>
+                </tr>
                 {% endfor %}
             </tbody>
         </table>
         {% else %}
-        <p class="empty-state">No API keys configured yet. Add one above to get started.</p>
+        <p class="empty-state">
+            {% if q or active_category %}No keys match your search. <a href="/keys">Clear filters</a>.
+            {% else %}No keys stored yet. Add one above, or browse the <a href="/directory">Service Directory</a> for step-by-step help.{% endif %}
+        </p>
         {% endif %}
     </div>
 </div>

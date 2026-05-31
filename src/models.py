@@ -234,8 +234,27 @@ class ApiKey(Base):
     label = Column(String(100), nullable=True)
     encrypted_key = Column(Text, nullable=False)
     is_active = Column(Boolean, default=True)
+    category = Column(String(60), nullable=True)
+    env_var = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    rotation_days = Column(Integer, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+    last_rotated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KeyAuditLog(Base):
+    __tablename__ = "key_audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    api_key_id = Column(Integer, nullable=True, index=True)
+    provider = Column(String(50), nullable=True)
+    label = Column(String(100), nullable=True)
+    action = Column(String(40), nullable=False)
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class TaskRun(Base):

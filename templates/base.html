@@ -17,7 +17,13 @@
                     <span class="nav-icon">◈</span> Dashboard
                 </a>
                 <a href="/keys" class="nav-link {% if request.url.path == '/keys' %}active{% endif %}">
-                    <span class="nav-icon">🔑</span> API Keys
+                    <span class="nav-icon">🔑</span> API Vault
+                </a>
+                <a href="/connected" class="nav-link {% if request.url.path == '/connected' %}active{% endif %}">
+                    <span class="nav-icon">🔗</span> Connected Services
+                </a>
+                <a href="/directory" class="nav-link {% if request.url.path == '/directory' %}active{% endif %}">
+                    <span class="nav-icon">📒</span> Service Directory
                 </a>
                 <a href="/tasks/history" class="nav-link {% if '/tasks' in request.url.path and request.url.path != '/' %}active{% endif %}">
                     <span class="nav-icon">📋</span> Task History
