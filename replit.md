@@ -52,7 +52,6 @@ src/
     broker.py              - CapabilityBroker (agents request, broker enforces)
     integrations.py        - Git/Terraform integration capabilities
   selfheal/                - Circuit breakers, health monitor
-  services/                - Audit, rate limiting, memory, goals, cron, digest, etc.
 templates/
   base.html                - Dark theme layout with sidebar navigation
   login.html               - Login page
