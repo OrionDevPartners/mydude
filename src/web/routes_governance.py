@@ -89,7 +89,10 @@ async def ack_alert(alert_id: int, _=Depends(require_auth)):
 @router.get("/provenance", response_class=HTMLResponse)
 async def provenance(request: Request, _=Depends(require_auth)):
     q = (request.query_params.get("q") or "").strip()
-    page = max(1, int(request.query_params.get("page", 1) or 1))
+    try:
+        page = max(1, int(request.query_params.get("page", 1) or 1))
+    except (TypeError, ValueError):
+        page = 1
     per_page = 30
     db = SessionLocal()
     try:

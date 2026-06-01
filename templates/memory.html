@@ -27,7 +27,7 @@
             <div class="mem-head">
                 <span class="category-badge">{{ l.layer_type }}</span>
                 {% if l.topic %}<strong>{{ l.topic }}</strong>{% endif %}
-                <span class="meta mem-meta">CS {{ l.compliance_score }} · HR {{ '%.2f'|format(l.hallucination_risk) }} · accessed {{ l.access_count }}× · {{ l.created_at.strftime('%Y-%m-%d %H:%M') if l.created_at else '-' }}</span>
+                <span class="meta mem-meta">CS {{ l.compliance_score }} · HR {{ '%.2f'|format(l.hallucination_risk) if l.hallucination_risk is not none else '-' }} · accessed {{ l.access_count }}× · {{ l.created_at.strftime('%Y-%m-%d %H:%M') if l.created_at else '-' }}</span>
             </div>
             {% if l.summary %}<div class="mem-summary">{{ l.summary }}</div>{% endif %}
             <details class="score-details"><summary>Full content</summary>

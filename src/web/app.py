@@ -1,7 +1,7 @@
 import os
 import secrets
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -11,6 +11,17 @@ app = FastAPI(title="BoBot AI", docs_url=None, redoc_url=None)
 
 _session_secret = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 app.add_middleware(SessionMiddleware, secret_key=_session_secret)
+
+_is_production = os.environ.get("REPLIT_DEPLOYMENT") == "1"
+
+
+@app.middleware("http")
+async def _no_cache_static(request: Request, call_next):
+    response = await call_next(request)
+    if not _is_production and request.url.path.startswith("/static"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
