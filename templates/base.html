@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}BoBot AI{% endblock %}</title>
+    <title>{% block title %}{{ product.name }}{% endblock %}</title>
     <link rel="stylesheet" href="/static/css/style.css?v=2">
 </head>
 <body>
@@ -11,7 +11,7 @@
         <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <h1 class="logo">🤖 BoBot AI</h1>
+                <h1 class="logo">🤖 {{ product.name }}</h1>
                 <button class="sidebar-close" onclick="closeSidebar()" aria-label="Close menu">✕</button>
             </div>
             <nav class="nav">

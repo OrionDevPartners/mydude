@@ -5,9 +5,11 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
+from src.web.branding import PRODUCT_NAME
+
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="BoBot AI", docs_url=None, redoc_url=None)
+app = FastAPI(title=PRODUCT_NAME, docs_url=None, redoc_url=None)
 
 _session_secret = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 app.add_middleware(SessionMiddleware, secret_key=_session_secret)

@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - BoBot AI</title>
+    <title>Login - {{ product.name }}</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body class="login-body">
     <div class="login-container">
         <div class="login-card">
-            <h1 class="login-logo">🤖 BoBot AI</h1>
-            <p class="login-subtitle">AI Business Automation Platform</p>
+            <h1 class="login-logo">🤖 {{ product.name }}</h1>
+            <p class="login-subtitle">{{ product.tagline }}</p>
             {% if error %}
             <div class="flash flash-error">{{ error }}</div>
             {% endif %}

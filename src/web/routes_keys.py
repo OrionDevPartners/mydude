@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Request, Form, Depends
 from fastapi.responses import RedirectResponse, HTMLResponse
-from fastapi.templating import Jinja2Templates
 
 from src.database import SessionLocal
 from src.models import ApiKey, KeyAuditLog
@@ -20,7 +19,7 @@ from src.web.service_catalog import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+from src.web.templating import templates
 
 # Legacy fallback mapping for keys saved before env_var was stored per-key.
 LEGACY_ENV_MAP = {

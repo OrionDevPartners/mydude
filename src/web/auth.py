@@ -2,11 +2,10 @@ import os
 import secrets
 from fastapi import APIRouter, Request, Form, HTTPException
 from fastapi.responses import RedirectResponse, HTMLResponse
-from fastapi.templating import Jinja2Templates
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+from src.web.templating import templates
 
 _SESSION_SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 _serializer = URLSafeTimedSerializer(_SESSION_SECRET)

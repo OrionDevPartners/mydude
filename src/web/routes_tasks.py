@@ -4,14 +4,13 @@ import asyncio
 import logging
 from fastapi import APIRouter, Request, Form, Depends
 from fastapi.responses import RedirectResponse, HTMLResponse
-from fastapi.templating import Jinja2Templates
 from src.database import SessionLocal
 from src.models import TaskRun, ApiKey
 from src.web.auth import require_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+from src.web.templating import templates
 
 
 def _has_active_keys():
