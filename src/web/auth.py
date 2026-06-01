@@ -14,7 +14,21 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
 SESSION_MAX_AGE = 86400
 
 
+def _dev_auth_bypass_enabled() -> bool:
+    """Allow skipping login ONLY in the development environment.
+
+    Double-gated so it can never affect a published deployment:
+    - DEV_AUTH_BYPASS must be truthy (set only in the development env scope), AND
+    - the app must NOT be running inside a Replit deployment.
+    """
+    in_deployment = os.environ.get("REPLIT_DEPLOYMENT") == "1"
+    flag = os.environ.get("DEV_AUTH_BYPASS", "").lower() in ("1", "true", "yes", "on")
+    return flag and not in_deployment
+
+
 def require_auth(request: Request):
+    if _dev_auth_bypass_enabled():
+        return {"authenticated": True, "dev_bypass": True}
     token = request.cookies.get("session_token")
     if not token:
         raise HTTPException(status_code=303, headers={"Location": "/login"})

@@ -39,6 +39,9 @@ run = ["python", "main.py"]
 [userenv.shared]
 LLM_PROVIDER = "multi"
 
+[userenv.development]
+DEV_AUTH_BYPASS = "1"
+
 [[ports]]
 localPort = 5000
 externalPort = 80
