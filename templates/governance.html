@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Governance Center - BoBot AI{% endblock %}
+{% block header_title %}Governance Center{% endblock %}
+
+{% block content %}
+{% if flash %}<div class="flash flash-success">{{ flash }}</div>{% endif %}
+
+<div class="card">
+    <div class="card-header">
+        <h3>🚨 Sentinel Alerts
+            {% if open_alerts %}<span class="status-badge sev-high">{{ open_alerts }} open</span>{% endif %}
+        </h3>
+    </div>
+    <div class="card-body">
+        {% if alerts %}
+        <div class="table-wrap">
+        <table class="table">
+            <thead><tr><th>Severity</th><th>Type</th><th>Description</th><th>Recommended Action</th><th>When</th><th></th></tr></thead>
+            <tbody>
+            {% for a in alerts %}
+            <tr class="{% if a.acknowledged %}row-muted{% endif %}">
+                <td><span class="status-badge {{ m.sev_class(a.severity) }}">{{ a.severity }}</span></td>
+                <td class="mono">{{ a.alert_type }}</td>
+                <td>{{ a.description or '-' }}</td>
+                <td class="meta">{{ a.recommended_action or '-' }}</td>
+                <td class="meta">{{ a.created_at.strftime('%Y-%m-%d %H:%M') if a.created_at else '-' }}</td>
+                <td>
+                    {% if a.acknowledged %}
+                        <span class="meta">✓ acked</span>
+                    {% else %}
+                        <form method="post" action="/governance/alerts/{{ a.id }}/ack" style="margin:0">
+                            <button class="btn btn-sm btn-outline" type="submit">Acknowledge</button>
+                        </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">No sentinel alerts recorded. Alerts appear when the governance sentinel flags risk during a task run.</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h3>📈 Performance Ledger</h3></div>
+    <div class="card-body">
+        {% if ledger %}
+        <div class="table-wrap">
+        <table class="table">
+            <thead><tr><th>Wave</th><th>Avg CS</th><th>Avg HR</th><th>Agents</th><th>Consensus</th><th>Dissent</th><th>When</th></tr></thead>
+            <tbody>
+            {% for e in ledger %}
+            <tr>
+                <td>{{ e.wave_idx }}</td>
+                <td><strong>{{ e.avg_cs|round(1) }}</strong></td>
+                <td>{{ '%.3f'|format(e.avg_hr) }}</td>
+                <td>{{ e.agent_count }}</td>
+                <td>{{ '%.2f'|format(e.consensus_confidence) }}</td>
+                <td>{{ e.dissent_count }}</td>
+                <td class="meta">{{ e.created_at.strftime('%Y-%m-%d %H:%M') if e.created_at else '-' }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">No performance data yet. The ledger records per-wave compliance, hallucination risk, and consensus once you run tasks.</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3>⚙️ Provider Metrics</h3>
+        <span class="meta">{{ total_metrics }} calls recorded</span>
+    </div>
+    <div class="card-body">
+        {% if metrics %}
+        <div class="table-wrap">
+        <table class="table">
+            <thead><tr><th>Provider</th><th>Calls</th><th>Avg Latency</th><th>Success Rate</th><th>Avg Rating</th></tr></thead>
+            <tbody>
+            {% for r in metrics %}
+            <tr>
+                <td><span class="provider-badge provider-{{ r.provider }}">{{ r.provider }}</span></td>
+                <td>{{ r.calls }}</td>
+                <td>{{ r.avg_latency }}ms</td>
+                <td>{{ r.success_rate }}%</td>
+                <td>{{ r.avg_rating if r.avg_rating is not none else '-' }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">No provider metrics yet. Latency and success rates populate as the swarm calls LLM providers.</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

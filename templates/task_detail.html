@@ -1,6 +1,7 @@
 {% extends "base.html" %}
+{% import "macros.html" as m %}
 {% block title %}Task #{{ task.id }} - BoBot AI{% endblock %}
-{% block header_title %}Task Detail{% endblock %}
+{% block header_title %}Governance Report{% endblock %}
 
 {% block content %}
 <div class="card">
@@ -31,38 +32,19 @@
             <div class="prompt-display">{{ task.prompt }}</div>
         </div>
 
-        {% if scores %}
-        <div class="detail-section">
-            <h4>Provider Scores</h4>
-            {% if scores.get('hallucination_risk') %}
-            <div class="scores-grid">
-                <div class="score-item">
-                    <span class="score-label">Avg Hallucination Risk</span>
-                    <span class="score-value">{{ scores['hallucination_risk'].get('average', 'N/A') }}</span>
-                </div>
-                <div class="score-item">
-                    <span class="score-label">Risk Tier</span>
-                    <span class="score-value">{{ scores['hallucination_risk'].get('tier', 'N/A') }}</span>
-                </div>
-                <div class="score-item">
-                    <span class="score-label">Trend</span>
-                    <span class="score-value">{{ scores['hallucination_risk'].get('trend', 'N/A') }}</span>
-                </div>
-            </div>
-            {% endif %}
-            {% if scores.get('compliance') %}
-            <details class="score-details">
-                <summary>Compliance Details ({{ scores['compliance']|length }} agents)</summary>
-                <pre class="result-output">{{ scores['compliance'] | tojson(indent=2) }}</pre>
-            </details>
-            {% endif %}
-        </div>
-        {% endif %}
+        {% if parsed %}
+            {{ m.report(parsed, full=True) }}
 
+            <details class="score-details">
+                <summary>Raw JSON output</summary>
+                <pre class="result-output">{{ task.result }}</pre>
+            </details>
+        {% else %}
         <div class="detail-section">
             <h4>Result</h4>
             <pre class="result-output">{{ task.result or 'No result available' }}</pre>
         </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

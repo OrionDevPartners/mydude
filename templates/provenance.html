@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Provenance Explorer - BoBot AI{% endblock %}
+{% block header_title %}Provenance Explorer{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h3>🧬 Claim Provenance</h3>
+        <span class="meta">{{ total }} claims tracked</span>
+    </div>
+    <div class="card-body">
+        <form method="get" action="/provenance" class="vault-search">
+            <input type="text" name="q" value="{{ q }}" placeholder="Search claim text, role, or provider...">
+            <button class="btn btn-primary" type="submit">Search</button>
+            {% if q %}<a href="/provenance" class="btn btn-outline">Clear</a>{% endif %}
+        </form>
+
+        {% if records %}
+        <div class="table-wrap">
+        <table class="table">
+            <thead><tr><th>Claim ID</th><th>Origin</th><th>Wave</th><th>Claim</th><th>CS</th><th>HR</th><th>When</th></tr></thead>
+            <tbody>
+            {% for r in records %}
+            <tr>
+                <td class="mono">{{ r.claim_id }}</td>
+                <td>
+                    {% if r.origin_provider %}<span class="provider-badge provider-{{ r.origin_provider }}">{{ r.origin_provider }}</span>{% endif %}
+                    {% if r.origin_role %}<span class="category-badge">{{ r.origin_role }}</span>{% endif %}
+                </td>
+                <td>{{ r.wave_idx if r.wave_idx is not none else '-' }}</td>
+                <td>{{ r.claim_text or '-' }}</td>
+                <td>{{ r.cs_at_creation }}</td>
+                <td>{{ '%.3f'|format(r.hr_at_creation) }}</td>
+                <td class="meta">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '-' }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+
+        {% if total_pages > 1 %}
+        <div class="pagination">
+            {% if page > 1 %}<a href="/provenance?page={{ page-1 }}{% if q %}&q={{ q }}{% endif %}" class="btn btn-sm btn-outline">Previous</a>{% endif %}
+            <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+            {% if page < total_pages %}<a href="/provenance?page={{ page+1 }}{% if q %}&q={{ q }}{% endif %}" class="btn btn-sm btn-outline">Next</a>{% endif %}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty-state">
+            {% if q %}No claims match "{{ q }}".{% else %}No provenance records yet. Each claim the swarm produces is logged here with its origin provider, role, and risk at creation.{% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}System Health - BoBot AI{% endblock %}
+{% block header_title %}System Health{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h3>💓 Live Health Checks</h3>
+        <a href="/system" class="btn btn-sm btn-outline">Re-run checks</a>
+    </div>
+    <div class="card-body">
+        {% if error %}
+        <div class="flash flash-error">Health check error: {{ error }}</div>
+        {% endif %}
+
+        {% if results %}
+        <div class="health-grid">
+            {% for name, info in results.items() %}
+            <div class="health-card health-{{ info.get('status', 'unknown') }}">
+                <div class="health-top">
+                    <span class="health-name">{{ name|replace('_', ' ')|title }}</span>
+                    <span class="status-badge health-badge-{{ info.get('status', 'unknown') }}">{{ info.get('status', 'unknown') }}</span>
+                </div>
+                <div class="health-detail">{{ info.get('details', '-') }}</div>
+                {% if info.get('providers') %}
+                <div class="health-providers">
+                    {% for pname, pinfo in info.get('providers').items() %}
+                    <div class="health-provider-row">
+                        <span class="provider-badge provider-{{ pname }}">{{ pname }}</span>
+                        <span class="meta">{{ pinfo.get('state') }} · {{ pinfo.get('success_count', 0) }} ok / {{ pinfo.get('failure_count', 0) }} fail</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">No health data available.</div>
+        {% endif %}
+        <p class="meta cog-arch">Checks run on-demand each time this page loads: database connectivity, LLM provider circuit state, secrets manager, and memory pressure.</p>
+    </div>
+</div>
+{% endblock %}

@@ -763,3 +763,222 @@ select {
 @media (max-width: 768px) {
     .vault-form-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- Navigation: sections, mobile toggle ---- */
+.nav-section {
+    padding: 14px 20px 6px;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    font-weight: 700;
+}
+.sidebar-header { display: flex; align-items: center; justify-content: space-between; }
+.sidebar-close, .menu-toggle {
+    display: none;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.3rem;
+    cursor: pointer;
+    line-height: 1;
+}
+.menu-toggle { font-size: 1.5rem; margin-right: 4px; }
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 90;
+}
+.sidebar-overlay.show { display: block; }
+
+/* ---- Governance report ---- */
+.form-hint { margin-bottom: 14px; }
+.table-wrap { overflow-x: auto; }
+
+.chips {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+}
+.chip {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--text-muted);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.chip-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.chip-value { font-size: 1.25rem; font-weight: 700; }
+.chip-unit { font-size: 0.8rem; color: var(--text-muted); font-weight: 400; }
+.chip-sub { font-size: 0.72rem; color: var(--text-secondary); }
+
+.chip.risk-low { border-left-color: var(--success); }
+.chip.risk-medium { border-left-color: var(--warning); }
+.chip.risk-high { border-left-color: var(--danger); }
+.chip.risk-critical { border-left-color: var(--danger); background: rgba(231,76,60,0.08); }
+
+.report-goal {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 18px;
+}
+.report-goal-label {
+    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--highlight); font-weight: 700; margin-right: 8px;
+}
+
+.report-cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-bottom: 8px;
+}
+.report-block { margin-bottom: 22px; }
+.report-block-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.count-pill {
+    font-size: 0.7rem;
+    background: var(--accent);
+    color: var(--text-secondary);
+    padding: 1px 8px;
+    border-radius: 10px;
+}
+.report-list {
+    list-style: none;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 0;
+}
+.report-list li {
+    padding: 8px 14px 8px 30px;
+    position: relative;
+    font-size: 0.9rem;
+    border-bottom: 1px solid rgba(42,58,92,0.4);
+}
+.report-list li:last-child { border-bottom: none; }
+.report-list li::before {
+    content: "›";
+    position: absolute;
+    left: 14px;
+    color: var(--highlight);
+    font-weight: 700;
+}
+
+/* Tier badges */
+.tier-trusted { background: rgba(46,204,113,0.15); color: var(--success); }
+.tier-reliable { background: rgba(46,204,113,0.12); color: #5fd99a; }
+.tier-provisional { background: rgba(243,156,18,0.15); color: var(--warning); }
+.tier-suspect { background: rgba(231,76,60,0.15); color: var(--danger); }
+.tier-quarantined { background: rgba(231,76,60,0.2); color: #ff7a6a; }
+.tier-na { background: rgba(255,255,255,0.07); color: var(--text-muted); }
+
+/* Severity badges + alert rows */
+.sev-critical { background: rgba(231,76,60,0.2); color: #ff7a6a; }
+.sev-high { background: rgba(231,76,60,0.15); color: var(--danger); }
+.sev-medium { background: rgba(243,156,18,0.15); color: var(--warning); }
+.sev-warning { background: rgba(243,156,18,0.15); color: var(--warning); }
+.sev-low { background: rgba(52,152,219,0.15); color: #3498db; }
+.sev-info { background: rgba(52,152,219,0.12); color: #5dade2; }
+
+.alert-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--text-muted);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+    font-size: 0.88rem;
+}
+.alert-row.sev-critical, .alert-row.sev-high { border-left-color: var(--danger); }
+.alert-row.sev-medium, .alert-row.sev-warning { border-left-color: var(--warning); }
+.alert-row.sev-low, .alert-row.sev-info { border-left-color: #3498db; }
+
+.cap-row {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    margin-bottom: 8px;
+}
+.cap-row code { margin-left: 8px; }
+.cap-output {
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.cog-arch { margin-top: 16px; font-style: italic; }
+.row-muted { opacity: 0.5; }
+
+/* ---- Swarm memory ---- */
+.mem-entry {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 12px;
+}
+.mem-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.mem-meta { margin-left: auto; }
+.mem-summary { font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 6px; }
+
+/* ---- System health ---- */
+.health-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    margin-bottom: 8px;
+}
+.health-card {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--text-muted);
+    border-radius: var(--radius);
+    padding: 16px;
+}
+.health-card.health-healthy { border-left-color: var(--success); }
+.health-card.health-degraded { border-left-color: var(--warning); }
+.health-card.health-down { border-left-color: var(--danger); }
+.health-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.health-name { font-weight: 600; }
+.health-detail { font-size: 0.85rem; color: var(--text-secondary); }
+.health-badge-healthy { background: rgba(46,204,113,0.15); color: var(--success); }
+.health-badge-degraded { background: rgba(243,156,18,0.15); color: var(--warning); }
+.health-badge-down { background: rgba(231,76,60,0.15); color: var(--danger); }
+.health-badge-unknown { background: rgba(255,255,255,0.07); color: var(--text-muted); }
+.health-providers { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.health-provider-row { display: flex; align-items: center; gap: 8px; }
+
+@media (max-width: 768px) {
+    .sidebar-close, .menu-toggle { display: block; }
+    .report-cols { grid-template-columns: 1fr; }
+    .header { gap: 10px; }
+}
+
+@media (min-width: 769px) {
+    .sidebar-close, .menu-toggle { display: none !important; }
+    .sidebar { transform: none !important; }
+}

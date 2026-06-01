@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Swarm Memory - BoBot AI{% endblock %}
+{% block header_title %}Swarm Memory{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h3>🧠 Memory Layers</h3>
+        <span class="meta">{{ total }} entries</span>
+    </div>
+    <div class="card-body">
+        <form method="get" action="/memory" class="vault-search">
+            <input type="text" name="q" value="{{ q }}" placeholder="Search content, summary, or topic...">
+            <select name="layer">
+                <option value="">All layers</option>
+                {% for lt in layer_types %}
+                <option value="{{ lt }}" {% if lt == layer %}selected{% endif %}>{{ lt }}</option>
+                {% endfor %}
+            </select>
+            <button class="btn btn-primary" type="submit">Search</button>
+            {% if q or layer %}<a href="/memory" class="btn btn-outline">Clear</a>{% endif %}
+        </form>
+
+        {% if layers %}
+        {% for l in layers %}
+        <div class="mem-entry">
+            <div class="mem-head">
+                <span class="category-badge">{{ l.layer_type }}</span>
+                {% if l.topic %}<strong>{{ l.topic }}</strong>{% endif %}
+                <span class="meta mem-meta">CS {{ l.compliance_score }} · HR {{ '%.2f'|format(l.hallucination_risk) }} · accessed {{ l.access_count }}× · {{ l.created_at.strftime('%Y-%m-%d %H:%M') if l.created_at else '-' }}</span>
+            </div>
+            {% if l.summary %}<div class="mem-summary">{{ l.summary }}</div>{% endif %}
+            <details class="score-details"><summary>Full content</summary>
+                <pre class="result-output">{{ l.content }}</pre>
+            </details>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="empty-state">
+            {% if q or layer %}No memory entries match your filters.{% else %}No swarm memory yet. The swarm stores compliant, low-risk insights here across runs for reuse.{% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

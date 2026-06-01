@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "macros.html" as m %}
 {% block title %}Dashboard - BoBot AI{% endblock %}
 {% block header_title %}Dashboard{% endblock %}
 
@@ -21,10 +22,14 @@
         <div class="prompt-display">
             <strong>Prompt:</strong> {{ result_data.prompt }}
         </div>
-        <pre class="result-output">{{ result_data.result }}</pre>
+        {% if parsed %}
+            {{ m.report(parsed, full=False) }}
+        {% else %}
+            <pre class="result-output">{{ result_data.result }}</pre>
+        {% endif %}
     </div>
     <div class="card-footer">
-        <a href="/tasks/{{ result_data.id }}" class="btn btn-sm btn-outline">View Full Detail</a>
+        <a href="/tasks/{{ result_data.id }}" class="btn btn-sm btn-primary">View Full Governance Report</a>
     </div>
 </div>
 {% endif %}
@@ -44,7 +49,8 @@
                 <label for="prompt">Enter your task prompt</label>
                 <textarea id="prompt" name="prompt" rows="6" placeholder="Describe the task you want the AI swarm to work on...&#10;&#10;Example: Analyze the security posture of a Node.js API and recommend improvements." required>{{ request.query_params.get('prompt', '') }}</textarea>
             </div>
-            <button type="submit" class="btn btn-primary" {% if not has_keys %}disabled{% endif %} onclick="this.disabled=true;this.innerText='Running...';this.form.submit();">
+            <p class="meta form-hint">Runs a governed multi-provider swarm with compliance scoring, hallucination-risk control, and full provenance tracking.</p>
+            <button type="submit" class="btn btn-primary" {% if not has_keys %}disabled{% endif %} onclick="this.disabled=true;this.innerHTML='<span class=spinner></span>Running...';this.form.submit();">
                 Run Task
             </button>
         </form>
@@ -58,6 +64,7 @@
         <a href="/tasks/history" class="btn btn-sm btn-outline">View All</a>
     </div>
     <div class="card-body">
+        <div class="table-wrap">
         <table class="table">
             <thead>
                 <tr>
@@ -78,6 +85,7 @@
                 {% endfor %}
             </tbody>
         </table>
+        </div>
     </div>
 </div>
 {% endif %}

@@ -22,6 +22,21 @@ def _has_active_keys():
         db.close()
 
 
+def _parse_result(task):
+    """Parse a TaskRun.result JSON string into a dict for structured rendering.
+
+    Returns None when the result is missing or not a JSON object (e.g. a plain
+    error string), so templates can fall back to raw display.
+    """
+    if not task or not task.result:
+        return None
+    try:
+        data = json.loads(task.result)
+        return data if isinstance(data, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, _=Depends(require_auth)):
     db = SessionLocal()
@@ -45,6 +60,7 @@ async def dashboard(request: Request, _=Depends(require_auth)):
         "recent_tasks": recent,
         "has_keys": has_keys,
         "result_data": result_data,
+        "parsed": _parse_result(result_data),
         "err": request.query_params.get("err"),
     })
 
@@ -155,4 +171,5 @@ async def task_detail(request: Request, task_id: int, _=Depends(require_auth)):
         "request": request,
         "task": task,
         "scores": scores,
+        "parsed": _parse_result(task),
     })

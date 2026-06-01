@@ -1,0 +1,176 @@
+{% macro risk_class(tier) -%}
+{%- if tier %}risk-{{ tier|lower }}{% else %}risk-unknown{% endif -%}
+{%- endmacro %}
+
+{% macro sev_class(sev) -%}
+{%- if sev %}sev-{{ sev|lower }}{% else %}sev-info{% endif -%}
+{%- endmacro %}
+
+{% macro list_block(title, items, icon) %}
+{% if items %}
+<div class="report-block">
+    <h4 class="report-block-title">{{ icon }} {{ title }} <span class="count-pill">{{ items|length }}</span></h4>
+    <ul class="report-list">
+        {% for it in items %}<li>{{ it }}</li>{% endfor %}
+    </ul>
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro summary_chips(parsed) %}
+<div class="chips">
+    {% set hr = parsed.get('HALLUCINATION_RISK') %}
+    {% if hr %}
+    <div class="chip {{ risk_class(hr.get('tier')) }}">
+        <span class="chip-label">Hallucination Risk</span>
+        <span class="chip-value">{{ hr.get('tier', 'N/A') }}{% if hr.get('average') is not none %} · {{ '%.3f'|format(hr.get('average')) }}{% endif %}</span>
+        {% if hr.get('trend') %}<span class="chip-sub">trend: {{ hr.get('trend') }}</span>{% endif %}
+    </div>
+    {% endif %}
+    {% set cs = parsed.get('COMPLIANCE_SCORES') %}
+    {% if cs %}
+    {% set avg_cs = (cs | sum(attribute='score') / cs|length) %}
+    <div class="chip">
+        <span class="chip-label">Avg Compliance</span>
+        <span class="chip-value">{{ avg_cs|round|int }}<span class="chip-unit">/100</span></span>
+        <span class="chip-sub">{{ cs|length }} agents</span>
+    </div>
+    {% endif %}
+    {% set dissent = parsed.get('DISSENT_LOG') %}
+    <div class="chip">
+        <span class="chip-label">Dissent</span>
+        <span class="chip-value">{{ dissent|length if dissent else 0 }}</span>
+        <span class="chip-sub">recorded</span>
+    </div>
+    {% set alerts = parsed.get('SENTINEL_ALERTS') %}
+    <div class="chip {% if alerts %}risk-high{% endif %}">
+        <span class="chip-label">Sentinel Alerts</span>
+        <span class="chip-value">{{ alerts|length if alerts else 0 }}</span>
+        <span class="chip-sub">this run</span>
+    </div>
+</div>
+{% endmacro %}
+
+{% macro report(parsed, full=False) %}
+{% if parsed.get('ABORT_REASON') %}
+<div class="flash flash-error"><strong>Run aborted:</strong> {{ parsed.get('ABORT_REASON') }}</div>
+{% endif %}
+
+{{ summary_chips(parsed) }}
+
+{% if parsed.get('GOAL') %}
+<div class="report-goal"><span class="report-goal-label">Goal</span> {{ parsed.get('GOAL') }}</div>
+{% endif %}
+
+<div class="report-cols">
+    {{ list_block('Facts', parsed.get('FACTS'), '📌') }}
+    {{ list_block('Decisions', parsed.get('DECISIONS'), '✅') }}
+    {{ list_block('Next Tasks', parsed.get('NEXT_TASKS'), '➡️') }}
+    {{ list_block('Risks', parsed.get('RISKS'), '⚠️') }}
+    {{ list_block('Open Needs', parsed.get('NEXT_NEEDS'), '🔎') }}
+</div>
+
+{% if parsed.get('NOTE') %}
+<div class="flash flash-warning">{{ parsed.get('NOTE') }}</div>
+{% endif %}
+
+{% if full %}
+    {% set cs = parsed.get('COMPLIANCE_SCORES') %}
+    {% if cs %}
+    <div class="report-block">
+        <h4 class="report-block-title">🛡️ Compliance by Agent</h4>
+        <div class="table-wrap">
+        <table class="table">
+            <thead><tr><th>Agent</th><th>Score</th><th>Tier</th><th>HR</th><th>Control</th></tr></thead>
+            <tbody>
+            {% for a in cs %}
+                <tr>
+                    <td class="mono">{{ a.get('agent', '-') }}</td>
+                    <td><strong>{{ a.get('score', '-') }}</strong></td>
+                    <td><span class="status-badge tier-{{ (a.get('tier') or 'na')|lower }}">{{ a.get('tier', '-') }}</span></td>
+                    <td>{% if a.get('hr') is not none %}{{ '%.3f'|format(a.get('hr')) }}{% else %}-{% endif %}</td>
+                    <td class="meta">{{ a.get('control', '-') }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+    {% endif %}
+
+    {% set alerts = parsed.get('SENTINEL_ALERTS') %}
+    {% if alerts %}
+    <div class="report-block">
+        <h4 class="report-block-title">🚨 Sentinel Alerts</h4>
+        {% for al in alerts %}
+        <div class="alert-row {{ sev_class(al.get('severity')) }}">
+            <span class="status-badge {{ sev_class(al.get('severity')) }}">{{ al.get('severity', 'info') }}</span>
+            <strong>{{ al.get('type', 'alert') }}</strong>
+            <span>{{ al.get('desc') or al.get('description', '') }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% set meta = parsed.get('META_CLAIMS') %}
+    {% if meta %}
+    <div class="report-block">
+        <h4 class="report-block-title">🔬 Auditor Meta-Claims <span class="count-pill">{{ meta|length }}</span></h4>
+        {% for m in meta %}
+        <div class="alert-row {{ sev_class(m.get('severity')) }}">
+            <span class="status-badge {{ sev_class(m.get('severity')) }}">{{ m.get('severity', 'info') }}</span>
+            <strong>{{ m.get('category', 'meta') }}</strong>
+            <span>{{ m.get('desc') or m.get('description', '') }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% set dissent = parsed.get('DISSENT_LOG') %}
+    {% if dissent %}
+    <div class="report-block">
+        <h4 class="report-block-title">⚖️ Dissent Log <span class="count-pill">{{ dissent|length }}</span></h4>
+        <ul class="report-list">{% for d in dissent %}<li>{{ d }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    {% set caplog = parsed.get('CAPABILITY_LOG') %}
+    {% if caplog %}
+    <div class="report-block">
+        <h4 class="report-block-title">⚡ Capability Invocations <span class="count-pill">{{ caplog|length }}</span></h4>
+        {% for c in caplog %}
+        <div class="cap-row">
+            <span class="status-badge tier-trusted">{{ c.get('capability', '-') }}</span>
+            {% if c.get('params') %}<code class="mono">{{ c.get('params') }}</code>{% endif %}
+            <div class="cap-output mono">{{ c.get('output', '') }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if parsed.get('PROVENANCE_SUMMARY') or parsed.get('CLAIM_LEDGER') or parsed.get('AUDITOR_STATUS') %}
+    <div class="report-block">
+        <h4 class="report-block-title">🧬 Provenance &amp; Audit Trail</h4>
+        {% if parsed.get('PROVENANCE_SUMMARY') %}
+        <details class="score-details" open><summary>Provenance Summary</summary>
+            <pre class="result-output">{{ parsed.get('PROVENANCE_SUMMARY') }}</pre>
+        </details>
+        {% endif %}
+        {% if parsed.get('CLAIM_LEDGER') %}
+        <details class="score-details"><summary>Claim Ledger</summary>
+            <pre class="result-output">{{ parsed.get('CLAIM_LEDGER') }}</pre>
+        </details>
+        {% endif %}
+        {% if parsed.get('AUDITOR_STATUS') %}
+        <details class="score-details"><summary>Auditor Status</summary>
+            <pre class="result-output">{{ parsed.get('AUDITOR_STATUS') | tojson(indent=2) }}</pre>
+        </details>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if parsed.get('COGNITIVE_ARCHITECTURE') %}
+    <p class="meta cog-arch">{{ parsed.get('COGNITIVE_ARCHITECTURE') }}</p>
+    {% endif %}
+{% endif %}
+{% endmacro %}
