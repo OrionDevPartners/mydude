@@ -1,12 +1,13 @@
-# BoBot AI - Business Automation Platform
+# MyDude.io - Business Automation Platform
 
 ## Overview
-BoBot AI is a web-based AI business automation platform built with FastAPI. It provides a dark-themed dashboard for running AI tasks through a multi-provider LLM swarm with built-in compliance scoring and hallucination risk assessment. The platform features encrypted API key management, task history tracking, and a governance-first approach to AI outputs.
+MyDude.io is a web-based AI business automation platform built with FastAPI. It provides a dark-themed dashboard for running AI tasks through a multi-provider LLM swarm with built-in compliance scoring and hallucination risk assessment. The platform features encrypted API key management, task history tracking, and a governance-first approach to AI outputs.
 
 **Current Phase**: MVP (Phase 1) - Web dashboard with authentication, API key management, and AI task execution.
 **Future Phases**: Web scraping, AWS integration, git operations, CRM, customer service, bookkeeping, email/phone/text automation, website generation, social media content, pool bid creation.
 
 ## User Preferences
+- Project/product name is "MyDude.io" (canonical; deployed at mydude.io). The name lives in src/web/branding.py (single source of truth) — change it there to rename everywhere.
 - Structured, high-governance approach to AI interaction
 - Emphasis on epistemic discipline and transparent decision-making
 - Robust error handling, self-healing capabilities, clear audit trails
