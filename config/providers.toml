@@ -18,6 +18,7 @@
 # Maps each capability to its implementation strategy. Future capabilities
 # (email, storage, ...) plug in here without touching call-site code.
 llm = "swarm"
+browser = "engine"
 
 [llm]
 # Providers the LLM swarm may use. Remove a key to drop that provider; the
@@ -76,3 +77,54 @@ role_hint = "Creative solutions + unusual optimizations + growth/monetization an
 model_patterns = ['grok']
 base_url_env = "GROK_BASE_URL"
 default_base_url = "https://api.x.ai/v1"
+
+# =============================================================================
+# BROWSER capability — swappable, cost-ordered automation backends.
+# =============================================================================
+[browser]
+# Backends the browser engine may use, tried cheapest-cost first with automatic
+# failover to the next available backend. Remove a key to drop that backend.
+enabled = ["local", "browserbase", "apify", "agentcore", "azure"]
+
+# Backends whose secrets MUST be present at boot. The browser handshake hard-
+# fails if any required secret is missing. Must be a subset of `enabled`. Leave
+# empty so the capability boots disabled until credentials are added.
+required = []
+
+# Backend definitions. `secrets` lists the env_2 secret NAMES (not values).
+# `adapter` selects the implementation registered in src/browser/registry.py.
+# `cost` orders failover (lower is tried first).
+[browserbackends.local]
+adapter = "local_playwright"
+cost = 0
+label = "Local Playwright (Chromium)"
+secrets = []
+notes = "Headless Chromium in this container. Free but heavy; may be unavailable in deployment."
+
+[browserbackends.browserbase]
+adapter = "browserbase"
+cost = 10
+label = "Browserbase"
+secrets = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"]
+notes = "Cloud Chromium driven over CDP. Reliable in deployment."
+
+[browserbackends.apify]
+adapter = "apify"
+cost = 20
+label = "Apify"
+secrets = ["APIFY_API_TOKEN"]
+notes = "Config-ready stub — wire the Apify implementation to enable."
+
+[browserbackends.agentcore]
+adapter = "agentcore"
+cost = 30
+label = "AWS Bedrock AgentCore Browser"
+secrets = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+notes = "Config-ready stub — wire the AgentCore implementation to enable."
+
+[browserbackends.azure]
+adapter = "azure"
+cost = 40
+label = "Azure Playwright Testing"
+secrets = ["AZURE_PLAYWRIGHT_ACCESS_TOKEN", "PLAYWRIGHT_SERVICE_URL"]
+notes = "Config-ready stub — wire the Azure implementation to enable."

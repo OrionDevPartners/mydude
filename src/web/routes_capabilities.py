@@ -1,0 +1,235 @@
+"""Capabilities console — status + live test panel for the browser and SSH
+bridge capabilities. Every test runs through the same broker -> policy ->
+integrations path the swarm uses, so the screen reflects real governance.
+"""
+import logging
+import os
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from src.database import SessionLocal
+from src.models import ApiKey, CapabilityAuditLog
+from src.web.auth import require_auth
+from src.web.crypto import encrypt_value
+from src.web.templating import templates
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").lower() in _TRUTHY
+
+
+def _broker():
+    from src.swarm.broker import CapabilityBroker
+    from src.swarm.integrations import Integrations
+    from src.swarm.policy import PolicyEngine
+    return CapabilityBroker(PolicyEngine(), Integrations())
+
+
+def _browser_status():
+    try:
+        from src.browser.engine import BrowserEngine
+        return BrowserEngine().status()
+    except Exception as e:  # never let a config issue break the page
+        logger.warning("Browser status failed: %s", e)
+        return []
+
+
+def _ssh_status():
+    try:
+        from src.bridge.ssh import load_ssh_config
+        cfg = load_ssh_config()
+        return {
+            "configured": cfg.configured,
+            "host": cfg.host or "",
+            "user": cfg.user or "",
+            "port": cfg.port,
+            "auth": "private key" if cfg.private_key else ("password" if cfg.password else "none"),
+        }
+    except Exception as e:
+        logger.warning("SSH status failed: %s", e)
+        return {"configured": False, "host": "", "user": "", "port": 22, "auth": "none"}
+
+
+def _allowlist(name: str, default):
+    raw = os.environ.get(name, "")
+    if not raw.strip():
+        return list(default)
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _context(request, result=None, result_kind=None):
+    db = SessionLocal()
+    try:
+        logs = (
+            db.query(CapabilityAuditLog)
+            .order_by(CapabilityAuditLog.created_at.desc())
+            .limit(50)
+            .all()
+        )
+        audit = [{
+            "capability": l.capability,
+            "target": l.target or "",
+            "backend": l.backend or "",
+            "status": l.status,
+            "detail": l.detail or "",
+            "source": l.source or "",
+            "created_at": l.created_at,
+        } for l in logs]
+    finally:
+        db.close()
+    return {
+        "request": request,
+        "browser_enabled": _flag("ENABLE_BROWSER_CAPABILITY"),
+        "ssh_enabled": _flag("ENABLE_SSH_CAPABILITY"),
+        "browser_backends": _browser_status(),
+        "ssh": _ssh_status(),
+        "browser_domains": _allowlist("BROWSER_ALLOWED_DOMAINS", ["example.com"]),
+        "ssh_commands": _allowlist("SSH_ALLOWED_COMMANDS", [
+            "echo", "whoami", "hostname", "uname", "sw_vers", "uptime", "date",
+            "pwd", "ls", "cat", "head", "tail", "sqlite3", "defaults", "system_profiler",
+        ]),
+        "result": result,
+        "result_kind": result_kind,
+        "audit": audit,
+    }
+
+
+@router.get("/capabilities", response_class=HTMLResponse)
+async def capabilities_page(request: Request, _=Depends(require_auth)):
+    return templates.TemplateResponse("capabilities.html", _context(request))
+
+
+@router.post("/capabilities/test/browser", response_class=HTMLResponse)
+async def test_browser(request: Request, url: str = Form(""), _=Depends(require_auth)):
+    broker = _broker()
+    res = await broker.request("browser_open", {"url": url.strip(), "source": "capabilities-ui"})
+    result = {
+        "allowed": res.decision.allowed,
+        "reason": res.decision.reason,
+        "output": res.output,
+    }
+    return templates.TemplateResponse(
+        "capabilities.html", _context(request, result=result, result_kind="browser")
+    )
+
+
+@router.post("/capabilities/test/ssh", response_class=HTMLResponse)
+async def test_ssh(request: Request, command: str = Form(""), _=Depends(require_auth)):
+    broker = _broker()
+    res = await broker.request("ssh_run", {"command": command.strip(), "source": "capabilities-ui"})
+    result = {
+        "allowed": res.decision.allowed,
+        "reason": res.decision.reason,
+        "output": res.output,
+    }
+    return templates.TemplateResponse(
+        "capabilities.html", _context(request, result=result, result_kind="ssh")
+    )
+
+
+@router.post("/capabilities/test/code", response_class=HTMLResponse)
+async def test_code(request: Request, _=Depends(require_auth)):
+    broker = _broker()
+    res = await broker.request("ssh_fetch_code", {"source": "capabilities-ui"})
+    result = {
+        "allowed": res.decision.allowed,
+        "reason": res.decision.reason,
+        "output": res.output,
+    }
+    return templates.TemplateResponse(
+        "capabilities.html", _context(request, result=result, result_kind="code")
+    )
+
+
+@router.post("/capabilities/test/history", response_class=HTMLResponse)
+async def test_history(request: Request, browser: str = Form("chrome"), _=Depends(require_auth)):
+    broker = _broker()
+    res = await broker.request(
+        "ssh_read_history", {"browser": browser, "limit": 20, "source": "capabilities-ui"}
+    )
+    result = {
+        "allowed": res.decision.allowed,
+        "reason": res.decision.reason,
+        "output": res.output,
+    }
+    return templates.TemplateResponse(
+        "capabilities.html", _context(request, result=result, result_kind="history")
+    )
+
+
+def _upsert_vault(db, provider, env_var, value):
+    """Create or update a vault entry keyed by its env var, storing it encrypted."""
+    existing = (
+        db.query(ApiKey)
+        .filter((ApiKey.env_var == env_var) | (ApiKey.provider == provider))
+        .first()
+    )
+    if existing:
+        existing.encrypted_key = encrypt_value(value)
+        existing.is_active = True
+        existing.env_var = env_var
+        existing.last_rotated_at = datetime.utcnow()
+    else:
+        db.add(ApiKey(
+            provider=provider,
+            label=provider,
+            encrypted_key=encrypt_value(value),
+            is_active=True,
+            category="Automation",
+            env_var=env_var,
+            last_rotated_at=datetime.utcnow(),
+        ))
+
+
+@router.post("/capabilities/ssh-config")
+async def save_ssh_config(
+    request: Request,
+    host: str = Form(""),
+    port: str = Form("22"),
+    user: str = Form(""),
+    private_key: str = Form(""),
+    password: str = Form(""),
+    _=Depends(require_auth),
+):
+    from urllib.parse import quote
+
+    host = host.strip()
+    user = user.strip()
+    private_key = private_key.strip()
+    password = password.strip()
+    if not host or not user or not (private_key or password):
+        return RedirectResponse(
+            url="/capabilities?err=" + quote("Host, user, and a key or password are required."),
+            status_code=303,
+        )
+    db = SessionLocal()
+    try:
+        _upsert_vault(db, "ssh-host", "SSH_HOST", host)
+        _upsert_vault(db, "ssh-user", "SSH_USER", user)
+        _upsert_vault(db, "ssh-port", "SSH_PORT", (port.strip() or "22"))
+        if private_key:
+            _upsert_vault(db, "ssh-private-key", "SSH_PRIVATE_KEY", private_key)
+        if password:
+            _upsert_vault(db, "ssh-password", "SSH_PASSWORD", password)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error("Saving SSH config failed: %s", e)
+        return RedirectResponse(
+            url="/capabilities?err=" + quote("Could not save SSH config."), status_code=303
+        )
+    finally:
+        db.close()
+    from src.web.routes_keys import sync_keys_to_env
+    sync_keys_to_env()
+    return RedirectResponse(
+        url="/capabilities?msg=" + quote("SSH bridge configuration saved to vault."),
+        status_code=303,
+    )

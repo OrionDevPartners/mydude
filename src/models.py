@@ -257,6 +257,19 @@ class KeyAuditLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CapabilityAuditLog(Base):
+    __tablename__ = "capability_audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    capability = Column(String(60), nullable=False, index=True)
+    target = Column(Text, nullable=True)
+    backend = Column(String(60), nullable=True)
+    status = Column(String(20), nullable=False, default="ok")
+    detail = Column(Text, nullable=True)
+    source = Column(String(40), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class TaskRun(Base):
     __tablename__ = "task_runs"
 

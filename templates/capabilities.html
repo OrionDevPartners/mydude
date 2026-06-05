@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Capabilities - {{ product.name }}{% endblock %}
+{% block header_title %}Capabilities{% endblock %}
+
+{% block content %}
+{% set msg = request.query_params.get('msg') %}
+{% set err = request.query_params.get('err') %}
+{% if msg %}<div class="flash flash-success">{{ msg }}</div>{% endif %}
+{% if err %}<div class="flash flash-error">{{ err }}</div>{% endif %}
+
+<p class="form-hint" style="margin-bottom:16px;">
+    These capabilities are governed by the same broker → policy → audit pipeline the
+    swarm uses. They are <strong>off by default</strong> and only run within the
+    allow-lists below. Everything is recorded in the audit log at the bottom.
+</p>
+
+<!-- ===================== BROWSER ===================== -->
+<div class="card">
+    <div class="card-header">
+        <h3>🌐 Browser Automation</h3>
+        <span class="badge">
+            <span class="conn-dot {{ 'conn-on' if browser_enabled else 'conn-off' }}"></span>
+            {{ 'Enabled' if browser_enabled else 'Disabled' }}
+        </span>
+    </div>
+    <div class="card-body">
+        {% if not browser_enabled %}
+        <p class="form-hint">Set the <span class="mono">ENABLE_BROWSER_CAPABILITY</span> environment
+            variable to <span class="mono">true</span> to enable browsing.</p>
+        {% endif %}
+        <p class="form-hint">Browse allow-list:
+            {% for d in browser_domains %}<span class="chip">{{ d }}</span>{% endfor %}
+            <span class="mono">(BROWSER_ALLOWED_DOMAINS)</span></p>
+
+        <table class="table">
+            <thead><tr><th>Backend</th><th>Adapter</th><th>Cost</th><th>Secrets</th><th>Status</th></tr></thead>
+            <tbody>
+            {% for b in browser_backends %}
+                <tr>
+                    <td>{{ b.label }}</td>
+                    <td class="mono">{{ b.adapter }}</td>
+                    <td class="meta">{{ b.cost }}</td>
+                    <td class="meta">{{ b.secrets | join(', ') if b.secrets else '—' }}</td>
+                    <td>
+                        <span class="conn-dot {{ 'conn-on' if b.available else 'conn-off' }}"></span>
+                        {{ 'Ready' if b.available else 'Unavailable' }}
+                    </td>
+                </tr>
+            {% else %}
+                <tr><td colspan="5" class="empty-state">No backends configured.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <p class="form-hint">Backends are tried cheapest-first with automatic failover to the next
+            available one.</p>
+
+        <form method="post" action="/capabilities/test/browser" class="form-inline-grid" style="margin-top:12px;">
+            <div class="form-group">
+                <label>Test: open a URL</label>
+                <input type="text" name="url" placeholder="https://example.com" required>
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary btn-sm">Open page</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ===================== SSH BRIDGE ===================== -->
+<div class="card">
+    <div class="card-header">
+        <h3>🖥️ SSH Bridge (your Mac)</h3>
+        <span class="badge">
+            <span class="conn-dot {{ 'conn-on' if ssh_enabled else 'conn-off' }}"></span>
+            {{ 'Enabled' if ssh_enabled else 'Disabled' }}
+        </span>
+    </div>
+    <div class="card-body">
+        {% if not ssh_enabled %}
+        <p class="form-hint">Set the <span class="mono">ENABLE_SSH_CAPABILITY</span> environment
+            variable to <span class="mono">true</span> to enable the bridge.</p>
+        {% endif %}
+        <div class="detail-grid">
+            <div class="detail-row"><span class="detail-label">Connection</span>
+                <span class="detail-value">
+                    {% if ssh.configured %}{{ ssh.user }}@{{ ssh.host }}:{{ ssh.port }} ({{ ssh.auth }}){% else %}Not configured{% endif %}
+                </span></div>
+        </div>
+        <p class="form-hint">Command allow-list:
+            {% for c in ssh_commands %}<span class="chip">{{ c }}</span>{% endfor %}
+            <span class="mono">(SSH_ALLOWED_COMMANDS)</span>. Destructive patterns and command
+            chaining are always blocked.</p>
+
+        <form method="post" action="/capabilities/ssh-config" style="margin-top:12px;">
+            <div class="form-inline-grid">
+                <div class="form-group"><label>Host / IP</label>
+                    <input type="text" name="host" value="{{ ssh.host }}" placeholder="my-mac.local"></div>
+                <div class="form-group"><label>Port</label>
+                    <input type="text" name="port" value="{{ ssh.port }}"></div>
+                <div class="form-group"><label>User</label>
+                    <input type="text" name="user" value="{{ ssh.user }}" placeholder="yourname"></div>
+            </div>
+            <div class="form-group"><label>Private key (preferred)</label>
+                <textarea name="private_key" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
+            <div class="form-group"><label>…or password</label>
+                <input type="password" name="password" placeholder="leave blank if using a key"></div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary btn-sm">Save bridge config</button>
+            </div>
+            <p class="form-hint">Stored encrypted in the vault. Values are never displayed back.</p>
+        </form>
+
+        <div class="cap-row" style="margin-top:16px;">
+            <form method="post" action="/capabilities/test/ssh" class="form-inline-grid">
+                <div class="form-group"><label>Test: run a whitelisted command</label>
+                    <input type="text" name="command" placeholder="whoami" required></div>
+                <div class="form-actions"><button type="submit" class="btn btn-sm btn-outline">Run</button></div>
+            </form>
+            <form method="post" action="/capabilities/test/history">
+                <input type="hidden" name="browser" value="chrome">
+                <button type="submit" class="btn btn-sm btn-outline">Read browser history</button>
+            </form>
+            <form method="post" action="/capabilities/test/code">
+                <button type="submit" class="btn btn-sm btn-outline">Fetch latest code</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- ===================== RESULT ===================== -->
+{% if result %}
+<div class="card result-card">
+    <div class="card-header"><h3>Test result — {{ result_kind }}</h3></div>
+    <div class="card-body">
+        <p>
+            <span class="badge">{{ 'ALLOWED' if result.allowed else 'BLOCKED' }}</span>
+            <span class="meta">{{ result.reason }}</span>
+        </p>
+        {% if result.output %}<pre class="cap-output result-output">{{ result.output }}</pre>{% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ===================== AUDIT ===================== -->
+<div class="card">
+    <div class="card-header"><h3>Capability Audit Log</h3></div>
+    <div class="card-body">
+        {% if audit %}
+        <table class="table">
+            <thead><tr><th>When (UTC)</th><th>Capability</th><th>Target</th><th>Backend</th><th>Status</th><th>Source</th></tr></thead>
+            <tbody>
+            {% for a in audit %}
+                <tr>
+                    <td class="meta">{{ a.created_at.strftime('%Y-%m-%d %H:%M:%S') if a.created_at else '-' }}</td>
+                    <td class="mono">{{ a.capability }}</td>
+                    <td class="meta">{{ a.target }}</td>
+                    <td class="meta">{{ a.backend }}</td>
+                    <td><span class="audit-action audit-{{ 'create' if a.status == 'ok' else 'delete' }}">{{ a.status }}</span></td>
+                    <td class="meta">{{ a.source }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty-state">No capability activity recorded yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -1,10 +1,136 @@
 import asyncio
+import logging
 import shlex
 import subprocess
 from typing import Dict, Any, List
 
+logger = logging.getLogger(__name__)
+
+
+def audit_capability(capability, target=None, backend=None, status="ok", detail=None, source=None):
+    """Record a capability invocation to the CapabilityAuditLog. Never raises —
+    an audit failure must not break the capability or leak details."""
+    try:
+        from src.database import SessionLocal
+        from src.models import CapabilityAuditLog
+        db = SessionLocal()
+        try:
+            db.add(CapabilityAuditLog(
+                capability=capability,
+                target=(str(target)[:2000] if target is not None else None),
+                backend=backend,
+                status=status,
+                detail=(str(detail)[:2000] if detail is not None else None),
+                source=source,
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:  # pragma: no cover - audit must never break the call
+        logger.warning("Failed to write capability audit log: %s", e)
+
 
 class Integrations:
+    async def browser_open(self, params: Dict[str, Any]) -> str:
+        from src.browser.engine import BrowserEngine
+
+        url = (params.get("url") or "").strip()
+        source = params.get("source")
+        if not url:
+            audit_capability("browser_open", status="error", detail="missing url", source=source)
+            return "No URL provided."
+        # The allow-list is enforced at the browser layer BEFORE every navigation
+        # hop (including redirects), closing the redirect TOCTOU/SSRF gap a
+        # post-navigation check would leave open. Policy stays the source of truth.
+        from src.swarm.policy import PolicyEngine
+        allow_host = PolicyEngine().is_host_allowed
+        engine = BrowserEngine()
+        result = await engine.open_page(
+            url,
+            timeout_ms=int(params.get("timeout_ms", 30000)),
+            screenshot=bool(params.get("screenshot", True)),
+            max_chars=int(params.get("max_chars", 4000)),
+            allow_host=allow_host,
+        )
+        if getattr(result, "blocked", False):
+            audit_capability(
+                "browser_open", target=result.final_url or url, backend=result.backend,
+                status="blocked", detail=result.error, source=source,
+            )
+            return "Browser open blocked: %s" % result.error
+        if not result.ok:
+            audit_capability(
+                "browser_open", target=url, backend=",".join(result.attempts) or None,
+                status="error", detail=result.error, source=source,
+            )
+            return "Browser open failed: %s" % result.error
+        audit_capability(
+            "browser_open", target=url, backend=result.backend, status="ok",
+            detail="title=%s" % (result.title or ""), source=source,
+        )
+        summary = "Opened %s via '%s'\nFinal URL: %s\nTitle: %s\n\n%s" % (
+            url, result.backend, result.final_url, result.title, (result.text or "")[:1500],
+        )
+        return summary
+
+    async def ssh_run(self, params: Dict[str, Any]) -> str:
+        from src.bridge.ssh import SSHBridge, SSHBridgeError
+
+        command = (params.get("command") or "").strip()
+        source = params.get("source")
+        if not command:
+            audit_capability("ssh_run", status="error", detail="missing command", source=source)
+            return "No command provided."
+        bridge = SSHBridge()
+
+        def run():
+            return bridge.run_command(command, timeout=int(params.get("timeout", 30)))
+
+        try:
+            out = await asyncio.to_thread(run)
+            audit_capability("ssh_run", target=command, status="ok", source=source)
+            return out
+        except SSHBridgeError as e:
+            audit_capability("ssh_run", target=command, status="error", detail=str(e), source=source)
+            return "SSH bridge error: %s" % e
+
+    async def ssh_read_history(self, params: Dict[str, Any]) -> str:
+        from src.bridge.ssh import SSHBridge, SSHBridgeError
+
+        source = params.get("source")
+        browser = (params.get("browser") or "chrome").lower()
+        limit = int(params.get("limit", 20))
+        bridge = SSHBridge()
+
+        def run():
+            return bridge.read_browser_history(limit=limit, browser=browser)
+
+        try:
+            out = await asyncio.to_thread(run)
+            audit_capability("ssh_read_history", target="%s:%d" % (browser, limit), status="ok", source=source)
+            return out
+        except SSHBridgeError as e:
+            audit_capability("ssh_read_history", target=browser, status="error", detail=str(e), source=source)
+            return "SSH bridge error: %s" % e
+
+    async def ssh_fetch_code(self, params: Dict[str, Any]) -> str:
+        from src.bridge.ssh import SSHBridge, SSHBridgeError
+
+        source = params.get("source")
+        within = int(params.get("within_minutes", 10))
+        bridge = SSHBridge()
+
+        def run():
+            return bridge.fetch_recent_code(within_minutes=within)
+
+        try:
+            out = await asyncio.to_thread(run)
+            audit_capability("ssh_fetch_code", target="within=%dm" % within, status="ok", source=source)
+            return out
+        except SSHBridgeError as e:
+            audit_capability("ssh_fetch_code", status="error", detail=str(e), source=source)
+            return "SSH bridge error: %s" % e
+
     async def git_status(self, params: Dict[str, Any]) -> str:
         return await _run_cmd(["git", "status", "--porcelain=v1", "-b"])
 

@@ -90,12 +90,14 @@ from src.web.routes_keys import router as keys_router
 from src.web.routes_services import router as services_router
 from src.web.routes_tasks import router as tasks_router
 from src.web.routes_governance import router as governance_router
+from src.web.routes_capabilities import router as capabilities_router
 
 app.include_router(auth_router)
 app.include_router(keys_router)
 app.include_router(services_router)
 app.include_router(tasks_router)
 app.include_router(governance_router)
+app.include_router(capabilities_router)
 
 
 @app.get("/health")
@@ -124,3 +126,9 @@ async def startup():
     # app never serves traffic in a misconfigured state.
     from src.providers.handshake import run_handshake
     run_handshake()
+
+    # Browser capability handshake — validates backend config and any required
+    # backend secrets. With the default empty required list it simply boots the
+    # capability disabled until credentials are added.
+    from src.browser.handshake import run_browser_handshake
+    run_browser_handshake()

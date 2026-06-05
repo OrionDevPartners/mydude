@@ -37,6 +37,11 @@
                     <span class="nav-icon">💓</span> System Health
                 </a>
 
+                <div class="nav-section">Automation</div>
+                <a href="/capabilities" class="nav-link {% if request.url.path == '/capabilities' %}active{% endif %}">
+                    <span class="nav-icon">⚡</span> Capabilities
+                </a>
+
                 <div class="nav-section">Credentials</div>
                 <a href="/keys" class="nav-link {% if request.url.path == '/keys' %}active{% endif %}">
                     <span class="nav-icon">🔑</span> API Vault
