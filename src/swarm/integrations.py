@@ -2,7 +2,7 @@ import asyncio
 import logging
 import shlex
 import subprocess
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +31,13 @@ def audit_capability(capability, target=None, backend=None, status="ok", detail=
 
 
 class Integrations:
+    #: Base64 PNG of the most recent successful browser_open (UI render channel).
+    last_browser_screenshot: Optional[str] = None
+
     async def browser_open(self, params: Dict[str, Any]) -> str:
         from src.browser.engine import BrowserEngine
 
+        self.last_browser_screenshot = None
         url = (params.get("url") or "").strip()
         source = params.get("source")
         if not url:
@@ -68,6 +72,7 @@ class Integrations:
             "browser_open", target=url, backend=result.backend, status="ok",
             detail="title=%s" % (result.title or ""), source=source,
         )
+        self.last_browser_screenshot = getattr(result, "screenshot_b64", None)
         summary = "Opened %s via '%s'\nFinal URL: %s\nTitle: %s\n\n%s" % (
             url, result.backend, result.final_url, result.title, (result.text or "")[:1500],
         )

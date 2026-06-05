@@ -16,6 +16,7 @@ class BrokerResult:
     ok: bool
     decision: PolicyDecision
     output: Optional[str] = None
+    screenshot_b64: Optional[str] = None
 
 
 class CapabilityBroker:
@@ -58,7 +59,10 @@ class CapabilityBroker:
 
         if capability == "browser_open":
             out = await self.integrations.browser_open(params)
-            return BrokerResult(True, decision, out)
+            return BrokerResult(
+                True, decision, out,
+                screenshot_b64=getattr(self.integrations, "last_browser_screenshot", None),
+            )
 
         if capability == "ssh_run":
             out = await self.integrations.ssh_run(params)

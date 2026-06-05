@@ -12,6 +12,8 @@ read-only commands.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import re
 from dataclasses import dataclass
@@ -37,10 +39,17 @@ class SSHConfig:
     password: Optional[str]
     private_key: Optional[str]
     key_passphrase: Optional[str]
+    host_fingerprint: Optional[str] = None
+    known_hosts: Optional[str] = None
 
     @property
     def configured(self) -> bool:
         return bool(self.host and self.user and (self.password or self.private_key))
+
+    @property
+    def host_verified(self) -> bool:
+        """True when a way to verify the remote host's identity is configured."""
+        return bool(self.host_fingerprint or self.known_hosts)
 
 
 def load_ssh_config() -> SSHConfig:
@@ -57,7 +66,56 @@ def load_ssh_config() -> SSHConfig:
         password=get_secret("SSH_PASSWORD"),
         private_key=get_secret("SSH_PRIVATE_KEY"),
         key_passphrase=get_secret("SSH_KEY_PASSPHRASE"),
+        host_fingerprint=get_secret("SSH_HOST_FINGERPRINT") or get_env("SSH_HOST_FINGERPRINT"),
+        known_hosts=get_secret("SSH_KNOWN_HOSTS") or get_env("SSH_KNOWN_HOSTS"),
     )
+
+
+def _normalize_fp(value: str) -> str:
+    """Normalize a fingerprint string for comparison.
+
+    Accepts SHA256 (``SHA256:base64`` or bare base64) and MD5 (colon-separated
+    hex, with or without an ``MD5:`` prefix). Returns a lowercase canonical form.
+    """
+    v = (value or "").strip()
+    if v.lower().startswith("sha256:"):
+        v = v[7:]
+    elif v.lower().startswith("md5:"):
+        v = v[4:]
+    # SHA256 base64 is compared without trailing padding; MD5 hex lowercased.
+    return v.rstrip("=").lower()
+
+
+def _key_fingerprints(key) -> List[str]:
+    """Return candidate normalized fingerprints for a paramiko host key."""
+    raw = key.asbytes()
+    sha = base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii")
+    md5 = hashlib.md5(raw).hexdigest()
+    md5_colon = ":".join(md5[i:i + 2] for i in range(0, len(md5), 2))
+    return [_normalize_fp(sha), _normalize_fp(md5), _normalize_fp(md5_colon)]
+
+
+class _FingerprintPolicy:
+    """paramiko host-key policy that pins the remote to an expected fingerprint.
+
+    Implemented as a thin wrapper so paramiko stays a lazy import. It accepts
+    the host key only if its SHA256 or MD5 fingerprint matches the pinned value;
+    otherwise it raises and the connection is refused.
+    """
+
+    def __init__(self, expected: str):
+        self._expected = _normalize_fp(expected)
+
+    def missing_host_key(self, client, hostname, key):
+        candidates = _key_fingerprints(key)
+        if self._expected and self._expected in candidates:
+            client.get_host_keys().add(hostname, key.get_name(), key)
+            return
+        raise SSHBridgeError(
+            "Host key fingerprint mismatch for %s — refusing to connect. The "
+            "remote host key does not match SSH_HOST_FINGERPRINT (possible MITM)."
+            % hostname
+        )
 
 
 def _load_pkey(private_key: str, passphrase: Optional[str]):
@@ -85,6 +143,40 @@ class SSHBridge:
     def available(self) -> bool:
         return self.config.configured
 
+    def _load_known_hosts(self, client) -> None:
+        """Load a known_hosts allow-list into the client.
+
+        ``SSH_KNOWN_HOSTS`` may be a filesystem path or the literal contents of
+        a known_hosts file. Loaded keys are trusted; anything else is rejected.
+        """
+        import os
+
+        raw = (self.config.known_hosts or "").strip()
+        if not raw:
+            return
+        try:
+            if "\n" not in raw and os.path.exists(raw):
+                client.load_host_keys(raw)
+                return
+            with io.StringIO(raw) as fh:
+                host_keys = client.get_host_keys()
+                import paramiko
+
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    try:
+                        entry = paramiko.hostkeys.HostKeyEntry.from_line(line)
+                    except Exception:
+                        continue
+                    if entry is None:
+                        continue
+                    for hn in entry.hostnames:
+                        host_keys.add(hn, entry.key.get_name(), entry.key)
+        except Exception as e:
+            raise SSHBridgeError("Could not parse SSH_KNOWN_HOSTS: %s" % e)
+
     def _connect(self):
         import paramiko
 
@@ -94,8 +186,21 @@ class SSHBridge:
                 "SSH bridge is not configured. Add SSH_HOST, SSH_USER and either "
                 "SSH_PRIVATE_KEY or SSH_PASSWORD in the vault."
             )
+        if not cfg.host_verified:
+            # Fail closed: never silently trust an unknown host key (no
+            # AutoAddPolicy). The operator must pin the host first.
+            raise SSHBridgeError(
+                "Refusing to connect without host verification. Set "
+                "SSH_HOST_FINGERPRINT (the remote's SHA256/MD5 host-key "
+                "fingerprint) or SSH_KNOWN_HOSTS before enabling the bridge."
+            )
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        self._load_known_hosts(client)
+        if cfg.host_fingerprint:
+            client.set_missing_host_key_policy(_FingerprintPolicy(cfg.host_fingerprint))
+        else:
+            # known_hosts is the allow-list; any host key not in it is rejected.
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
         kwargs = {
             "hostname": cfg.host,
             "port": cfg.port,

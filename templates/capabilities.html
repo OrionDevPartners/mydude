@@ -24,10 +24,16 @@
         </span>
     </div>
     <div class="card-body">
-        {% if not browser_enabled %}
-        <p class="form-hint">Set the <span class="mono">ENABLE_BROWSER_CAPABILITY</span> environment
-            variable to <span class="mono">true</span> to enable browsing.</p>
-        {% endif %}
+        <form method="post" action="/capabilities/toggle" style="margin-bottom:12px;">
+            <input type="hidden" name="capability" value="browser">
+            <input type="hidden" name="enabled" value="{{ 'false' if browser_enabled else 'true' }}">
+            <button type="submit" class="btn btn-sm {{ 'btn-outline' if browser_enabled else 'btn-primary' }}">
+                {{ 'Disable browsing' if browser_enabled else 'Enable browsing' }}
+            </button>
+            <span class="form-hint" style="margin-left:8px;">
+                {{ 'Browsing is on.' if browser_enabled else 'Browsing is off — enable it to run the test below.' }}
+            </span>
+        </form>
         <p class="form-hint">Browse allow-list:
             {% for d in browser_domains %}<span class="chip">{{ d }}</span>{% endfor %}
             <span class="mono">(BROWSER_ALLOWED_DOMAINS)</span></p>
@@ -76,16 +82,33 @@
         </span>
     </div>
     <div class="card-body">
-        {% if not ssh_enabled %}
-        <p class="form-hint">Set the <span class="mono">ENABLE_SSH_CAPABILITY</span> environment
-            variable to <span class="mono">true</span> to enable the bridge.</p>
-        {% endif %}
+        <form method="post" action="/capabilities/toggle" style="margin-bottom:12px;">
+            <input type="hidden" name="capability" value="ssh">
+            <input type="hidden" name="enabled" value="{{ 'false' if ssh_enabled else 'true' }}">
+            <button type="submit" class="btn btn-sm {{ 'btn-outline' if ssh_enabled else 'btn-primary' }}">
+                {{ 'Disable SSH bridge' if ssh_enabled else 'Enable SSH bridge' }}
+            </button>
+            <span class="form-hint" style="margin-left:8px;">
+                {{ 'Bridge is on.' if ssh_enabled else 'Bridge is off — enable it to run commands below.' }}
+            </span>
+        </form>
         <div class="detail-grid">
             <div class="detail-row"><span class="detail-label">Connection</span>
                 <span class="detail-value">
                     {% if ssh.configured %}{{ ssh.user }}@{{ ssh.host }}:{{ ssh.port }} ({{ ssh.auth }}){% else %}Not configured{% endif %}
                 </span></div>
+            <div class="detail-row"><span class="detail-label">Host verification</span>
+                <span class="detail-value">
+                    <span class="conn-dot {{ 'conn-on' if ssh.host_verified else 'conn-off' }}"></span>
+                    {% if ssh.host_verified %}Pinned (connections refused on mismatch){% else %}Not set — connections are refused until you pin the host{% endif %}
+                </span></div>
         </div>
+        {% if not ssh.host_verified %}
+        <p class="form-hint">For safety the bridge will not connect until you provide the remote's
+            host-key fingerprint (<span class="mono">SSH_HOST_FINGERPRINT</span>). On the Mac run
+            <span class="mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span> and paste the
+            <span class="mono">SHA256:…</span> value below.</p>
+        {% endif %}
         <p class="form-hint">Command allow-list:
             {% for c in ssh_commands %}<span class="chip">{{ c }}</span>{% endfor %}
             <span class="mono">(SSH_ALLOWED_COMMANDS)</span>. Destructive patterns and command
@@ -104,6 +127,8 @@
                 <textarea name="private_key" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
             <div class="form-group"><label>…or password</label>
                 <input type="password" name="password" placeholder="leave blank if using a key"></div>
+            <div class="form-group"><label>Host key fingerprint (required to connect)</label>
+                <input type="text" name="host_fingerprint" placeholder="SHA256:abc123… (from ssh-keygen -lf)"></div>
             <div class="form-actions">
                 <button type="submit" class="btn btn-primary btn-sm">Save bridge config</button>
             </div>
@@ -137,6 +162,13 @@
             <span class="meta">{{ result.reason }}</span>
         </p>
         {% if result.output %}<pre class="cap-output result-output">{{ result.output }}</pre>{% endif %}
+        {% if result.screenshot %}
+        <div class="form-group" style="margin-top:12px;">
+            <label>Page screenshot</label>
+            <img src="data:image/png;base64,{{ result.screenshot }}" alt="Page screenshot"
+                 style="max-width:100%;border:1px solid var(--border,#2a2a3e);border-radius:6px;">
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endif %}

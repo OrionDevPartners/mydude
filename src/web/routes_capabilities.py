@@ -51,10 +51,12 @@ def _ssh_status():
             "user": cfg.user or "",
             "port": cfg.port,
             "auth": "private key" if cfg.private_key else ("password" if cfg.password else "none"),
+            "host_verified": cfg.host_verified,
         }
     except Exception as e:
         logger.warning("SSH status failed: %s", e)
-        return {"configured": False, "host": "", "user": "", "port": 22, "auth": "none"}
+        return {"configured": False, "host": "", "user": "", "port": 22, "auth": "none",
+                "host_verified": False}
 
 
 def _allowlist(name: str, default):
@@ -106,6 +108,41 @@ async def capabilities_page(request: Request, _=Depends(require_auth)):
     return templates.TemplateResponse("capabilities.html", _context(request))
 
 
+_TOGGLEABLE = {
+    "browser": ("ENABLE_BROWSER_CAPABILITY", "Browser automation"),
+    "ssh": ("ENABLE_SSH_CAPABILITY", "SSH bridge"),
+}
+
+
+@router.post("/capabilities/toggle")
+async def toggle_capability(
+    request: Request,
+    capability: str = Form(""),
+    enabled: str = Form(""),
+    _=Depends(require_auth),
+):
+    from urllib.parse import quote
+    from src.web.settings_store import set_setting
+
+    entry = _TOGGLEABLE.get(capability.strip())
+    if not entry:
+        return RedirectResponse(
+            url="/capabilities?err=" + quote("Unknown capability."), status_code=303
+        )
+    env_var, label = entry
+    on = enabled.strip().lower() in _TRUTHY
+    try:
+        set_setting(env_var, "true" if on else "false")
+    except Exception:
+        return RedirectResponse(
+            url="/capabilities?err=" + quote("Could not update setting."), status_code=303
+        )
+    state = "enabled" if on else "disabled"
+    return RedirectResponse(
+        url="/capabilities?msg=" + quote("%s %s." % (label, state)), status_code=303
+    )
+
+
 @router.post("/capabilities/test/browser", response_class=HTMLResponse)
 async def test_browser(request: Request, url: str = Form(""), _=Depends(require_auth)):
     broker = _broker()
@@ -114,6 +151,7 @@ async def test_browser(request: Request, url: str = Form(""), _=Depends(require_
         "allowed": res.decision.allowed,
         "reason": res.decision.reason,
         "output": res.output,
+        "screenshot": res.screenshot_b64,
     }
     return templates.TemplateResponse(
         "capabilities.html", _context(request, result=result, result_kind="browser")
@@ -196,6 +234,7 @@ async def save_ssh_config(
     user: str = Form(""),
     private_key: str = Form(""),
     password: str = Form(""),
+    host_fingerprint: str = Form(""),
     _=Depends(require_auth),
 ):
     from urllib.parse import quote
@@ -204,6 +243,7 @@ async def save_ssh_config(
     user = user.strip()
     private_key = private_key.strip()
     password = password.strip()
+    host_fingerprint = host_fingerprint.strip()
     if not host or not user or not (private_key or password):
         return RedirectResponse(
             url="/capabilities?err=" + quote("Host, user, and a key or password are required."),
@@ -218,6 +258,8 @@ async def save_ssh_config(
             _upsert_vault(db, "ssh-private-key", "SSH_PRIVATE_KEY", private_key)
         if password:
             _upsert_vault(db, "ssh-password", "SSH_PASSWORD", password)
+        if host_fingerprint:
+            _upsert_vault(db, "ssh-host-fingerprint", "SSH_HOST_FINGERPRINT", host_fingerprint)
         db.commit()
     except Exception as e:
         db.rollback()

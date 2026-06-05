@@ -280,3 +280,18 @@ class TaskRun(Base):
     provider_scores = Column(Text, nullable=True)
     execution_time_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AppSetting(Base):
+    """Persisted non-secret application settings (e.g. capability toggles).
+
+    Kept separate from the credential vault so feature flags are not stored or
+    surfaced as secrets. Values are synced into the process environment at boot
+    so they are read through the same env-based config path as everything else.
+    """
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(120), unique=True, nullable=False, index=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -121,6 +121,13 @@ async def startup():
     except Exception as e:
         logger.warning("Failed to sync API keys: %s", e)
 
+    try:
+        from src.web.settings_store import sync_settings_to_env
+        sync_settings_to_env()
+        logger.info("App settings synced to environment")
+    except Exception as e:
+        logger.warning("Failed to sync app settings: %s", e)
+
     # Boot handshake (env_1 -> env_2): validate provider config and that every
     # required secret is present. A failure here is intentionally fatal so the
     # app never serves traffic in a misconfigured state.
