@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+{% block title %}Subscriptions - {{ product.name }}{% endblock %}
+{% block header_title %}Subscriptions{% endblock %}
+
+{% block content %}
+{% set msg = request.query_params.get('msg') %}
+{% set err = request.query_params.get('err') %}
+{% if msg %}<div class="flash flash-success">{{ msg }}</div>{% endif %}
+{% if err %}<div class="flash flash-error">{{ err }}</div>{% endif %}
+
+<p class="form-hint" style="margin-bottom:16px;">
+    MyDude discovers likely recurring subscriptions from your browser history (read over the
+    SSH bridge) and lets you add others by hand. Once you confirm one and store its login,
+    MyDude can sign in to <strong>view</strong> the account, and — only after a
+    <strong>two-step confirmation</strong> — cancel it. Every step is governed and audited.
+    Discovery is best-effort: it can only infer from sites you've visited, so add anything it misses.
+</p>
+
+<!-- ===================== RESULT ===================== -->
+{% if result %}
+<div class="card result-card">
+    <div class="card-header">
+        <h3>
+            {% if result.kind == 'discover' %}Discovery result
+            {% elif result.kind == 'open' %}Account view
+            {% elif result.kind == 'cancel_request' %}Cancel — review before confirming
+            {% elif result.kind == 'cancel_confirm' %}Cancellation result
+            {% else %}Result{% endif %}
+        </h3>
+        <span class="badge">
+            <span class="conn-dot {{ 'conn-on' if result.ok else 'conn-off' }}"></span>
+            {{ 'OK' if result.ok else 'Needs you' }}
+        </span>
+    </div>
+    <div class="card-body">
+        {% if result.message %}<pre class="cap-output result-output">{{ result.message }}</pre>{% endif %}
+        {% if result.kind == 'cancel_request' and result.pending %}
+        <div class="flash flash-error" style="margin-top:12px;">
+            ⚠️ This will <strong>permanently cancel</strong> the subscription. Review the page
+            above, then confirm below by typing <span class="mono">CANCEL</span>. Nothing has been
+            cancelled yet.
+        </div>
+        <form method="post" action="/subscriptions/{{ result.sub_id }}/cancel/confirm"
+              class="form-inline-grid" style="margin-top:12px;">
+            <div class="form-group">
+                <label>Type CANCEL to confirm the irreversible cancellation</label>
+                <input type="text" name="confirm" placeholder="CANCEL" autocomplete="off" required>
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-sm" style="background:#e94560;color:#fff;">
+                    Confirm cancellation
+                </button>
+            </div>
+        </form>
+        {% endif %}
+        {% if result.screenshot %}
+        <div class="form-group" style="margin-top:12px;">
+            <label>Page screenshot</label>
+            <img src="data:image/png;base64,{{ result.screenshot }}" alt="Page screenshot"
+                 style="max-width:100%;border:1px solid var(--border,#2a2a3e);border-radius:6px;">
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ===================== DISCOVER ===================== -->
+<div class="card">
+    <div class="card-header"><h3>🔎 Discover from browser history</h3></div>
+    <div class="card-body">
+        <p class="form-hint">Reads recent history over the SSH bridge and matches known
+            subscription services. Requires the SSH bridge to be enabled in
+            <a href="/capabilities">Capabilities</a>.</p>
+        <form method="post" action="/subscriptions/discover" class="form-inline-grid">
+            <div class="form-group">
+                <label>Browser</label>
+                <select name="browser">
+                    <option value="chrome">Chrome</option>
+                    <option value="safari">Safari</option>
+                    <option value="firefox">Firefox</option>
+                </select>
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary btn-sm">Scan history</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ===================== TRACKED SUBSCRIPTIONS ===================== -->
+<div class="card">
+    <div class="card-header"><h3>Tracked subscriptions</h3></div>
+    <div class="card-body">
+        {% if subscriptions %}
+        {% for s in subscriptions %}
+        <div class="card" style="margin-bottom:14px;">
+            <div class="card-header">
+                <h3 style="font-size:1rem;">
+                    {{ s.name }}
+                    <span class="badge" style="margin-left:8px;">
+                        {{ s.status | replace('_', ' ') }}
+                    </span>
+                    {% if not s.has_credential %}
+                    <span class="badge" style="margin-left:4px;">no login stored</span>
+                    {% endif %}
+                </h3>
+                <span class="meta">{{ s.est_cost }}{% if s.domain %} · {{ s.domain }}{% endif %}</span>
+            </div>
+            <div class="card-body">
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Source</span>
+                        <span class="detail-value">{{ s.source or '—' }}</span></div>
+                    <div class="detail-row"><span class="detail-label">Username</span>
+                        <span class="detail-value">{{ s.login_username or '—' }}</span></div>
+                    <div class="detail-row"><span class="detail-label">Login URL</span>
+                        <span class="detail-value mono">{{ s.login_url or '—' }}</span></div>
+                    <div class="detail-row"><span class="detail-label">Account URL</span>
+                        <span class="detail-value mono">{{ s.account_url or '—' }}</span></div>
+                    {% if s.last_checked_at %}
+                    <div class="detail-row"><span class="detail-label">Last checked</span>
+                        <span class="detail-value">{{ s.last_checked_at.strftime('%Y-%m-%d %H:%M') }} UTC</span></div>
+                    {% endif %}
+                </div>
+
+                <!-- Status actions -->
+                <div class="cap-row" style="margin-top:12px;gap:8px;flex-wrap:wrap;">
+                    {% if s.status == 'candidate' %}
+                    <form method="post" action="/subscriptions/{{ s.id }}/status">
+                        <input type="hidden" name="status" value="confirmed">
+                        <button class="btn btn-sm btn-primary" type="submit">Confirm</button>
+                    </form>
+                    <form method="post" action="/subscriptions/{{ s.id }}/status">
+                        <input type="hidden" name="status" value="dismissed">
+                        <button class="btn btn-sm btn-outline" type="submit">Dismiss</button>
+                    </form>
+                    {% elif s.status == 'dismissed' %}
+                    <form method="post" action="/subscriptions/{{ s.id }}/status">
+                        <input type="hidden" name="status" value="confirmed">
+                        <button class="btn btn-sm btn-outline" type="submit">Restore</button>
+                    </form>
+                    {% endif %}
+
+                    {% if s.status in ('confirmed', 'cancel_pending') %}
+                    <form method="post" action="/subscriptions/{{ s.id }}/open">
+                        <button class="btn btn-sm btn-outline" type="submit"
+                                {% if not s.has_credential %}disabled title="Store a login first"{% endif %}>
+                            View account
+                        </button>
+                    </form>
+                    <form method="post" action="/subscriptions/{{ s.id }}/cancel/request">
+                        <button class="btn btn-sm" type="submit" style="background:#e94560;color:#fff;"
+                                {% if not s.has_credential %}disabled title="Store a login first"{% endif %}>
+                            Request cancel
+                        </button>
+                    </form>
+                    {% endif %}
+
+                    <form method="post" action="/subscriptions/{{ s.id }}/delete"
+                          onsubmit="return confirm('Remove this subscription and its stored login?');">
+                        <button class="btn btn-sm btn-outline" type="submit">Remove</button>
+                    </form>
+                </div>
+
+                <!-- Credentials -->
+                <details style="margin-top:12px;">
+                    <summary class="form-hint" style="cursor:pointer;">Login details (store securely)</summary>
+                    <form method="post" action="/subscriptions/{{ s.id }}/credentials" style="margin-top:10px;">
+                        <div class="form-inline-grid">
+                            <div class="form-group"><label>Login URL</label>
+                                <input type="text" name="login_url" value="{{ s.login_url }}"></div>
+                            <div class="form-group"><label>Account URL</label>
+                                <input type="text" name="account_url" value="{{ s.account_url }}"></div>
+                        </div>
+                        <div class="form-inline-grid">
+                            <div class="form-group"><label>Username / email</label>
+                                <input type="text" name="login_username" value="{{ s.login_username }}"
+                                       autocomplete="off"></div>
+                            <div class="form-group"><label>Password {% if s.has_credential %}(leave blank to keep){% endif %}</label>
+                                <input type="password" name="password" autocomplete="new-password"
+                                       placeholder="{{ '••••••••' if s.has_credential else 'account password' }}"></div>
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn btn-sm btn-primary" type="submit">Save login</button>
+                        </div>
+                        <p class="form-hint">Stored encrypted in the vault and referenced by id.
+                            Passwords are never displayed back.</p>
+                    </form>
+                </details>
+            </div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <p class="empty-state">No subscriptions tracked yet. Scan your history above or add one below.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- ===================== ADD MANUAL ===================== -->
+<div class="card">
+    <div class="card-header"><h3>➕ Add a subscription manually</h3></div>
+    <div class="card-body">
+        <form method="post" action="/subscriptions/add">
+            <div class="form-inline-grid">
+                <div class="form-group"><label>Name</label>
+                    <input type="text" name="name" placeholder="Netflix" required></div>
+                <div class="form-group"><label>Domain</label>
+                    <input type="text" name="domain" placeholder="netflix.com"
+                           list="catalog-domains"></div>
+                <div class="form-group"><label>Est. cost</label>
+                    <input type="text" name="est_cost" placeholder="$15.49/mo"></div>
+            </div>
+            <datalist id="catalog-domains">
+                {% for c in catalog %}<option value="{{ c.domains[0] }}">{{ c.name }}</option>{% endfor %}
+            </datalist>
+            <div class="form-inline-grid">
+                <div class="form-group"><label>Login URL (optional)</label>
+                    <input type="text" name="login_url" placeholder="auto-filled for known services"></div>
+                <div class="form-group"><label>Account URL (optional)</label>
+                    <input type="text" name="account_url"></div>
+                <div class="form-group"><label>Username / email (optional)</label>
+                    <input type="text" name="login_username" autocomplete="off"></div>
+            </div>
+            <div class="form-group"><label>Notes (optional)</label>
+                <input type="text" name="notes"></div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary btn-sm">Add subscription</button>
+            </div>
+            <p class="form-hint">Known services auto-fill their login/account URLs from the catalog.
+                Add the password afterwards under the subscription's “Login details”.</p>
+        </form>
+    </div>
+</div>
+
+<!-- ===================== AUDIT ===================== -->
+<div class="card">
+    <div class="card-header"><h3>Subscription activity</h3></div>
+    <div class="card-body">
+        {% if audit %}
+        <table class="table">
+            <thead><tr><th>When (UTC)</th><th>Subscription</th><th>Action</th><th>Status</th><th>Detail</th></tr></thead>
+            <tbody>
+            {% for a in audit %}
+                <tr>
+                    <td class="meta">{{ a.created_at.strftime('%Y-%m-%d %H:%M:%S') if a.created_at else '-' }}</td>
+                    <td>{{ a.subscription }}</td>
+                    <td class="mono">{{ a.action }}</td>
+                    <td><span class="audit-action audit-{{ 'create' if a.status == 'ok' else 'delete' }}">{{ a.status }}</span></td>
+                    <td class="meta">{{ a.detail }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty-state">No subscription activity recorded yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

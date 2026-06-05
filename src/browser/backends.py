@@ -121,6 +121,286 @@ async def _extract_page(page, url, backend_key, timeout_ms, screenshot, max_char
     )
 
 
+_USERNAME_SELECTORS = [
+    "input[type=email]",
+    "input[autocomplete=username]",
+    "input[name*=email i]",
+    "input[id*=email i]",
+    "input[name*=user i]",
+    "input[id*=user i]",
+    "input[name*=login i]",
+    "input[type=text]",
+]
+_PASSWORD_SELECTOR = "input[type=password]"
+_OTP_SELECTORS = [
+    "input[autocomplete=one-time-code]",
+    "input[name*=otp i]",
+    "input[id*=otp i]",
+    "input[name*=code i]",
+    "input[id*=code i]",
+    "input[name*=verification i]",
+]
+_NEXT_SELECTORS = [
+    "button[type=submit]",
+    "input[type=submit]",
+    "button:has-text('Next')",
+    "button:has-text('Continue')",
+]
+_SUBMIT_SELECTORS = [
+    "button[type=submit]",
+    "input[type=submit]",
+    "button:has-text('Sign in')",
+    "button:has-text('Log in')",
+    "button:has-text('Login')",
+    "button:has-text('Continue')",
+    "button:has-text('Submit')",
+]
+DEFAULT_CANCEL_TEXTS = [
+    "Cancel subscription",
+    "Cancel membership",
+    "Cancel plan",
+    "Continue to cancel",
+    "Confirm cancellation",
+    "Confirm cancel",
+    "Yes, cancel",
+    "End membership",
+    "Cancel anyway",
+    "Finish cancellation",
+]
+
+
+def _host_of(u):
+    from urllib.parse import urlparse
+    return (urlparse(u or "").hostname or "").lower()
+
+
+async def _install_allow_host_route(page, allow_host, blocked):
+    if allow_host is None:
+        return
+    from urllib.parse import urlparse
+
+    async def _route(route, request):
+        try:
+            if request.is_navigation_request() and request.frame == page.main_frame:
+                h = (urlparse(request.url).hostname or "").lower()
+                if not allow_host(h):
+                    blocked["host"] = h or request.url
+                    await route.abort()
+                    return
+            await route.continue_()
+        except Exception:
+            try:
+                await route.abort()
+            except Exception:
+                pass
+
+    await page.route("**/*", _route)
+
+
+async def _snapshot(page, backend_key, url, max_chars, ok=True, error=None):
+    try:
+        title = await page.title()
+    except Exception:
+        title = ""
+    try:
+        text = await page.inner_text("body")
+    except Exception:
+        text = ""
+    shot = None
+    try:
+        raw = await page.screenshot(type="png", full_page=False)
+        shot = base64.b64encode(raw).decode("ascii")
+    except Exception:
+        shot = None
+    return BrowserResult(
+        ok=ok,
+        backend=backend_key,
+        url=url,
+        final_url=getattr(page, "url", url),
+        title=title,
+        text=(text or "").strip()[:max_chars],
+        screenshot_b64=shot,
+        error=error,
+        attempts=[backend_key],
+    )
+
+
+async def _fill_first(page, selectors, value):
+    for sel in selectors:
+        try:
+            el = await page.query_selector(sel)
+            if el and await el.is_visible():
+                await el.fill(value)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _click_first(page, selectors):
+    for sel in selectors:
+        try:
+            el = await page.query_selector(sel)
+            if el and await el.is_visible():
+                await el.click()
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _is_visible(page, selector):
+    try:
+        el = await page.query_selector(selector)
+        return bool(el and await el.is_visible())
+    except Exception:
+        return False
+
+
+async def _has_captcha(page):
+    try:
+        content = (await page.content()).lower()
+    except Exception:
+        return False
+    return ("recaptcha" in content or "g-recaptcha" in content
+            or "hcaptcha" in content or "captcha-delivery" in content)
+
+
+async def _do_login(page, login_url, account_url, username, password, otp,
+                    backend_key, timeout_ms, max_chars, allow_host):
+    """Drive a generic login and land on the account page.
+
+    Returns a BrowserResult only on failure/needs-user/blocked; returns None on
+    success, leaving ``page`` authenticated and on the account/billing URL.
+    """
+    blocked = {"host": None}
+    await _install_allow_host_route(page, allow_host, blocked)
+
+    def _blocked():
+        return BrowserResult(
+            ok=False, backend=backend_key, url=login_url, final_url=blocked["host"],
+            blocked=True,
+            error="Navigation blocked: a hop targeted '%s', which is not in the "
+                  "browse allow-list." % blocked["host"],
+            attempts=[backend_key],
+        )
+
+    try:
+        await page.goto(login_url, timeout=timeout_ms, wait_until="domcontentloaded")
+    except Exception:
+        if blocked["host"]:
+            return _blocked()
+        raise
+
+    await _fill_first(page, _USERNAME_SELECTORS, username or "")
+    if not await _is_visible(page, _PASSWORD_SELECTOR):
+        # Two-step login: advance past the identifier page first.
+        await _click_first(page, _NEXT_SELECTORS)
+        await page.wait_for_timeout(1800)
+        if blocked["host"]:
+            return _blocked()
+
+    if not await _fill_first(page, [_PASSWORD_SELECTOR], password or ""):
+        return await _snapshot(
+            page, backend_key, page.url, max_chars, ok=False,
+            error="Could not find a password field — the site may use SSO, a "
+                  "passkey, or otherwise blocked automated login. Finish this "
+                  "sign-in yourself.",
+        )
+
+    if not await _click_first(page, _SUBMIT_SELECTORS):
+        try:
+            await page.keyboard.press("Enter")
+        except Exception:
+            pass
+    await page.wait_for_timeout(2500)
+    if blocked["host"]:
+        return _blocked()
+
+    if await _has_captcha(page):
+        return await _snapshot(
+            page, backend_key, page.url, max_chars, ok=False,
+            error="A CAPTCHA was presented — MyDude can't solve it. Please "
+                  "complete this login yourself.",
+        )
+
+    if any([await _is_visible(page, s) for s in _OTP_SELECTORS]):
+        if not otp:
+            return await _snapshot(
+                page, backend_key, page.url, max_chars, ok=False,
+                error="The site asked for a one-time code and none was available. "
+                      "SMS codes can be read from your Mac via the SSH bridge; "
+                      "authenticator-app codes can't be read.",
+            )
+        await _fill_first(page, _OTP_SELECTORS, otp)
+        if not await _click_first(page, _SUBMIT_SELECTORS):
+            try:
+                await page.keyboard.press("Enter")
+            except Exception:
+                pass
+        await page.wait_for_timeout(2500)
+        if blocked["host"]:
+            return _blocked()
+
+    target = account_url or page.url
+    try:
+        await page.goto(target, timeout=timeout_ms, wait_until="domcontentloaded")
+    except Exception:
+        if blocked["host"]:
+            return _blocked()
+    if allow_host is not None and not allow_host(_host_of(page.url)):
+        blocked["host"] = _host_of(page.url)
+        return _blocked()
+    return None
+
+
+async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
+    """Click through cancel/confirm controls on the current (logged-in) page.
+
+    This is the irreversible step; it must only ever be called after an explicit
+    user confirmation upstream. Returns a BrowserResult.
+    """
+    texts = confirm_texts or DEFAULT_CANCEL_TEXTS
+    clicked = []
+    for _ in range(4):  # cancel flows are typically 1-3 confirmation steps
+        progressed = False
+        for label in texts:
+            try:
+                loc = page.get_by_role("button", name=label, exact=False)
+                if await loc.count() and await loc.first.is_visible():
+                    await loc.first.click()
+                    clicked.append(label)
+                    progressed = True
+                    await page.wait_for_timeout(2000)
+                    break
+            except Exception:
+                continue
+        if not progressed:
+            # Fall back to any link/button containing the text.
+            for label in texts:
+                try:
+                    loc = page.locator("a, button").filter(has_text=label)
+                    if await loc.count() and await loc.first.is_visible():
+                        await loc.first.click()
+                        clicked.append(label)
+                        progressed = True
+                        await page.wait_for_timeout(2000)
+                        break
+                except Exception:
+                    continue
+        if not progressed:
+            break
+    if not clicked:
+        return await _snapshot(
+            page, backend_key, page.url, max_chars, ok=False,
+            error="Couldn't find a cancel control automatically. The account page "
+                  "is shown so you can finish the cancellation yourself.",
+        )
+    snap = await _snapshot(page, backend_key, page.url, max_chars, ok=True)
+    snap.text = ("Clicked: %s\n\n%s" % (" → ".join(clicked), snap.text or ""))[:max_chars]
+    return snap
+
+
 class LocalPlaywrightBackend(BrowserBackend):
     """Headless Chromium running inside this container. Free but heavy; may be
     unavailable in deployment if the Chromium build was not provisioned."""
@@ -154,6 +434,60 @@ class LocalPlaywrightBackend(BrowserBackend):
                 except Exception:
                     pass
 
+    async def login_page(self, login_url, account_url, username, password, *,
+                         otp=None, timeout_ms=45000, max_chars=4000, allow_host=None):
+        from playwright.async_api import async_playwright
+
+        browser = None
+        pw = None
+        try:
+            pw = await async_playwright().start()
+            browser = await pw.chromium.launch(
+                headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            page = await browser.new_page()
+            err = await _do_login(page, login_url, account_url, username, password,
+                                  otp, self.key, timeout_ms, max_chars, allow_host)
+            if err is not None:
+                return err
+            return await _snapshot(page, self.key, account_url or page.url, max_chars)
+        finally:
+            await _teardown(browser, pw)
+
+    async def cancel_action(self, login_url, account_url, username, password, *,
+                            otp=None, confirm_texts=None, timeout_ms=45000,
+                            max_chars=4000, allow_host=None):
+        from playwright.async_api import async_playwright
+
+        browser = None
+        pw = None
+        try:
+            pw = await async_playwright().start()
+            browser = await pw.chromium.launch(
+                headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            page = await browser.new_page()
+            err = await _do_login(page, login_url, account_url, username, password,
+                                  otp, self.key, timeout_ms, max_chars, allow_host)
+            if err is not None:
+                return err
+            return await _do_cancel(page, confirm_texts, self.key, timeout_ms, max_chars)
+        finally:
+            await _teardown(browser, pw)
+
+
+async def _teardown(browser, pw):
+    if browser is not None:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+    if pw is not None:
+        try:
+            await pw.stop()
+        except Exception:
+            pass
+
 
 class BrowserbaseBackend(BrowserBackend):
     """Cloud Chromium via Browserbase. Reliable in deployment. Creates a
@@ -184,33 +518,58 @@ class BrowserbaseBackend(BrowserBackend):
             raise RuntimeError("Browserbase did not return a connectUrl")
         return connect_url
 
-    async def open_page(self, url, *, timeout_ms=30000, screenshot=True, max_chars=4000, allow_host=None):
+    async def _connect(self):
+        """Open a remote Browserbase session and return (pw, browser, page)."""
         import asyncio
 
         from playwright.async_api import async_playwright
 
         connect_url = await asyncio.to_thread(self._create_session)
+        pw = await async_playwright().start()
+        browser = await pw.chromium.connect_over_cdp(connect_url)
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = context.pages[0] if context.pages else await context.new_page()
+        return pw, browser, page
+
+    async def open_page(self, url, *, timeout_ms=30000, screenshot=True, max_chars=4000, allow_host=None):
         pw = None
         browser = None
         try:
-            pw = await async_playwright().start()
-            browser = await pw.chromium.connect_over_cdp(connect_url)
-            context = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = context.pages[0] if context.pages else await context.new_page()
+            pw, browser, page = await self._connect()
             return await _extract_page(
                 page, url, self.key, timeout_ms, screenshot, max_chars, allow_host
             )
         finally:
-            if browser is not None:
-                try:
-                    await browser.close()
-                except Exception:
-                    pass
-            if pw is not None:
-                try:
-                    await pw.stop()
-                except Exception:
-                    pass
+            await _teardown(browser, pw)
+
+    async def login_page(self, login_url, account_url, username, password, *,
+                         otp=None, timeout_ms=45000, max_chars=4000, allow_host=None):
+        pw = None
+        browser = None
+        try:
+            pw, browser, page = await self._connect()
+            err = await _do_login(page, login_url, account_url, username, password,
+                                  otp, self.key, timeout_ms, max_chars, allow_host)
+            if err is not None:
+                return err
+            return await _snapshot(page, self.key, account_url or page.url, max_chars)
+        finally:
+            await _teardown(browser, pw)
+
+    async def cancel_action(self, login_url, account_url, username, password, *,
+                            otp=None, confirm_texts=None, timeout_ms=45000,
+                            max_chars=4000, allow_host=None):
+        pw = None
+        browser = None
+        try:
+            pw, browser, page = await self._connect()
+            err = await _do_login(page, login_url, account_url, username, password,
+                                  otp, self.key, timeout_ms, max_chars, allow_host)
+            if err is not None:
+                return err
+            return await _do_cancel(page, confirm_texts, self.key, timeout_ms, max_chars)
+        finally:
+            await _teardown(browser, pw)
 
 
 class _ConfigReadyStub(BrowserBackend):

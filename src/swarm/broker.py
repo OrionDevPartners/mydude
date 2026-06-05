@@ -7,7 +7,8 @@ from src.swarm.integrations import Integrations, audit_capability
 # Capabilities whose denials we record to the audit trail (the governed,
 # externally-reaching ones). Pure internal/stub capabilities are not logged.
 _AUDITED_CAPABILITIES = {
-    "browser_open", "ssh_run", "ssh_read_history", "ssh_fetch_code",
+    "browser_open", "browser_login", "browser_cancel",
+    "ssh_run", "ssh_read_history", "ssh_fetch_code",
 }
 
 
@@ -30,7 +31,9 @@ class CapabilityBroker:
             # Record blocked attempts too, so the audit log captures the full
             # governance picture — not just successful executions.
             if capability in _AUDITED_CAPABILITIES:
-                target = params.get("url") or params.get("command") or params.get("browser")
+                # Never use credential-bearing params as the audit target.
+                target = (params.get("url") or params.get("login_url")
+                          or params.get("command") or params.get("browser"))
                 audit_capability(
                     capability, target=target, status="blocked",
                     detail=decision.reason, source=params.get("source"),
@@ -59,6 +62,20 @@ class CapabilityBroker:
 
         if capability == "browser_open":
             out = await self.integrations.browser_open(params)
+            return BrokerResult(
+                True, decision, out,
+                screenshot_b64=getattr(self.integrations, "last_browser_screenshot", None),
+            )
+
+        if capability == "browser_login":
+            out = await self.integrations.browser_login(params)
+            return BrokerResult(
+                True, decision, out,
+                screenshot_b64=getattr(self.integrations, "last_browser_screenshot", None),
+            )
+
+        if capability == "browser_cancel":
+            out = await self.integrations.browser_cancel(params)
             return BrokerResult(
                 True, decision, out,
                 screenshot_b64=getattr(self.integrations, "last_browser_screenshot", None),

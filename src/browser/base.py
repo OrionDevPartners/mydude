@@ -96,3 +96,53 @@ class BrowserBackend(ABC):
         provided, every in-browser navigation hop (including redirects) to a
         host for which it returns False is aborted before the request is made.
         """
+
+    async def login_page(
+        self,
+        login_url: str,
+        account_url: str,
+        username: str,
+        password: str,
+        *,
+        otp: str = None,
+        timeout_ms: int = 45000,
+        max_chars: int = 4000,
+        allow_host=None,
+    ) -> BrowserResult:
+        """Log into a site and navigate to its account/billing page.
+
+        Default: not supported. Interactive backends (Playwright-driven) override
+        this. Returning an honest ``ok=False`` result lets the engine fail over.
+        """
+        return BrowserResult(
+            ok=False,
+            backend=self.key,
+            url=login_url,
+            error="Backend '%s' does not support interactive login." % self.key,
+            attempts=[self.key],
+        )
+
+    async def cancel_action(
+        self,
+        login_url: str,
+        account_url: str,
+        username: str,
+        password: str,
+        *,
+        otp: str = None,
+        confirm_texts=None,
+        timeout_ms: int = 45000,
+        max_chars: int = 4000,
+        allow_host=None,
+    ) -> BrowserResult:
+        """Log in, reach the account page, and click the cancel/confirm controls.
+
+        Default: not supported. Interactive backends override this.
+        """
+        return BrowserResult(
+            ok=False,
+            backend=self.key,
+            url=account_url or login_url,
+            error="Backend '%s' does not support the cancel flow." % self.key,
+            attempts=[self.key],
+        )

@@ -84,6 +84,33 @@ class PolicyEngine:
             )
         return PolicyDecision(True, "Allowed by policy.")
 
+    def _evaluate_browser_interactive(self, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for the login/cancel flows.
+
+        Same enable flag and allow-list as browse, but applied to *every* URL the
+        flow will touch (login + account). The runtime per-hop allow_host check in
+        the browser layer is the enforcement backstop; this is the up-front gate.
+        """
+        if not _env_flag("ENABLE_BROWSER_CAPABILITY"):
+            return PolicyDecision(
+                False,
+                "Browser capability is disabled. Set ENABLE_BROWSER_CAPABILITY=true to enable it.",
+            )
+        urls = [u for u in (params.get("login_url"), params.get("account_url")) if (u or "").strip()]
+        if not urls:
+            return PolicyDecision(False, "A login URL is required.")
+        for u in urls:
+            host = (urlparse(u).hostname or "").lower()
+            if not host:
+                return PolicyDecision(False, "Could not parse a host from '%s'." % u)
+            if not self.is_host_allowed(host):
+                return PolicyDecision(
+                    False,
+                    "Domain '%s' is not in the browse allow-list. Add it to "
+                    "BROWSER_ALLOWED_DOMAINS to permit it." % host,
+                )
+        return PolicyDecision(True, "Allowed by policy.")
+
     def _evaluate_ssh(self, capability: str, params: Dict[str, Any]) -> PolicyDecision:
         if not _env_flag("ENABLE_SSH_CAPABILITY"):
             return PolicyDecision(
@@ -180,6 +207,9 @@ class PolicyEngine:
 
         if capability == "browser_open":
             return self._evaluate_browser(params)
+
+        if capability in ("browser_login", "browser_cancel"):
+            return self._evaluate_browser_interactive(params)
 
         if capability in ("ssh_run", "ssh_read_history", "ssh_fetch_code"):
             return self._evaluate_ssh(capability, params)

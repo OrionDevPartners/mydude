@@ -91,6 +91,7 @@ from src.web.routes_services import router as services_router
 from src.web.routes_tasks import router as tasks_router
 from src.web.routes_governance import router as governance_router
 from src.web.routes_capabilities import router as capabilities_router
+from src.web.routes_subscriptions import router as subscriptions_router
 
 app.include_router(auth_router)
 app.include_router(keys_router)
@@ -98,6 +99,7 @@ app.include_router(services_router)
 app.include_router(tasks_router)
 app.include_router(governance_router)
 app.include_router(capabilities_router)
+app.include_router(subscriptions_router)
 
 
 @app.get("/health")

@@ -78,6 +78,100 @@ class Integrations:
         )
         return summary
 
+    async def browser_login(self, params: Dict[str, Any]) -> str:
+        """Log into a site and land on its account/billing page.
+
+        SECURITY: ``password`` and ``otp`` arrive in ``params`` and are passed
+        straight to the browser layer — they are NEVER written to the audit log
+        or returned in the summary. Only the (non-secret) login/account URLs and
+        username are referenced.
+        """
+        from src.browser.engine import BrowserEngine
+        from src.swarm.policy import PolicyEngine
+
+        self.last_browser_screenshot = None
+        source = params.get("source")
+        login_url = (params.get("login_url") or "").strip()
+        account_url = (params.get("account_url") or "").strip()
+        username = params.get("username") or ""
+        password = params.get("password") or ""
+        if not login_url:
+            audit_capability("browser_login", status="error", detail="missing login_url", source=source)
+            return "No login URL provided."
+        if not password:
+            audit_capability("browser_login", target=login_url, status="error",
+                             detail="no stored credential", source=source)
+            return ("No stored password for this subscription. Add the account "
+                    "password to the vault first.")
+        allow_host = PolicyEngine().is_host_allowed
+        result = await BrowserEngine().login_page(
+            login_url, account_url, username, password,
+            otp=params.get("otp"),
+            timeout_ms=int(params.get("timeout_ms", 45000)),
+            max_chars=int(params.get("max_chars", 4000)),
+            allow_host=allow_host,
+        )
+        return self._finish_interactive("browser_login", result, login_url, source)
+
+    async def browser_cancel(self, params: Dict[str, Any]) -> str:
+        """Irreversible: log in and click through the cancel/confirm controls.
+
+        This must only be reached after an explicit user confirmation upstream.
+        Same secret-handling rules as :meth:`browser_login`.
+        """
+        from src.browser.engine import BrowserEngine
+        from src.swarm.policy import PolicyEngine
+
+        self.last_browser_screenshot = None
+        source = params.get("source")
+        login_url = (params.get("login_url") or "").strip()
+        account_url = (params.get("account_url") or "").strip()
+        username = params.get("username") or ""
+        password = params.get("password") or ""
+        if not login_url:
+            audit_capability("browser_cancel", status="error", detail="missing login_url", source=source)
+            return "No login URL provided."
+        if not password:
+            audit_capability("browser_cancel", target=login_url, status="error",
+                             detail="no stored credential", source=source)
+            return "No stored password for this subscription."
+        allow_host = PolicyEngine().is_host_allowed
+        result = await BrowserEngine().cancel_action(
+            login_url, account_url, username, password,
+            otp=params.get("otp"),
+            confirm_texts=params.get("confirm_texts"),
+            timeout_ms=int(params.get("timeout_ms", 45000)),
+            max_chars=int(params.get("max_chars", 4000)),
+            allow_host=allow_host,
+        )
+        return self._finish_interactive("browser_cancel", result, account_url or login_url, source)
+
+    def _finish_interactive(self, capability, result, target, source):
+        """Shared audit + summary for browser_login / browser_cancel.
+
+        Never includes credentials; only URLs, backend, title, and page text.
+        """
+        if getattr(result, "blocked", False):
+            audit_capability(capability, target=result.final_url or target,
+                             backend=result.backend, status="blocked",
+                             detail=result.error, source=source)
+            return "%s blocked: %s" % (capability, result.error)
+        if not result.ok:
+            err = result.error or ""
+            needs_user = any(s in err for s in ("yourself", "CAPTCHA", "one-time code", "SSO"))
+            audit_capability(capability, target=target,
+                             backend=",".join(result.attempts) or None,
+                             status="needs_user" if needs_user else "error",
+                             detail=result.error, source=source)
+            return "%s did not complete: %s" % (capability, result.error)
+        audit_capability(capability, target=target, backend=result.backend,
+                         status="ok", detail="title=%s" % (result.title or ""), source=source)
+        self.last_browser_screenshot = getattr(result, "screenshot_b64", None)
+        return "%s ok via '%s'\nFinal URL: %s\nTitle: %s\n\n%s" % (
+            capability, result.backend, result.final_url, result.title,
+            (result.text or "")[:1500],
+        )
+
     async def ssh_run(self, params: Dict[str, Any]) -> str:
         from src.bridge.ssh import SSHBridge, SSHBridgeError
 

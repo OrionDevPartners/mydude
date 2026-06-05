@@ -1,4 +1,5 @@
 ---
+extra: When adding interactive browser actions (login_page/cancel_action/etc.), implement them on the Browserbase backend too, not just LocalPlaywright — Browserbase is the prod path and a missing override silently falls back to the base "does not support" default. A smoke test lives at tests/test_browser_interactive.py.
 name: Local Playwright in this container
 description: Why the local Chromium browser backend is unavailable in the Replit container and what the real path is.
 ---

@@ -282,6 +282,57 @@ class TaskRun(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Subscription(Base):
+    """A tracked recurring subscription.
+
+    Discovery produces ``candidate`` rows (inferred from reachable signals); the
+    user confirms them into ``confirmed`` before MyDude will ever act on them.
+    The login secret (password) lives encrypted in the credential vault and is
+    referenced here by ``credential_key_id`` — never stored in plaintext on this
+    row. The account identifier (``login_username``, often an email) is stored
+    here so the login flow can fill it.
+    """
+    __tablename__ = "subscriptions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), nullable=False)
+    domain = Column(String(255), nullable=True)
+    login_url = Column(Text, nullable=True)
+    account_url = Column(Text, nullable=True)
+    login_username = Column(String(255), nullable=True)
+    # FK (logical) to api_keys.id holding the encrypted account password.
+    credential_key_id = Column(Integer, nullable=True, index=True)
+    # candidate | confirmed | dismissed | cancel_pending | cancelled
+    status = Column(String(30), default="candidate", index=True)
+    est_cost = Column(String(60), nullable=True)
+    currency = Column(String(10), nullable=True)
+    # How this row was detected: browser_history | manual
+    source = Column(String(40), nullable=True)
+    notes = Column(Text, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SubscriptionAction(Base):
+    """Per-subscription audit trail: every login, navigation, and cancel step.
+
+    Cancellation is two-phase: a ``cancel_requested`` row (status
+    ``pending_confirm``) is written when the user asks to cancel, and a separate
+    ``cancel_confirmed`` row records the irreversible step only after an explicit
+    confirmation.
+    """
+    __tablename__ = "subscription_actions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    subscription_id = Column(Integer, nullable=False, index=True)
+    action = Column(String(40), nullable=False)
+    # ok | error | blocked | needs_user | pending_confirm
+    status = Column(String(20), nullable=False, default="ok")
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class AppSetting(Base):
     """Persisted non-secret application settings (e.g. capability toggles).
 
