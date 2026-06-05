@@ -15,8 +15,11 @@ wheels/
 venv/
 env/
 
-# Environment
+# Environment — env_2 secrets never live in git
 .env
+.env.*
+*.env
+!.env.example
 
 # Database
 *.db
