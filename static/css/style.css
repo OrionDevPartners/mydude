@@ -5,28 +5,82 @@
 }
 
 :root {
-    --bg-primary: #1a1a2e;
-    --bg-sidebar: #16213e;
-    --bg-card: #1e2a45;
-    --bg-input: #0f1b30;
-    --accent: #0f3460;
+    --bg-primary: #0a0e1d;
+    --bg-sidebar: rgba(18, 24, 48, 0.55);
+    --bg-card: rgba(255, 255, 255, 0.055);
+    --bg-input: rgba(255, 255, 255, 0.04);
+    --accent: #1b2c52;
     --highlight: #e94560;
-    --text-primary: #e0e0e0;
-    --text-secondary: #8892a4;
-    --text-muted: #5a6577;
+    --highlight-2: #ff6b8a;
+    --text-primary: #eef1f8;
+    --text-secondary: #9aa5bd;
+    --text-muted: #6b7591;
     --success: #2ecc71;
     --danger: #e74c3c;
     --warning: #f39c12;
-    --border: #2a3a5c;
-    --radius: 8px;
+    --border: rgba(255, 255, 255, 0.1);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --radius: 14px;
+    --radius-lg: 20px;
+    --glass-blur: blur(22px) saturate(165%);
+    --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+    --glass-shadow: 0 10px 34px rgba(0, 0, 0, 0.36);
 }
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    background: var(--bg-primary);
+    background:
+        radial-gradient(1200px 700px at 80% -10%, rgba(73, 96, 255, 0.12), transparent 60%),
+        radial-gradient(1000px 600px at -10% 110%, rgba(233, 69, 96, 0.1), transparent 55%),
+        linear-gradient(160deg, #0a0e1d 0%, #0d1226 45%, #0a0f20 100%);
+    background-attachment: fixed;
     color: var(--text-primary);
     line-height: 1.6;
     min-height: 100vh;
+    position: relative;
+}
+
+body::before,
+body::after {
+    content: "";
+    position: fixed;
+    z-index: -2;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+body::before {
+    width: 60vw;
+    height: 60vw;
+    top: -18vw;
+    left: -12vw;
+    background: radial-gradient(circle at center, rgba(233, 69, 96, 0.6), transparent 65%);
+    animation: orbFloatA 22s ease-in-out infinite alternate;
+}
+
+body::after {
+    width: 55vw;
+    height: 55vw;
+    bottom: -20vw;
+    right: -14vw;
+    background: radial-gradient(circle at center, rgba(73, 96, 255, 0.55), transparent 65%);
+    animation: orbFloatB 26s ease-in-out infinite alternate;
+}
+
+@keyframes orbFloatA {
+    from { transform: translate(0, 0) scale(1); }
+    to { transform: translate(6vw, 4vw) scale(1.12); }
+}
+
+@keyframes orbFloatB {
+    from { transform: translate(0, 0) scale(1); }
+    to { transform: translate(-5vw, -4vw) scale(1.1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body::before, body::after { animation: none; }
 }
 
 .layout {
@@ -37,7 +91,10 @@ body {
 .sidebar {
     width: 250px;
     background: var(--bg-sidebar);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border-right: 1px solid var(--border);
+    box-shadow: var(--glass-highlight), 1px 0 30px rgba(0, 0, 0, 0.25);
     display: flex;
     flex-direction: column;
     position: fixed;
@@ -81,7 +138,7 @@ body {
 
 .nav-link.active {
     color: var(--highlight);
-    background: rgba(233, 69, 96, 0.1);
+    background: linear-gradient(90deg, rgba(233, 69, 96, 0.18), rgba(233, 69, 96, 0.02));
     border-left-color: var(--highlight);
 }
 
@@ -118,7 +175,13 @@ body {
     justify-content: space-between;
     padding: 16px 32px;
     background: var(--bg-sidebar);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    box-shadow: var(--glass-highlight);
 }
 
 .header-title {
@@ -133,9 +196,12 @@ body {
 
 .card {
     background: var(--bg-card);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
     margin-bottom: 20px;
+    box-shadow: var(--glass-highlight), var(--glass-shadow);
 }
 
 .card-header {
@@ -181,14 +247,16 @@ input[type="email"],
 textarea,
 select {
     width: 100%;
-    padding: 10px 14px;
+    padding: 11px 14px;
     background: var(--bg-input);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: 12px;
     color: var(--text-primary);
     font-size: 0.9rem;
     font-family: inherit;
-    transition: border-color 0.2s;
+    transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
 }
 
 input:focus,
@@ -196,6 +264,8 @@ textarea:focus,
 select:focus {
     outline: none;
     border-color: var(--highlight);
+    box-shadow: 0 0 0 3px rgba(233, 69, 96, 0.18);
+    background: rgba(255, 255, 255, 0.06);
 }
 
 textarea {
@@ -213,7 +283,7 @@ select {
     justify-content: center;
     padding: 10px 20px;
     border: none;
-    border-radius: var(--radius);
+    border-radius: 12px;
     font-size: 0.9rem;
     font-weight: 500;
     cursor: pointer;
@@ -223,12 +293,15 @@ select {
 }
 
 .btn-primary {
-    background: var(--highlight);
+    background: linear-gradient(135deg, var(--highlight-2), var(--highlight));
     color: white;
+    box-shadow: 0 6px 18px rgba(233, 69, 96, 0.35), var(--glass-highlight);
 }
 
 .btn-primary:hover {
-    background: #d43a54;
+    background: linear-gradient(135deg, #ff7d99, #d43a54);
+    box-shadow: 0 8px 24px rgba(233, 69, 96, 0.45), var(--glass-highlight);
+    transform: translateY(-1px);
 }
 
 .btn-primary:disabled {
@@ -251,14 +324,17 @@ select {
 }
 
 .btn-outline {
-    background: transparent;
-    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.04);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border-strong);
     color: var(--text-secondary);
 }
 
 .btn-outline:hover {
     border-color: var(--text-secondary);
     color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.08);
 }
 
 .btn-sm {
@@ -544,7 +620,10 @@ select {
     align-items: center;
     justify-content: center;
     min-height: 100vh;
-    background: var(--bg-primary);
+    background:
+        radial-gradient(900px 600px at 80% -10%, rgba(73, 96, 255, 0.16), transparent 60%),
+        radial-gradient(800px 500px at -10% 110%, rgba(233, 69, 96, 0.14), transparent 55%),
+        linear-gradient(160deg, #0a0e1d 0%, #0d1226 45%, #0a0f20 100%);
 }
 
 .login-container {
@@ -555,10 +634,13 @@ select {
 
 .login-card {
     background: var(--bg-card);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
     padding: 40px 32px;
     text-align: center;
+    box-shadow: var(--glass-highlight), var(--glass-shadow);
 }
 
 .login-logo {
@@ -981,4 +1063,81 @@ select {
 @media (min-width: 769px) {
     .sidebar-close, .menu-toggle { display: none !important; }
     .sidebar { transform: none !important; }
+}
+
+/* ============================================================
+   Liquid Glass — frosted inner surfaces & finishing touches
+   ============================================================ */
+.service-card,
+.health-card,
+.chip,
+.score-item,
+.result-output,
+.prompt-display,
+.mem-entry,
+.cap-row,
+.alert-row,
+.report-goal,
+.report-list {
+    -webkit-backdrop-filter: blur(10px) saturate(150%);
+    backdrop-filter: blur(10px) saturate(150%);
+    box-shadow: var(--glass-highlight);
+}
+
+.service-card,
+.health-card,
+.chip,
+.score-item,
+.mem-entry,
+.cap-row,
+.alert-row,
+.report-goal {
+    transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+}
+
+.service-card:hover,
+.health-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--glass-highlight), var(--glass-shadow);
+    border-color: var(--border-strong);
+}
+
+.table th { border-bottom-color: var(--border-strong); }
+
+::placeholder { color: var(--text-muted); opacity: 1; }
+
+/* Gradient brand wordmark */
+.logo, .login-logo {
+    background: linear-gradient(135deg, var(--highlight-2), var(--highlight));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+/* Fallback for browsers without backdrop-filter: use more opaque
+   surfaces so translucent glass panels stay readable. */
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    :root {
+        --bg-sidebar: #12182f;
+        --bg-card: #1a2240;
+        --bg-input: #141b33;
+        --border: rgba(255, 255, 255, 0.14);
+    }
+}
+
+/* Frosted scrollbars to match the glass surfaces */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+    background-clip: padding-box;
 }
