@@ -57,6 +57,9 @@ class Integrations:
 async def _run_cmd(cmd: List[str]) -> str:
     def run():
         try:
+            # SECURITY: shell=False with an explicit argument list (no shell
+            # interpolation); all callers are broker/policy-gated and pass static
+            # command lists. Bounded by a 30s timeout and truncated output.
             p = subprocess.run(cmd, shell=False, check=False, capture_output=True, text=True, timeout=30)
             out = (p.stdout or "") + (p.stderr or "")
             return out.strip()[:4000]

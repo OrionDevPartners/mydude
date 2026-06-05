@@ -32,6 +32,21 @@ except Exception as _e:  # pragma: no cover - config should always be present
 
 EXPIRY_WARN_DAYS = 14
 
+# Input bounds for the vault add/rotate forms. These reject obviously malformed
+# input cleanly rather than letting oversized values reach the DB/crypto layer.
+MAX_PROVIDER_LEN = 64
+MAX_LABEL_LEN = 200
+MAX_API_KEY_LEN = 8000
+MAX_CATEGORY_LEN = 64
+MAX_ENV_VAR_LEN = 128
+MAX_NOTES_LEN = 4000
+MAX_ROTATION_DAYS = 3650
+
+
+def _err_redirect(msg: str):
+    from urllib.parse import quote
+    return RedirectResponse(url="/keys?err=" + quote(msg, safe=""), status_code=303)
+
 
 def _resolve_env_var(key):
     if key.env_var:
@@ -203,9 +218,9 @@ async def keys_page(request: Request, _=Depends(require_auth)):
 @router.post("/keys")
 async def add_key(
     request: Request,
-    provider: str = Form(...),
+    provider: str = Form(""),
     label: str = Form(""),
-    api_key: str = Form(...),
+    api_key: str = Form(""),
     category: str = Form(""),
     env_var: str = Form(""),
     notes: str = Form(""),
@@ -214,6 +229,24 @@ async def add_key(
     _=Depends(require_auth),
 ):
     provider = provider.lower().strip()
+    api_key = api_key.strip()
+
+    # --- input validation / bounds ------------------------------------------
+    if not provider or len(provider) > MAX_PROVIDER_LEN:
+        return _err_redirect("Provider is required and must be under %d characters." % MAX_PROVIDER_LEN)
+    if not api_key:
+        return _err_redirect("API key value is required.")
+    if len(api_key) > MAX_API_KEY_LEN:
+        return _err_redirect("API key value is too long.")
+    if len(label) > MAX_LABEL_LEN:
+        return _err_redirect("Label is too long (max %d characters)." % MAX_LABEL_LEN)
+    if len(category) > MAX_CATEGORY_LEN:
+        return _err_redirect("Category is too long.")
+    if len(env_var) > MAX_ENV_VAR_LEN:
+        return _err_redirect("Environment variable name is too long.")
+    if len(notes) > MAX_NOTES_LEN:
+        return _err_redirect("Notes are too long (max %d characters)." % MAX_NOTES_LEN)
+
     db = SessionLocal()
     try:
         exp = None
@@ -221,13 +254,15 @@ async def add_key(
             try:
                 exp = datetime.strptime(expires_at.strip(), "%Y-%m-%d")
             except ValueError:
-                exp = None
+                return _err_redirect("Expiry date must be in YYYY-MM-DD format.")
         rot = None
         if rotation_days.strip():
             try:
                 rot = int(rotation_days.strip())
             except ValueError:
-                rot = None
+                return _err_redirect("Rotation days must be a whole number.")
+            if rot < 1 or rot > MAX_ROTATION_DAYS:
+                return _err_redirect("Rotation days must be between 1 and %d." % MAX_ROTATION_DAYS)
 
         new_key = ApiKey(
             provider=provider,
@@ -255,17 +290,26 @@ async def add_key(
 
 
 @router.post("/keys/{key_id}/rotate")
-async def rotate_key(key_id: int, api_key: str = Form(...), _=Depends(require_auth)):
+async def rotate_key(key_id: int, api_key: str = Form(""), _=Depends(require_auth)):
+    api_key = api_key.strip()
+    if not api_key:
+        return _err_redirect("New API key value is required to rotate.")
+    if len(api_key) > MAX_API_KEY_LEN:
+        return _err_redirect("API key value is too long.")
     db = SessionLocal()
     try:
         key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
         if key:
-            key.encrypted_key = encrypt_value(api_key.strip())
+            key.encrypted_key = encrypt_value(api_key)
             key.last_rotated_at = datetime.utcnow()
             _audit(db, "rotate", key=key, detail="Key value rotated")
             db.commit()
-    except Exception:
+        else:
+            return _err_redirect("Key not found.")
+    except Exception as e:
         db.rollback()
+        logger.error("Key rotation failed for %s: %s", key_id, e)
+        return _err_redirect("Could not rotate key. Please try again.")
     finally:
         db.close()
     sync_keys_to_env()

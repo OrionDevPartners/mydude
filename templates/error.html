@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ status_code }} - {{ product.name }}</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=2">
+</head>
+<body class="login-body">
+    <div class="login-container">
+        <div class="login-card">
+            <h1 class="login-logo">🤖 {{ product.name }}</h1>
+            <p class="login-subtitle">{{ status_code }} — {{ title }}</p>
+            <div class="flash flash-error">{{ message }}</div>
+            <a href="/" class="btn btn-primary btn-block">Back to Dashboard</a>
+        </div>
+    </div>
+</body>
+</html>

@@ -46,6 +46,9 @@ def _sync_missing_columns():
         db_cols = {c["name"] for c in inspector.get_columns(table_name)}
         for col in table.columns:
             if col.name not in db_cols:
+                # SECURITY: identifiers come only from static SQLAlchemy model
+                # metadata (Base.metadata), never from user input, and are quoted
+                # via the dialect's identifier_preparer. No injection surface.
                 safe_table = preparer.quote_identifier(table_name)
                 safe_col = preparer.quote_identifier(col.name)
                 col_type = col.type.compile(engine.dialect)

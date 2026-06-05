@@ -2,15 +2,33 @@ import json
 import time
 import asyncio
 import logging
+from urllib.parse import quote
 from fastapi import APIRouter, Request, Form, Depends
 from fastapi.responses import RedirectResponse, HTMLResponse
 from src.database import SessionLocal
 from src.models import TaskRun, ApiKey
 from src.web.auth import require_auth
+from src.web.ratelimit import RateLimiter, ConcurrencyGuard, client_ip
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 from src.web.templating import templates
+
+# Bound the prompt so a single request cannot push an unbounded payload into the
+# (expensive) multi-provider fan-out.
+MAX_PROMPT_LEN = 8000
+
+# Cost/abuse controls for the expensive LLM fan-out endpoint.
+# - Per-IP rate limit: a small burst per minute.
+# - Global concurrency guard: cap simultaneous in-flight runs across all callers
+#   so a few clients cannot saturate provider quotas / the event loop.
+_run_limiter = RateLimiter(max_events=5, window_seconds=60)
+_run_guard = ConcurrencyGuard(max_concurrent=2)
+
+
+def _flash(msg: str) -> str:
+    """URL-encode a user-facing flash message for a redirect query string."""
+    return quote(msg, safe="")
 
 
 def _has_active_keys():
@@ -19,6 +37,28 @@ def _has_active_keys():
         return db.query(ApiKey).filter(ApiKey.is_active == True).count() > 0
     finally:
         db.close()
+
+
+def _llm_providers_available() -> bool:
+    """True if at least one enabled LLM provider has its required secrets present.
+
+    Distinct from :func:`_has_active_keys` (which only counts vault rows): this
+    confirms the swarm actually has a usable provider, so we can degrade with a
+    clear message instead of letting the orchestrator raise opaquely.
+    """
+    try:
+        from src.providers.config import llm_provider_specs
+        from src.providers.secrets import has_secret
+
+        for spec in llm_provider_specs():
+            if spec.secrets and all(has_secret(s) for s in spec.secrets):
+                return True
+        return False
+    except Exception as e:
+        logger.warning("Provider availability check failed: %s", e)
+        # Fail safe: let the run proceed and surface any real error downstream
+        # rather than blocking on a check-layer fault.
+        return True
 
 
 def _parse_result(task):
@@ -65,15 +105,52 @@ async def dashboard(request: Request, _=Depends(require_auth)):
 
 
 @router.post("/tasks/run")
-async def run_task(request: Request, prompt: str = Form(...), _=Depends(require_auth)):
-    if not prompt.strip():
-        return RedirectResponse(url="/?err=Please enter a prompt", status_code=303)
+async def run_task(request: Request, prompt: str = Form(""), _=Depends(require_auth)):
+    prompt = prompt.strip()
+    if not prompt:
+        return RedirectResponse(url="/?err=" + _flash("Please enter a prompt"), status_code=303)
+
+    if len(prompt) > MAX_PROMPT_LEN:
+        return RedirectResponse(
+            url="/?err=" + _flash("Prompt is too long (max %d characters)." % MAX_PROMPT_LEN),
+            status_code=303,
+        )
+
+    # Per-IP burst limit on the expensive endpoint.
+    allowed, retry_after = _run_limiter.check(client_ip(request))
+    if not allowed:
+        return RedirectResponse(
+            url="/?err=" + _flash("Rate limit reached. Try again in %d seconds." % retry_after),
+            status_code=303,
+        )
 
     if not _has_active_keys():
-        return RedirectResponse(url="/?err=No API keys configured. Please add keys first.", status_code=303)
+        return RedirectResponse(
+            url="/?err=" + _flash("No API keys configured. Please add keys first."),
+            status_code=303,
+        )
+
+    # Graceful degradation: if no enabled LLM provider has its secret present,
+    # say so plainly instead of letting the orchestrator raise opaquely.
+    if not _llm_providers_available():
+        return RedirectResponse(
+            url="/?err=" + _flash(
+                "No LLM provider is configured. Add a provider key (e.g. OpenAI, "
+                "Anthropic) in the API Vault, then try again."
+            ),
+            status_code=303,
+        )
+
+    # Global concurrency guard: reject (don't queue) when the swarm is already
+    # saturated so callers get immediate, honest feedback.
+    if not _run_guard.try_acquire():
+        return RedirectResponse(
+            url="/?err=" + _flash("The swarm is busy with other tasks. Please try again shortly."),
+            status_code=303,
+        )
 
     db = SessionLocal()
-    task_run = TaskRun(prompt=prompt.strip(), status="running")
+    task_run = TaskRun(prompt=prompt, status="running")
     try:
         db.add(task_run)
         db.commit()
@@ -82,7 +159,12 @@ async def run_task(request: Request, prompt: str = Form(...), _=Depends(require_
     except Exception as e:
         db.rollback()
         db.close()
-        return RedirectResponse(url=f"/?err=Failed to create task: {e}", status_code=303)
+        _run_guard.release()
+        logger.error("Failed to create task run: %s", e)
+        return RedirectResponse(
+            url="/?err=" + _flash("Could not start the task. Please try again."),
+            status_code=303,
+        )
 
     start_time = time.time()
     try:
@@ -95,7 +177,7 @@ async def run_task(request: Request, prompt: str = Form(...), _=Depends(require_
         integrations = Integrations()
         broker = CapabilityBroker(policy, integrations)
         orchestrator = WaveOrchestrator(broker)
-        result = await orchestrator.run(prompt.strip())
+        result = await orchestrator.run(prompt)
 
         elapsed_ms = int((time.time() - start_time) * 1000)
         result_text = json.dumps(result, indent=2, default=str)
@@ -113,13 +195,19 @@ async def run_task(request: Request, prompt: str = Form(...), _=Depends(require_
         db.commit()
     except Exception as e:
         elapsed_ms = int((time.time() - start_time) * 1000)
-        logger.error("Task execution failed: %s", e)
-        task_run.result = f"Error: {str(e)}"
+        # Log the full error server-side; never surface raw exception text (which
+        # may contain provider details) to the user.
+        logger.exception("Task execution failed for task %s", task_id)
+        task_run.result = "Error: task execution failed. See server logs for details."
         task_run.status = "failed"
         task_run.execution_time_ms = elapsed_ms
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
     finally:
         db.close()
+        _run_guard.release()
 
     return RedirectResponse(url=f"/?result_id={task_id}", status_code=303)
 
