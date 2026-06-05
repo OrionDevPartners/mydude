@@ -125,13 +125,9 @@ class LLM:
         if team is None:
             raise RuntimeError("LLM_PROVIDER is set but no API keys are configured.")
 
-        roles_hint = {
-            "openai": "Implementation + patches + practical code changes",
-            "anthropic": "Security review + architecture coherence + failure modes",
-            "gemini": "Edge cases + alternative approaches + high recall brainstorming",
-            "grok": "Creative solutions + unusual optimizations + growth/monetization angles",
-        }
-        out = await team.call_team(system, user, roles_hint=roles_hint)
+        # Role hints are resolved from env_1 (per-provider role_hint) inside the
+        # swarm; no vendor names are referenced here.
+        out = await team.call_team(system, user)
         return out["merged"]
 
 

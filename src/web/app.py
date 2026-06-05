@@ -60,3 +60,9 @@ async def startup():
         logger.info("API keys synced to environment")
     except Exception as e:
         logger.warning("Failed to sync API keys: %s", e)
+
+    # Boot handshake (env_1 -> env_2): validate provider config and that every
+    # required secret is present. A failure here is intentionally fatal so the
+    # app never serves traffic in a misconfigured state.
+    from src.providers.handshake import run_handshake
+    run_handshake()

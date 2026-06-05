@@ -1,20 +1,17 @@
+"""Generic, provider-agnostic model resolution.
+
+Given a provider key, a (possibly None) ``list_models`` callable and a list of
+preference regexes (declared per-provider in env_1), pick the latest matching
+model id and cache the result on disk. No vendor names are hardcoded here.
+"""
 import os
 import re
 import time
 import json
-from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Callable, Awaitable
 
 CACHE_PATH = "model_cache.json"
 CACHE_TTL_SECONDS = int(os.getenv("MODEL_CACHE_TTL_SECONDS", "21600"))
-
-
-@dataclass(frozen=True)
-class ResolvedModels:
-    openai: str
-    anthropic: str
-    gemini: str
-    grok: str
 
 
 def _load_cache() -> dict:
@@ -57,55 +54,33 @@ def pick_latest_matching(model_ids: List[str], prefix_regex: str) -> Optional[st
     return candidates[0]
 
 
-async def resolve_models(
-    openai_list_models=None,
-    anthropic_alias: Optional[str] = None,
-    gemini_list_models=None,
-    grok_list_models=None,
-) -> ResolvedModels:
+async def resolve_model_cached(
+    provider_key: str,
+    list_models: Optional[Callable[[], Awaitable[List[str]]]],
+    patterns: List[str],
+    default_model: str,
+) -> str:
+    """Resolve the best model id for ``provider_key``.
+
+    Tries the live model list (cached for CACHE_TTL_SECONDS), selecting the
+    latest id matching any of ``patterns`` in order. Falls back to the cached
+    value, then ``default_model``.
+    """
     cache = _load_cache()
 
-    if openai_list_models and not _is_fresh(cache, "openai"):
+    if list_models and not _is_fresh(cache, provider_key):
         try:
-            o_models = await openai_list_models()
-            openai_model = (
-                pick_latest_matching(o_models, r"^gpt-4\.1(?!.*codex)") or
-                pick_latest_matching(o_models, r"^gpt-4o") or
-                os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-            )
-            cache["openai"] = {"ts": time.time(), "model": openai_model}
+            models = await list_models()
+            picked = None
+            for pat in patterns:
+                picked = pick_latest_matching(models, pat)
+                if picked:
+                    break
+            picked = picked or default_model
+            cache[provider_key] = {"ts": time.time(), "model": picked}
+            _save_cache(cache)
+            return picked
         except Exception:
-            openai_model = cache.get("openai", {}).get("model", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
-    else:
-        openai_model = cache.get("openai", {}).get("model", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
+            return cache.get(provider_key, {}).get("model", default_model)
 
-    anthropic_model = anthropic_alias or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
-
-    if gemini_list_models and not _is_fresh(cache, "gemini"):
-        try:
-            g_models = await gemini_list_models()
-            gemini_model = pick_latest_matching(g_models, r"gemini.*2.*flash") or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-            cache["gemini"] = {"ts": time.time(), "model": gemini_model}
-        except Exception:
-            gemini_model = cache.get("gemini", {}).get("model", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
-    else:
-        gemini_model = cache.get("gemini", {}).get("model", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
-
-    if grok_list_models and not _is_fresh(cache, "grok"):
-        try:
-            x_models = await grok_list_models()
-            grok_model = pick_latest_matching(x_models, r"grok") or os.getenv("GROK_MODEL", "grok-2-latest")
-            cache["grok"] = {"ts": time.time(), "model": grok_model}
-        except Exception:
-            grok_model = cache.get("grok", {}).get("model", os.getenv("GROK_MODEL", "grok-2-latest"))
-    else:
-        grok_model = cache.get("grok", {}).get("model", os.getenv("GROK_MODEL", "grok-2-latest"))
-
-    _save_cache(cache)
-
-    return ResolvedModels(
-        openai=openai_model,
-        anthropic=anthropic_model,
-        gemini=gemini_model,
-        grok=grok_model,
-    )
+    return cache.get(provider_key, {}).get("model", default_model)

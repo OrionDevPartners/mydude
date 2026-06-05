@@ -306,6 +306,18 @@ SERVICE_CATALOG = [
     },
 ]
 
+# Keep LLM provider secret names in sync with env_1 (config/providers.toml) so
+# the vault/catalog never duplicates a hardcoded env var for a managed provider.
+try:
+    from src.providers.config import provider_env_map as _provider_env_map
+    _ENV_OVERRIDES = _provider_env_map()
+    for _svc in SERVICE_CATALOG:
+        _ev = _ENV_OVERRIDES.get(_svc["slug"])
+        if _ev:
+            _svc["env_var"] = _ev
+except Exception:
+    pass
+
 _BY_SLUG = {s["slug"]: s for s in SERVICE_CATALOG}
 
 

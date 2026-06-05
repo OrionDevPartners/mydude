@@ -21,13 +21,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 from src.web.templating import templates
 
-# Legacy fallback mapping for keys saved before env_var was stored per-key.
-LEGACY_ENV_MAP = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "gemini": "GEMINI_API_KEY",
-    "grok": "GROK_API_KEY",
-}
+# Fallback mapping for keys saved before env_var was stored per-key. Derived
+# from env_1 (config/providers.toml) so provider secret names live in one place.
+try:
+    from src.providers.config import provider_env_map
+    LEGACY_ENV_MAP = {k: v for k, v in provider_env_map().items() if v}
+except Exception as _e:  # pragma: no cover - config should always be present
+    logger.warning("Could not load provider env map from env_1: %s", _e)
+    LEGACY_ENV_MAP = {}
 
 EXPIRY_WARN_DAYS = 14
 

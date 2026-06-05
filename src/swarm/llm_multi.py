@@ -1,26 +1,12 @@
-import os
 import asyncio
 import random
 import time
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
 
-try:
-    from openai import AsyncOpenAI
-except Exception:
-    AsyncOpenAI = None
-
-try:
-    import anthropic
-except Exception:
-    anthropic = None
-
-try:
-    import google.generativeai as genai
-except Exception:
-    genai = None
-
-from src.swarm.model_resolver import resolve_models
+from src.providers.config import llm_provider_specs
+from src.providers.registry import build_adapter
+from src.providers.secrets import get_env
 from src.selfheal.circuit_breaker import CircuitBreaker
 from src.swarm.compliance import analyze_agent_output, compute_effective_weight, classify_novelty, consensus_confidence_boost, NoveltyClassification
 from src.swarm.hallucination import (
@@ -43,22 +29,21 @@ class ProviderReply:
 
 def _env_int(name: str, default: int) -> int:
     try:
-        return int(os.getenv(name, str(default)))
+        val = get_env(name)
+        return int(val) if val is not None else default
     except Exception:
         return default
 
 
 class RateLimiter:
-    def __init__(self):
-        self.sems = {
-            "openai": asyncio.Semaphore(_env_int("OPENAI_CONCURRENCY", 4)),
-            "anthropic": asyncio.Semaphore(_env_int("ANTHROPIC_CONCURRENCY", 3)),
-            "gemini": asyncio.Semaphore(_env_int("GEMINI_CONCURRENCY", 3)),
-            "grok": asyncio.Semaphore(_env_int("GROK_CONCURRENCY", 3)),
-        }
+    def __init__(self, specs):
+        self.sems = {}
+        for s in specs:
+            n = _env_int(s.concurrency_env, s.default_concurrency) if s.concurrency_env else s.default_concurrency
+            self.sems[s.key] = asyncio.Semaphore(n)
 
-    def sem(self, provider: str) -> asyncio.Semaphore:
-        return self.sems.get(provider, asyncio.Semaphore(2))
+    def sem(self, key: str) -> asyncio.Semaphore:
+        return self.sems.get(key, asyncio.Semaphore(2))
 
 
 async def _backoff_retry(fn, max_tries=4):
@@ -72,88 +57,33 @@ async def _backoff_retry(fn, max_tries=4):
 
 
 class MultiProviderLLM:
+    """Provider-agnostic LLM swarm.
+
+    The set of providers, their models, concurrency and role hints all come from
+    env_1 (config/providers.toml) via adapters. This class names no vendor.
+    """
+
     def __init__(self):
-        self.limiter = RateLimiter()
+        self.specs = llm_provider_specs()
+        self.adapters = [build_adapter(s) for s in self.specs]
+        self.limiter = RateLimiter(self.specs)
         self.circuit_breaker = CircuitBreaker()
-
-        self.openai_key = os.getenv("OPENAI_API_KEY")
-        self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        self.gemini_key = os.getenv("GEMINI_API_KEY")
-        self.grok_key = os.getenv("GROK_API_KEY")
-
-        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-        self.anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
-        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-        self.grok_model = os.getenv("GROK_MODEL", "grok-2-latest")
-
         self.budget_tokens = _env_int("PROVIDER_BUDGET_TOKENS", 1200)
-
-        self._openai = AsyncOpenAI(api_key=self.openai_key) if (AsyncOpenAI and self.openai_key) else None
-        self._anthropic = anthropic.AsyncAnthropic(api_key=self.anthropic_key) if (anthropic and self.anthropic_key) else None
-
-        if genai and self.gemini_key:
-            genai.configure(api_key=self.gemini_key)
-
-        self.grok_base_url = os.getenv("GROK_BASE_URL", "https://api.x.ai/v1")
-        self._grok = (
-            AsyncOpenAI(
-                api_key=self.grok_key,
-                base_url=self.grok_base_url,
-            )
-            if (AsyncOpenAI and self.grok_key)
-            else None
-        )
-
         self._resolved = False
 
+    def _available_adapters(self):
+        return [a for a in self.adapters if a.is_available()]
+
     def available(self) -> Dict[str, bool]:
-        return {
-            "openai": bool(self._openai),
-            "anthropic": bool(self._anthropic),
-            "gemini": bool(genai and self.gemini_key),
-            "grok": bool(self._grok),
-        }
+        return {a.key: a.is_available() for a in self.adapters}
 
     async def _resolve_once(self):
         if self._resolved:
             return
-
-        openai_list = None
-        gemini_list = None
-        grok_list = None
-
-        if self._openai:
-            async def _ol():
-                r = await self._openai.models.list()
-                return [m.id for m in r.data]
-            openai_list = _ol
-
-        if genai and self.gemini_key:
-            async def _gl():
-                ms = await asyncio.to_thread(genai.list_models)
-                return [m.name for m in ms]
-            gemini_list = _gl
-
-        if self._grok:
-            async def _xl():
-                r = await self._grok.models.list()
-                return [m.id for m in r.data]
-            grok_list = _xl
-
-        try:
-            resolved = await resolve_models(
-                openai_list_models=openai_list,
-                anthropic_alias=os.getenv("ANTHROPIC_OPUS_ALIAS"),
-                gemini_list_models=gemini_list,
-                grok_list_models=grok_list,
-            )
-            self.openai_model = resolved.openai
-            self.anthropic_model = resolved.anthropic
-            self.gemini_model = resolved.gemini
-            self.grok_model = resolved.grok
-        except Exception:
-            pass
-
+        await asyncio.gather(
+            *[a.resolve_model() for a in self._available_adapters()],
+            return_exceptions=True,
+        )
         self._resolved = True
 
     def score_replies(self, replies: List[ProviderReply]) -> List[ProviderReply]:
@@ -207,97 +137,29 @@ class MultiProviderLLM:
 
     async def _fanout(self, system: str, user: str, roles_hint: Dict[str, str]) -> List[ProviderReply]:
         tasks = []
-        if self._openai and await self.circuit_breaker.can_call("openai"):
-            tasks.append(self._call_openai(system, user, roles_hint.get("openai")))
-        if self._anthropic and await self.circuit_breaker.can_call("anthropic"):
-            tasks.append(self._call_anthropic(system, user, roles_hint.get("anthropic")))
-        if genai and self.gemini_key and await self.circuit_breaker.can_call("gemini"):
-            tasks.append(self._call_gemini(system, user, roles_hint.get("gemini")))
-        if self._grok and await self.circuit_breaker.can_call("grok"):
-            tasks.append(self._call_grok(system, user, roles_hint.get("grok")))
+        for adapter in self._available_adapters():
+            if await self.circuit_breaker.can_call(adapter.key):
+                hint = roles_hint.get(adapter.key, adapter.role_hint)
+                tasks.append(self._call(adapter, system, user, hint))
 
         if not tasks:
             return [ProviderReply("none", "none", "No providers configured. Add API keys.", False, "no_providers")]
 
         return await asyncio.gather(*tasks)
 
-    async def _call_openai(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
-        async with self.limiter.sem("openai"):
+    async def _call(self, adapter, system: str, user: str, hint: Optional[str]) -> ProviderReply:
+        async with self.limiter.sem(adapter.key):
             async def run():
                 msg = user if not hint else f"[Specialization: {hint}]\n{user}"
-                r = await self._openai.chat.completions.create(
-                    model=self.openai_model,
-                    messages=[{"role": "system", "content": system}, {"role": "user", "content": msg}],
-                    max_tokens=self.budget_tokens,
-                )
-                return r.choices[0].message.content or ""
+                return await adapter.generate(system, msg, self.budget_tokens)
             try:
                 t0 = time.time()
                 text = await _backoff_retry(run)
-                await self.circuit_breaker.record_success("openai", time.time() - t0)
-                return ProviderReply("openai", self.openai_model, text, True)
+                await self.circuit_breaker.record_success(adapter.key, time.time() - t0)
+                return ProviderReply(adapter.key, adapter.model, text, True)
             except Exception as e:
-                await self.circuit_breaker.record_failure("openai", str(e))
-                return ProviderReply("openai", self.openai_model, "", False, str(e))
-
-    async def _call_anthropic(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
-        async with self.limiter.sem("anthropic"):
-            async def run():
-                msg = user if not hint else f"[Specialization: {hint}]\n{user}"
-                r = await self._anthropic.messages.create(
-                    model=self.anthropic_model,
-                    max_tokens=self.budget_tokens,
-                    system=system,
-                    messages=[{"role": "user", "content": msg}],
-                )
-                parts = []
-                for b in r.content:
-                    if getattr(b, "type", None) == "text":
-                        parts.append(b.text)
-                return "\n".join(parts).strip()
-            try:
-                t0 = time.time()
-                text = await _backoff_retry(run)
-                await self.circuit_breaker.record_success("anthropic", time.time() - t0)
-                return ProviderReply("anthropic", self.anthropic_model, text, True)
-            except Exception as e:
-                await self.circuit_breaker.record_failure("anthropic", str(e))
-                return ProviderReply("anthropic", self.anthropic_model, "", False, str(e))
-
-    async def _call_gemini(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
-        async with self.limiter.sem("gemini"):
-            async def run():
-                msg = user if not hint else f"[Specialization: {hint}]\n{user}"
-                model = genai.GenerativeModel(self.gemini_model, system_instruction=system)
-                r = await asyncio.to_thread(model.generate_content, msg)
-                return (getattr(r, "text", "") or "").strip()
-            try:
-                t0 = time.time()
-                text = await _backoff_retry(run)
-                await self.circuit_breaker.record_success("gemini", time.time() - t0)
-                return ProviderReply("gemini", self.gemini_model, text, True)
-            except Exception as e:
-                await self.circuit_breaker.record_failure("gemini", str(e))
-                return ProviderReply("gemini", self.gemini_model, "", False, str(e))
-
-    async def _call_grok(self, system: str, user: str, hint: Optional[str]) -> ProviderReply:
-        async with self.limiter.sem("grok"):
-            async def run():
-                msg = user if not hint else f"[Specialization: {hint}]\n{user}"
-                r = await self._grok.chat.completions.create(
-                    model=self.grok_model,
-                    messages=[{"role": "system", "content": system}, {"role": "user", "content": msg}],
-                    max_tokens=self.budget_tokens,
-                )
-                return r.choices[0].message.content or ""
-            try:
-                t0 = time.time()
-                text = await _backoff_retry(run)
-                await self.circuit_breaker.record_success("grok", time.time() - t0)
-                return ProviderReply("grok", self.grok_model, text, True)
-            except Exception as e:
-                await self.circuit_breaker.record_failure("grok", str(e))
-                return ProviderReply("grok", self.grok_model, "", False, str(e))
+                await self.circuit_breaker.record_failure(adapter.key, str(e))
+                return ProviderReply(adapter.key, adapter.model, "", False, str(e))
 
     async def _judge_merge(self, system: str, user: str, replies: List[ProviderReply]) -> str:
         chunks = []
@@ -349,31 +211,10 @@ class MultiProviderLLM:
             f"Providers' outputs:\n{debate}"
         )
 
-        if self._openai:
+        for adapter in self._available_adapters():
             try:
-                r = await self._openai.chat.completions.create(
-                    model=self.openai_model,
-                    messages=[{"role": "system", "content": system}, {"role": "user", "content": judge_prompt}],
-                    max_tokens=self.budget_tokens,
-                )
-                return r.choices[0].message.content or ""
+                return await adapter.generate(system, judge_prompt, self.budget_tokens)
             except Exception:
-                pass
-
-        if self._anthropic:
-            try:
-                r = await self._anthropic.messages.create(
-                    model=self.anthropic_model,
-                    max_tokens=self.budget_tokens,
-                    system=system,
-                    messages=[{"role": "user", "content": judge_prompt}],
-                )
-                parts = []
-                for b in r.content:
-                    if getattr(b, "type", None) == "text":
-                        parts.append(b.text)
-                return "\n".join(parts).strip()
-            except Exception:
-                pass
+                continue
 
         return debate[:7000]

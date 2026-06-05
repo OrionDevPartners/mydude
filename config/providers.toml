@@ -1,0 +1,78 @@
+# =============================================================================
+# env_1 — PROVIDER MAPPING LAYER (committed to git)
+# =============================================================================
+# This file maps capabilities/functions to provider implementations. It ships
+# to git. It contains *no secret values* — only the NAMES of the secrets each
+# provider needs (those values live in env_2: Replit Secrets / the credential
+# vault, never committed).
+#
+# To swap or add a provider you edit ONLY this file:
+#   * swap the active LLM provider  -> change `enabled` / `required` below
+#   * add a brand-new LLM provider  -> add one [providers.<key>] block here and
+#                                      register one adapter class in
+#                                      src/providers/registry.py
+# Application code never names a vendor; it resolves everything through here.
+# =============================================================================
+
+[capabilities]
+# Maps each capability to its implementation strategy. Future capabilities
+# (email, storage, ...) plug in here without touching call-site code.
+llm = "swarm"
+
+[llm]
+# Providers the LLM swarm may use. Remove a key to drop that provider; the
+# swarm degrades gracefully to whatever remains configured at runtime.
+enabled = ["openai", "anthropic", "gemini", "grok"]
+
+# Providers whose secrets MUST be present at boot. The boot handshake hard-fails
+# (the app refuses to serve traffic) if any required secret is missing. Must be
+# a subset of `enabled`. Leave empty to let the runtime credential vault be
+# populated before you activate a provider for production.
+required = []
+
+# -----------------------------------------------------------------------------
+# Provider definitions. `secrets` lists the env_2 secret names (NOT values).
+# `adapter` selects the implementation registered in src/providers/registry.py.
+# -----------------------------------------------------------------------------
+
+[providers.openai]
+adapter = "openai_chat"
+secrets = ["OPENAI_API_KEY"]
+model_env = "OPENAI_MODEL"
+default_model = "gpt-4.1-mini"
+concurrency_env = "OPENAI_CONCURRENCY"
+default_concurrency = 4
+role_hint = "Implementation + patches + practical code changes"
+model_patterns = ['^gpt-4\.1(?!.*codex)', '^gpt-4o']
+
+[providers.anthropic]
+adapter = "anthropic_messages"
+secrets = ["ANTHROPIC_API_KEY"]
+model_env = "ANTHROPIC_MODEL"
+default_model = "claude-sonnet-4-20250514"
+concurrency_env = "ANTHROPIC_CONCURRENCY"
+default_concurrency = 3
+role_hint = "Security review + architecture coherence + failure modes"
+alias_env = "ANTHROPIC_OPUS_ALIAS"
+
+[providers.gemini]
+adapter = "gemini_generate"
+secrets = ["GEMINI_API_KEY"]
+model_env = "GEMINI_MODEL"
+default_model = "gemini-2.0-flash"
+concurrency_env = "GEMINI_CONCURRENCY"
+default_concurrency = 3
+role_hint = "Edge cases + alternative approaches + high recall brainstorming"
+model_patterns = ['gemini.*2.*flash']
+
+[providers.grok]
+adapter = "openai_chat"
+secrets = ["GROK_API_KEY"]
+model_env = "GROK_MODEL"
+default_model = "grok-2-latest"
+concurrency_env = "GROK_CONCURRENCY"
+default_concurrency = 3
+role_hint = "Creative solutions + unusual optimizations + growth/monetization angles"
+model_patterns = ['grok']
+base_url_env = "GROK_BASE_URL"
+default_base_url = "https://api.x.ai/v1"
