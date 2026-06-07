@@ -266,6 +266,22 @@ async def _has_captcha(page):
             or "hcaptcha" in content or "captcha-delivery" in content)
 
 
+async def _wait_for_login_form(page, timeout_ms):
+    """Wait for a client-rendered login form to mount before interacting.
+
+    Real sign-in pages are almost always SPAs whose username/password inputs are
+    absent at ``domcontentloaded`` and hydrate a beat later. Filling immediately
+    races that render — the field isn't there, nothing gets typed, the submit
+    advances nowhere, and the flow misreports "no password field / needs you".
+    Waiting for the first field to actually appear makes the heuristics reliable.
+    """
+    selector = ", ".join(_USERNAME_SELECTORS + [_PASSWORD_SELECTOR])
+    try:
+        await page.wait_for_selector(selector, state="visible", timeout=min(timeout_ms, 15000))
+    except Exception:
+        pass
+
+
 async def _do_login(page, login_url, account_url, username, password, otp,
                     backend_key, timeout_ms, max_chars, allow_host):
     """Drive a generic login and land on the account page.
@@ -292,11 +308,20 @@ async def _do_login(page, login_url, account_url, username, password, otp,
             return _blocked()
         raise
 
+    # Sign-in pages are SPAs: wait for the form to mount before typing, or the
+    # fill races the render and silently no-ops.
+    await _wait_for_login_form(page, timeout_ms)
+
     await _fill_first(page, _USERNAME_SELECTORS, username or "")
     if not await _is_visible(page, _PASSWORD_SELECTOR):
-        # Two-step login: advance past the identifier page first.
+        # Two-step login: advance past the identifier page first, then wait for
+        # the password field to actually render rather than guessing a delay.
         await _click_first(page, _NEXT_SELECTORS)
-        await page.wait_for_timeout(1800)
+        try:
+            await page.wait_for_selector(_PASSWORD_SELECTOR, state="visible",
+                                         timeout=min(timeout_ms, 12000))
+        except Exception:
+            await page.wait_for_timeout(1800)
         if blocked["host"]:
             return _blocked()
 

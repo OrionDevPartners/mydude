@@ -151,6 +151,10 @@ class Integrations:
 
         Never includes credentials; only URLs, backend, title, and page text.
         """
+        # Surface the page snapshot whenever one exists — including the
+        # needs-you / blocked outcomes — so the UI can show the user exactly
+        # where the flow stopped (the cancel review especially relies on this).
+        self.last_browser_screenshot = getattr(result, "screenshot_b64", None)
         if getattr(result, "blocked", False):
             audit_capability(capability, target=result.final_url or target,
                              backend=result.backend, status="blocked",
