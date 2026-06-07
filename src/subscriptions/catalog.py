@@ -11,6 +11,8 @@ Each entry carries the URLs the login/manage flow needs:
 - ``cancel_hint``: human guidance for where the cancel flow tends to live.
 """
 
+import re
+
 SUBSCRIPTION_CATALOG = [
     {
         "slug": "netflix",
@@ -216,6 +218,59 @@ def match_host(host):
     for domain, entry in _BY_DOMAIN.items():
         if host == domain or host.endswith("." + domain):
             return entry
+    return None
+
+
+# Generic words inside service names that must NOT, on their own, match a
+# merchant — they are too common and would cause false positives in receipts.
+_NAME_STOPWORDS = {
+    "premium", "plus", "one", "music", "video", "creative", "cloud",
+    "workspace", "the", "and", "tv", "hbo", "icloud", "office", "365",
+}
+
+
+def _name_keywords(entry):
+    """Distinctive lowercase keywords for an entry's name/slug (>=4 chars)."""
+    words = set()
+    name = entry["name"].split("(")[0]
+    for token in re.split(r"[^a-z0-9]+", name.lower()):
+        if len(token) >= 4 and token not in _NAME_STOPWORDS:
+            words.add(token)
+    for token in entry["slug"].split("-"):
+        if len(token) >= 4 and token not in _NAME_STOPWORDS:
+            words.add(token)
+    return words
+
+
+_NAME_KEYWORDS = {e["slug"]: _name_keywords(e) for e in SUBSCRIPTION_CATALOG}
+
+
+def match_merchant(from_addr=None, text=None):
+    """Best-effort match of a billing email to a catalog service.
+
+    Tries the strongest signal first — the sender's domain (e.g. a receipt from
+    ``billing@netflix.com`` maps to Netflix) — then falls back to a distinctive
+    service-name keyword appearing as a whole word in ``text`` (subject/body).
+
+    Returns the catalog entry or None. A None is honest: the email looks like a
+    receipt but is not for a service MyDude recognises, so the user can still
+    add it by hand.
+    """
+    # 1) Sender domain.
+    addr = (from_addr or "").strip().lower()
+    if "@" in addr:
+        domain = addr.rsplit("@", 1)[-1].strip()
+        entry = match_host(domain)
+        if entry:
+            return entry
+
+    # 2) Distinctive name keyword as a whole word in the email text.
+    blob = (text or "").lower()
+    if blob:
+        for entry in SUBSCRIPTION_CATALOG:
+            for kw in _NAME_KEYWORDS.get(entry["slug"], ()):
+                if re.search(r"\b%s\b" % re.escape(kw), blob):
+                    return entry
     return None
 
 

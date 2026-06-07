@@ -214,4 +214,22 @@ class PolicyEngine:
         if capability in ("ssh_run", "ssh_read_history", "ssh_fetch_code"):
             return self._evaluate_ssh(capability, params)
 
+        if capability == "imap_read_receipts":
+            return self._evaluate_email(params)
+
+        return PolicyDecision(True, "Allowed by policy.")
+
+    def _evaluate_email(self, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for the read-only email-receipt scan.
+
+        Disabled by default; the operator opts in with ENABLE_EMAIL_CAPABILITY.
+        The IMAP read is internally-built and read-only (the mailbox is opened
+        ``readonly=True``), so there is no command/URL allow-list to apply — the
+        enable flag is the gate, mirroring ssh_read_history.
+        """
+        if not _env_flag("ENABLE_EMAIL_CAPABILITY"):
+            return PolicyDecision(
+                False,
+                "Email capability is disabled. Set ENABLE_EMAIL_CAPABILITY=true to enable it.",
+            )
         return PolicyDecision(True, "Allowed by policy.")

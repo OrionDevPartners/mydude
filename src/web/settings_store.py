@@ -14,7 +14,11 @@ from src.models import AppSetting
 logger = logging.getLogger(__name__)
 
 # Settings that are mirrored into os.environ on boot and on change.
-MANAGED_SETTINGS = ("ENABLE_BROWSER_CAPABILITY", "ENABLE_SSH_CAPABILITY")
+MANAGED_SETTINGS = (
+    "ENABLE_BROWSER_CAPABILITY",
+    "ENABLE_SSH_CAPABILITY",
+    "ENABLE_EMAIL_CAPABILITY",
+)
 
 
 def get_setting(key: str, default=None):

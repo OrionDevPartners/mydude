@@ -59,6 +59,24 @@ def _ssh_status():
                 "host_verified": False}
 
 
+def _email_status():
+    try:
+        from src.bridge.email_imap import load_email_config
+        cfg = load_email_config()
+        return {
+            "configured": cfg.configured,
+            "host": cfg.host or "",
+            "user": cfg.user or "",
+            "port": cfg.port,
+            "mailbox": cfg.mailbox,
+            "ssl": cfg.use_ssl,
+        }
+    except Exception as e:
+        logger.warning("Email status failed: %s", e)
+        return {"configured": False, "host": "", "user": "", "port": 993,
+                "mailbox": "INBOX", "ssl": True}
+
+
 def _allowlist(name: str, default):
     raw = os.environ.get(name, "")
     if not raw.strip():
@@ -90,8 +108,10 @@ def _context(request, result=None, result_kind=None):
         "request": request,
         "browser_enabled": _flag("ENABLE_BROWSER_CAPABILITY"),
         "ssh_enabled": _flag("ENABLE_SSH_CAPABILITY"),
+        "email_enabled": _flag("ENABLE_EMAIL_CAPABILITY"),
         "browser_backends": _browser_status(),
         "ssh": _ssh_status(),
+        "email": _email_status(),
         "browser_domains": _allowlist("BROWSER_ALLOWED_DOMAINS", ["example.com"]),
         "ssh_commands": _allowlist("SSH_ALLOWED_COMMANDS", [
             "echo", "whoami", "hostname", "uname", "sw_vers", "uptime", "date",
@@ -111,6 +131,7 @@ async def capabilities_page(request: Request, _=Depends(require_auth)):
 _TOGGLEABLE = {
     "browser": ("ENABLE_BROWSER_CAPABILITY", "Browser automation"),
     "ssh": ("ENABLE_SSH_CAPABILITY", "SSH bridge"),
+    "email": ("ENABLE_EMAIL_CAPABILITY", "Email receipts"),
 }
 
 
@@ -199,6 +220,83 @@ async def test_history(request: Request, browser: str = Form("chrome"), _=Depend
     }
     return templates.TemplateResponse(
         "capabilities.html", _context(request, result=result, result_kind="history")
+    )
+
+
+@router.post("/capabilities/test/receipts", response_class=HTMLResponse)
+async def test_receipts(request: Request, _=Depends(require_auth)):
+    broker = _broker()
+    res = await broker.request(
+        "imap_read_receipts",
+        {"limit": 10, "lookback_days": 365, "source": "capabilities-ui"},
+    )
+    output = res.output
+    # The raw output is a JSON array; summarise it so the panel stays readable
+    # and never dumps full email bodies onto the page.
+    if res.decision.allowed and output and output.startswith("["):
+        try:
+            import json
+            from src.subscriptions.discovery import parse_receipts
+            msgs = json.loads(output)
+            cands = parse_receipts(output)
+            names = ", ".join(sorted({c["name"] for c in cands})) or "none recognised"
+            output = ("Read %d recent billing email(s). Recognised services: %s."
+                      % (len(msgs), names))
+        except Exception:
+            pass
+    result = {
+        "allowed": res.decision.allowed,
+        "reason": res.decision.reason,
+        "output": output,
+    }
+    return templates.TemplateResponse(
+        "capabilities.html", _context(request, result=result, result_kind="receipts")
+    )
+
+
+@router.post("/capabilities/email-config")
+async def save_email_config(
+    request: Request,
+    host: str = Form(""),
+    port: str = Form("993"),
+    user: str = Form(""),
+    password: str = Form(""),
+    mailbox: str = Form("INBOX"),
+    _=Depends(require_auth),
+):
+    from urllib.parse import quote
+
+    host = host.strip()
+    user = user.strip()
+    password = password.strip()
+    mailbox = mailbox.strip() or "INBOX"
+    if not host or not user:
+        return RedirectResponse(
+            url="/capabilities?err=" + quote("Mail host and username are required."),
+            status_code=303,
+        )
+    db = SessionLocal()
+    try:
+        _upsert_vault(db, "imap-host", "IMAP_HOST", host)
+        _upsert_vault(db, "imap-user", "IMAP_USER", user)
+        _upsert_vault(db, "imap-port", "IMAP_PORT", (port.strip() or "993"))
+        _upsert_vault(db, "imap-mailbox", "IMAP_MAILBOX", mailbox)
+        if password:
+            _upsert_vault(db, "imap-password", "IMAP_PASSWORD", password)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error("Saving email config failed: %s", e)
+        return RedirectResponse(
+            url="/capabilities?err=" + quote("Could not save email config."), status_code=303
+        )
+    finally:
+        db.close()
+    from src.web.routes_keys import sync_keys_to_env
+    sync_keys_to_env()
+    return RedirectResponse(
+        url="/capabilities?msg=" + quote("Email bridge configuration saved to vault."),
+        status_code=303,
     )
 
 

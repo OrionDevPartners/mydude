@@ -230,6 +230,40 @@ class Integrations:
             audit_capability("ssh_fetch_code", status="error", detail=str(e), source=source)
             return "SSH bridge error: %s" % e
 
+    async def imap_read_receipts(self, params: Dict[str, Any]) -> str:
+        """Read recent billing/receipt emails over IMAP (read-only).
+
+        Returns a JSON list of ``{from, subject, body, date}`` dicts for the
+        discovery layer to parse, or a human-readable error string starting with
+        ``Email bridge error:`` / ``Email not configured`` so callers can report
+        honestly. Never modifies the mailbox.
+        """
+        import json
+        from src.bridge.email_imap import EmailReceiptReader, EmailBridgeError
+
+        source = params.get("source")
+        limit = int(params.get("limit", 50))
+        lookback = int(params.get("lookback_days", 365))
+        reader = EmailReceiptReader()
+        if not reader.available():
+            audit_capability("imap_read_receipts", status="error",
+                             detail="not configured", source=source)
+            return ("Email not configured. Add IMAP_HOST, IMAP_USER and "
+                    "IMAP_PASSWORD in the vault.")
+
+        def run():
+            return reader.read_receipts(limit=limit, lookback_days=lookback)
+
+        try:
+            messages = await asyncio.to_thread(run)
+            audit_capability("imap_read_receipts", target="limit=%d" % limit,
+                             status="ok", detail="messages=%d" % len(messages),
+                             source=source)
+            return json.dumps(messages)
+        except EmailBridgeError as e:
+            audit_capability("imap_read_receipts", status="error", detail=str(e), source=source)
+            return "Email bridge error: %s" % e
+
     async def git_status(self, params: Dict[str, Any]) -> str:
         return await _run_cmd(["git", "status", "--porcelain=v1", "-b"])
 

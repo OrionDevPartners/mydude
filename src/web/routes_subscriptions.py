@@ -99,39 +99,44 @@ async def subscriptions_page(request: Request, _=Depends(require_auth)):
     return templates.TemplateResponse("subscriptions.html", _context(request))
 
 
-@router.post("/subscriptions/discover", response_class=HTMLResponse)
-async def discover(request: Request, browser: str = Form("chrome"), _=Depends(require_auth)):
-    from src.subscriptions.discovery import discover_from_history
+def _insert_candidates(candidates):
+    """Insert discovered candidates as ``candidate`` rows, de-duped by domain.
 
-    broker = _broker()
-    candidates, message = await discover_from_history(broker, browser=browser, limit=200)
-
+    A candidate whose domain already exists (from any source) is skipped, so the
+    two discovery sources naturally merge into one tracked set. Returns the count
+    of newly-added rows.
+    """
     added = 0
     db = SessionLocal()
     try:
         for cand in candidates:
-            exists = (
-                db.query(Subscription)
-                .filter(Subscription.domain == cand["domain"])
-                .first()
-            )
-            if exists:
-                continue
+            domain = cand.get("domain")
+            if domain:
+                exists = (
+                    db.query(Subscription)
+                    .filter(Subscription.domain == domain)
+                    .first()
+                )
+                if exists:
+                    continue
             db.add(Subscription(
                 name=cand["name"],
-                domain=cand["domain"],
+                domain=domain,
                 login_url=cand.get("login_url"),
                 account_url=cand.get("account_url"),
                 est_cost=cand.get("est_cost"),
                 status="candidate",
-                source="browser_history",
+                source=cand.get("source") or "discovery",
             ))
             added += 1
         db.commit()
     finally:
         db.close()
+    return added
 
-    result = {
+
+def _discover_result(message, candidates, added):
+    return {
         "kind": "discover",
         "ok": bool(candidates),
         "message": "%s%s" % (
@@ -140,6 +145,27 @@ async def discover(request: Request, browser: str = Form("chrome"), _=Depends(re
             (" No new candidates (already tracked)." if candidates else ""),
         ),
     }
+
+
+@router.post("/subscriptions/discover", response_class=HTMLResponse)
+async def discover(request: Request, browser: str = Form("chrome"), _=Depends(require_auth)):
+    from src.subscriptions.discovery import discover_from_history
+
+    broker = _broker()
+    candidates, message = await discover_from_history(broker, browser=browser, limit=200)
+    added = _insert_candidates(candidates)
+    result = _discover_result(message, candidates, added)
+    return templates.TemplateResponse("subscriptions.html", _context(request, result=result))
+
+
+@router.post("/subscriptions/discover/email", response_class=HTMLResponse)
+async def discover_email(request: Request, _=Depends(require_auth)):
+    from src.subscriptions.discovery import discover_from_email
+
+    broker = _broker()
+    candidates, message = await discover_from_email(broker, limit=50, lookback_days=365)
+    added = _insert_candidates(candidates)
+    result = _discover_result(message, candidates, added)
     return templates.TemplateResponse("subscriptions.html", _context(request, result=result))
 
 
