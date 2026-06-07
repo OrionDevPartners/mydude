@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "value": "eastus2"
+    },
+    "environment": {
+      "value": "prod"
+    },
+    "pgAdminPassword": {
+      "value": "REPLACE_ME_BEFORE_DEPLOY"
+    },
+    "tenantId": {
+      "value": "{TENANT_ID}"
+    }
+  }
+}

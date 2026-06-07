@@ -1,0 +1,370 @@
+# =============================================================================
+# MyDude Identity-First Provisioning Manifest
+# Resource Group: MyDude
+# Pattern: Sovereign substrate + Azure capacity stack
+# Date: 2026-06-07
+# =============================================================================
+#
+# ARCHITECTURAL RULES (locked):
+#   1. MyDude owns routing authority — agents_home is the only governance authority.
+#   2. The BCS promotion gate is the only truth writer.
+#   3. Every Azure / agent-runtime service is an ADAPTER or PROJECTION, never
+#      an authority — agent-runtime auto-memory and outside-the-agent policy
+#      are replaced, not adopted.
+#   4. exec_locus (in_azure | anthropic_hosted | local) must match a domain's
+#      pinned exec_locus before any model can be promoted to that domain.
+#
+# ISOLATION: Fully isolated from any other project. Distinct resource group,
+# identities, catalog, storage, and Postgres server. No shared writers.
+# =============================================================================
+
+metadata:
+  manifest_id: mydude-total-stack-v1
+  resource_group: MyDude
+  location: eastus2
+  created: "2026-06-07"
+  owner: MyDude
+
+# ---------------------------------------------------------------------------
+# 1. ENTRA MANAGED IDENTITIES
+# ---------------------------------------------------------------------------
+identities:
+  # Single truth writer — the ONLY identity that may write to Unity Catalog.
+  bcs_gate_identity:
+    display_name: mydude-bcs-gate
+    role: BCSGateWriter
+    catalog_write: true
+    catalog_read: false
+    note: "Sole Unity Catalog write authority. All other identities are catalog read-only."
+
+  # Agent runtime — tool/runtime scope only. Never holds catalog write.
+  foundry_agent_identity:
+    display_name: mydude-foundry-agent
+    role: FoundryAgentRuntime
+    catalog_write: false
+    catalog_read: true
+    scope: tool_and_runtime_only
+    constraint: "Must never hold Unity Catalog write. Foundry Agent Service identity only."
+
+  # agents_home Postgres role — routing decisions, policy, threshold writes.
+  agents_home_identity:
+    display_name: mydude-agents-home-db
+    role: AgentsHomeDBWriter
+    catalog_write: false
+    catalog_read: false
+    pg_role: agents_home_writer
+    databases: [agents_home]
+
+  # provider_home Postgres role — candidate cognition + outbox only.
+  provider_home_identity:
+    display_name: mydude-provider-home-db
+    role: ProviderHomeDBWriter
+    catalog_write: false
+    catalog_read: false
+    pg_role: provider_home_writer
+    databases: [provider_home]
+
+  # Read-only actors — Master_DB readers, fan-out gateway, all query agents.
+  readonly_identity:
+    display_name: mydude-readonly
+    role: CatalogReader
+    catalog_write: false
+    catalog_read: true
+    pg_role: agents_home_reader
+
+# Authority inversion rules (enforced by acceptance doctors):
+authority_rules:
+  - exactly_one_catalog_writer: bcs_gate_identity
+  - foundry_agent_identity_never_writes_catalog: true
+  - provider_home_reader_never_promotes_directly: true
+  - every_agent_output_is_candidate_until_bcs_promotes: true
+  - model_router_sees_only_mydude_granted_model_set: true
+  - exec_locus_must_match_domain_pin_before_promotion: true
+
+# ---------------------------------------------------------------------------
+# 2. NETWORK BOUNDARY
+# ---------------------------------------------------------------------------
+network:
+  vnet:
+    name: mydude-vnet
+    address_space: "10.10.0.0/16"
+  subnets:
+    aca_subnet:
+      name: mydude-aca-subnet
+      address_prefix: "10.10.1.0/24"
+      delegation: Microsoft.App/environments
+    postgres_subnet:
+      name: mydude-pg-subnet
+      address_prefix: "10.10.2.0/24"
+      service_endpoints: [Microsoft.Storage]
+    private_endpoints_subnet:
+      name: mydude-pe-subnet
+      address_prefix: "10.10.3.0/24"
+  private_endpoints:
+    - name: mydude-kv-pe
+      resource: key_vault
+      subresource: vault
+    - name: mydude-pg-pe
+      resource: postgres_server
+      subresource: postgresqlServer
+    - name: mydude-storage-pe
+      resource: adls_gen2
+      subresource: dfs
+  azure_policy:
+    public_network_deny:
+      display_name: "Deny public network access — MyDude resources"
+      resources: [PostgreSQL, KeyVault, Storage]
+      effect: Deny
+
+# ---------------------------------------------------------------------------
+# 3. KEY VAULT
+# ---------------------------------------------------------------------------
+key_vault:
+  name: mydude-kv
+  sku: standard
+  soft_delete_days: 90
+  purge_protection: true
+  network_acls:
+    default_action: Deny
+    bypass: AzureServices
+  secrets:
+    - name: agents-home-pg-password
+      description: "PostgreSQL password for agents_home_writer role"
+    - name: provider-home-pg-password
+      description: "PostgreSQL password for provider_home_writer role"
+    - name: adls-connection-string
+      description: "ADLS Gen2 primary connection string"
+    - name: bcs-gate-idempotency-key
+      description: "BCS gate lease lock secret"
+  access_policies:
+    bcs_gate_identity: [get, set, list]
+    foundry_agent_identity: [get, list]
+    agents_home_identity: [get]
+    provider_home_identity: [get]
+
+# ---------------------------------------------------------------------------
+# 4. POSTGRES SERVER
+# ---------------------------------------------------------------------------
+postgres:
+  server_name: mydude-pg
+  sku: Standard_D4ds_v5
+  storage_size_gb: 128
+  storage_autoscale: true
+  high_availability:
+    mode: ZoneRedundant
+    standby_zone: "2"
+  version: "16"
+  network:
+    delegated_subnet: mydude-pg-subnet
+    private_dns_zone: mydude.postgres.database.azure.com
+  databases:
+    agents_home:
+      description: "Routing authority — policy, model teams, governed thresholds, cloud_shift"
+      roles:
+        agents_home_writer:
+          privileges: [CONNECT, CREATE, INSERT, UPDATE, DELETE, SELECT]
+          schemas: [public, routing, policy]
+        agents_home_reader:
+          privileges: [CONNECT, SELECT]
+          schemas: [public, routing, policy]
+    provider_home:
+      description: "Private candidate cognition and outbox"
+      roles:
+        provider_home_writer:
+          privileges: [CONNECT, CREATE, INSERT, UPDATE, DELETE, SELECT]
+          schemas: [public, candidates, outbox]
+        provider_home_reader:
+          privileges: [CONNECT, SELECT]
+          schemas: [public, candidates, outbox]
+
+# ---------------------------------------------------------------------------
+# 5. STORAGE — ADLS Gen2 + MinIO mirror
+# ---------------------------------------------------------------------------
+storage:
+  adls_gen2:
+    name: mydudestg
+    replication: RA-GRS
+    hierarchical_namespace: true
+    containers:
+      - name: unity-catalog
+        purpose: "Unity Catalog managed Iceberg REST — single commit authority"
+      - name: lancedb-l2
+        purpose: "LanceDB L2 hot-warm vector store (rebuildable projection)"
+      - name: mlflow-artifacts
+        purpose: "MLflow experiment artifacts and eval results"
+      - name: offline-sync
+        purpose: "MinIO→ADLS sync target for local sovereign stack"
+  minio_mirror:
+    bucket: mydude-offline-sync
+    sync_direction: local_to_azure
+    sync_trigger: outbox_replay_on_bcs_gate
+
+# ---------------------------------------------------------------------------
+# 6. UNITY CATALOG (Managed Iceberg REST)
+# ---------------------------------------------------------------------------
+unity_catalog:
+  endpoint: https://mydude-catalog.azuredatabricks.net
+  catalog_name: mydude
+  storage_root: abfss://unity-catalog@mydudestg.dfs.core.windows.net/
+  write_identity: bcs_gate_identity
+  dr_replica: RA-GRS_readonly
+  schemas:
+    agents_home_ledger:
+      purpose: "Committed routing decisions + claim ledger (read-only projection)"
+    provider_home_ledger:
+      purpose: "Candidate promotion history (read-only projection)"
+
+# ---------------------------------------------------------------------------
+# 7. AZURE AI SEARCH (rebuildable projection)
+# ---------------------------------------------------------------------------
+ai_search:
+  name: mydude-search
+  sku: standard
+  replicas: 1
+  partitions: 1
+  identity: readonly_identity
+  note: "Rebuildable projection — not an authority. Rebuilt from Unity Catalog on demand."
+
+# ---------------------------------------------------------------------------
+# 8. CONTAINER APPS (BCS Gate + Master_DB + Fan-out Gateway)
+# ---------------------------------------------------------------------------
+container_apps:
+  environment:
+    name: mydude-aca-env
+    subnet: mydude-aca-subnet
+    log_analytics: mydude-logs
+  apps:
+    bcs_gate:
+      name: mydude-bcs-gate
+      image: mydude/bcs-gate:latest
+      min_replicas: 1
+      max_replicas: 5
+      identity: bcs_gate_identity
+      env_refs:
+        - name: PG_AGENTS_HOME_DSN
+          secret_ref: agents-home-pg-password
+        - name: ADLS_CONNECTION_STRING
+          secret_ref: adls-connection-string
+        - name: BCS_LEASE_SECRET
+          secret_ref: bcs-gate-idempotency-key
+      ingress:
+        external: false
+        target_port: 8080
+      note: "Single truth writer. min-1 for always-on gate."
+
+    master_db:
+      name: mydude-master-db
+      image: mydude/master-db:latest
+      min_replicas: 1
+      max_replicas: 3
+      identity: readonly_identity
+      note: "DuckDB-in-Container-App for fan-out query aggregation. Catalog read-only."
+      ingress:
+        external: false
+        target_port: 8081
+
+    fanout_gateway:
+      name: mydude-fanout-gw
+      image: mydude/fanout-gateway:latest
+      min_replicas: 1
+      max_replicas: 10
+      identity: readonly_identity
+      note: "Fan-out query gateway. Catalog read-only."
+      ingress:
+        external: true
+        target_port: 8082
+
+# ---------------------------------------------------------------------------
+# 9. FOUNDRY AGENT SERVICE (Full depth)
+# ---------------------------------------------------------------------------
+foundry:
+  agent_service:
+    name: mydude-foundry
+    identity: foundry_agent_identity
+    components:
+      - managed_runtime
+      - gateway
+      - browser
+      - voice_live
+  model_router:
+    name: mydude-model-router
+    constraint: "Must only see the MyDude-granted model set from agents_home.model_team_policy"
+    scope: mydude_granted_deployments_only
+  foundry_maas:
+    enabled: true
+    deployments_from: agents_home.model_team_policy
+  serverless_gpu:
+    enabled: true
+    sku: Standard_NC24ads_A100_v4
+    purpose: "Serverless inference for local-promoted models"
+
+# ---------------------------------------------------------------------------
+# 10. MLFLOW + AZURE MONITOR (lineage / eval)
+# ---------------------------------------------------------------------------
+observability:
+  mlflow:
+    workspace: mydude-mlflow
+    artifact_store: abfss://mlflow-artifacts@mydudestg.dfs.core.windows.net/
+  azure_monitor:
+    workspace: mydude-logs
+    retention_days: 90
+    metrics:
+      - provider_latency
+      - bcs_promotion_count
+      - exec_locus_violations
+      - cloud_shift_triggers
+      - hallucination_risk_score
+
+# ---------------------------------------------------------------------------
+# 11. EXEC LOCUS DOMAINS
+# ---------------------------------------------------------------------------
+exec_locus_domains:
+  in_azure:
+    description: "Model must run in the MyDude Azure resource group"
+    pinned_providers: [foundry_maas, serverless_gpu, azure_openai]
+  anthropic_hosted:
+    description: "Model must run on Anthropic infrastructure"
+    pinned_providers: [anthropic]
+  local:
+    description: "Model must run on local sovereign substrate (MLX, Ollama, etc.)"
+    pinned_providers: [mlx, ollama, qwen3]
+
+# ---------------------------------------------------------------------------
+# 12. ROUTING TOPOLOGY
+# ---------------------------------------------------------------------------
+routing:
+  authority: agents_home
+  jurisdiction_ladder:
+    tier_0: "MyDude jurisdiction (agents_home)"
+    tier_1: "Foundry Model Router (within MyDude-granted Azure deployments)"
+    tier_2: "LiteLLM (within MyDude-granted provider APIs)"
+  fallback_tiers:
+    1: preferred_model
+    2: cloud_shift
+    3: ssh_edge
+    4: local_degraded
+    5: refuse_or_queue
+  kill_switch:
+    name: cloud_shift
+    column: agents_home.routing.cloud_shift
+    default: true
+    when_false: "Egress to cloud providers is disabled. Only local sovereign stack is used."
+
+# ---------------------------------------------------------------------------
+# 13. LOCAL SOVEREIGN STACK
+# ---------------------------------------------------------------------------
+local_sovereign:
+  components:
+    - agents_home_policy_cache    # SQLite mirror of agents_home routing policy
+    - model_registry              # Local model registry (GGUF / MLX manifests)
+    - capacity_probes             # Periodic GPU/CPU headroom checks
+    - mlx_inference               # Apple MLX inference engine
+    - ollama_inference            # Ollama inference engine
+    - qwen3_embed                 # qwen3 embedding model
+    - lancedb_l1_hot              # LanceDB L1 hot vector store
+    - provider_home_candidate     # Local candidate store (pre-outbox)
+    - local_bcs_path              # Local BCS gate (offline promotion path)
+    - offline_route_table         # Static fallback route table
+    - minio_object_store          # MinIO mirroring ADLS offline-sync bucket
+  outputs_status: offline_candidate
+  promotion_path: "Local outputs are offline-candidate until outbox replays into cloud BCS gate"

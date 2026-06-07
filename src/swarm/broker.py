@@ -4,6 +4,12 @@ from typing import Dict, Any, Optional
 from src.swarm.policy import PolicyEngine, PolicyDecision
 from src.swarm.integrations import Integrations, audit_capability
 
+try:
+    from infra.mydude.routing.jurisdiction import jurisdiction_hint as _jurisdiction_hint
+except Exception:
+    def _jurisdiction_hint(domain: str = "general", team: str = "default") -> dict:
+        return {}
+
 # Capabilities whose denials we record to the audit trail (the governed,
 # externally-reaching ones). Pure internal/stub capabilities are not logged.
 _AUDITED_CAPABILITIES = {
@@ -27,6 +33,15 @@ class CapabilityBroker:
         self.integrations = integrations
 
     async def request(self, capability: str, params: Dict[str, Any]) -> BrokerResult:
+        # Inject jurisdiction routing hint (_jurisdiction key) before policy evaluation.
+        # If PG_AGENTS_HOME_DSN is not set the hint is an empty dict (no-op).
+        # The _jurisdiction key is stripped by policy.evaluate if it doesn't recognise it.
+        domain = params.get("domain", "general")
+        team = params.get("team", "default")
+        hint = _jurisdiction_hint(domain=domain, team=team)
+        if hint:
+            params = {**params, **hint}
+
         decision = self.policy.evaluate(capability, params)
         if not decision.allowed:
             # Record blocked attempts too, so the audit log captures the full

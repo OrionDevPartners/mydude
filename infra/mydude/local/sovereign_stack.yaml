@@ -1,0 +1,186 @@
+# =============================================================================
+# MyDude Local Sovereign Stack Definition
+# =============================================================================
+#
+# The local sovereign stack is the per-install offline substrate.
+# All local outputs are OFFLINE-CANDIDATE until the outbox replays them
+# into the cloud BCS gate and receives a gate_receipt_id.
+#
+# Components:
+#   - agents_home_policy_cache  (SQLite mirror of cloud policy)
+#   - model_registry            (local model manifests)
+#   - capacity_probes           (GPU/CPU headroom checks)
+#   - mlx_inference             (Apple MLX)
+#   - ollama_inference          (Ollama)
+#   - qwen3_embed               (embedding model)
+#   - lancedb_l1_hot            (hot vector store)
+#   - provider_home_candidate   (local candidate store)
+#   - local_bcs_path            (offline promotion path)
+#   - offline_route_table       (static fallback routes)
+#   - minio_object_store        (ADLS mirror)
+# =============================================================================
+
+metadata:
+  version: "1.0.0"
+  output_status: offline_candidate
+  promotion_path: "Local outputs are offline-candidate until outbox replays into cloud BCS gate"
+  cloud_sync_target: "abfss://offline-sync@mydudestg.dfs.core.windows.net/"
+
+components:
+  agents_home_policy_cache:
+    type: sqlite
+    path: ~/.mydude/local/agents_home_cache.db
+    refresh_interval_minutes: 15
+    tables_cached:
+      - routing.cloud_shift
+      - routing.db_fallback_route
+      - policy.model_team_policy
+      - policy.governed_threshold
+      - governance.budget_cap
+    sync_trigger: connectivity_restored
+    offline_behavior: use_cached_policy
+
+  model_registry:
+    type: yaml_manifest
+    path: ~/.mydude/local/model_registry.yaml
+    format:
+      - model_id: "qwen3:14b"
+        provider: ollama
+        exec_locus: local
+        format: GGUF
+        size_gb: 8.5
+        modality: [text]
+        embed_dims: 4096
+      - model_id: "mlx-community/Qwen3-14B-8bit"
+        provider: mlx
+        exec_locus: local
+        format: MLX
+        size_gb: 9.0
+        modality: [text]
+      - model_id: "llama3.2:3b"
+        provider: ollama
+        exec_locus: local
+        format: GGUF
+        size_gb: 2.0
+        modality: [text]
+    refresh_trigger: manual_or_sync
+
+  capacity_probes:
+    type: periodic_check
+    interval_seconds: 60
+    checks:
+      - name: gpu_headroom
+        command: "nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits"
+        fallback: "sysctl -n hw.memsize"
+        threshold_mb: 4096
+      - name: cpu_load
+        command: "uptime"
+        threshold_load_1m: 8.0
+      - name: disk_free_gb
+        path: ~/.mydude
+        threshold_gb: 20.0
+    results_to: agents_home_policy_cache
+
+  mlx_inference:
+    type: inference_engine
+    engine: mlx_lm
+    backend: apple_silicon
+    models_dir: ~/.mydude/models/mlx
+    server_port: 11435
+    health_check: "GET http://localhost:11435/health"
+    startup_command: "mlx_lm.server --model {model_path} --port 11435"
+    notes: "Apple MLX inference engine. macOS / Apple Silicon only."
+
+  ollama_inference:
+    type: inference_engine
+    engine: ollama
+    server_port: 11434
+    health_check: "GET http://localhost:11434/api/tags"
+    startup_command: "ollama serve"
+    models_dir: ~/.ollama/models
+    notes: "Ollama inference engine. Linux/macOS."
+
+  qwen3_embed:
+    type: embedding_model
+    model_id: "qwen3:14b"
+    provider: ollama
+    embed_dims: 4096
+    endpoint: "http://localhost:11434/api/embeddings"
+    notes: "qwen3 embedding model for LanceDB L1 indexing."
+
+  lancedb_l1_hot:
+    type: vector_store
+    engine: lancedb
+    tier: L1_hot
+    path: ~/.mydude/lancedb/l1
+    sync_target: "~/.mydude/minio/lancedb-l2/"
+    embedding_model: qwen3_embed
+    max_size_gb: 10.0
+    notes: >
+      Hot vector store, local sovereign stack. L2 (warm) lives on ADLS Gen2 in Azure.
+      Both are PROJECTIONS — not authorities. Rebuilt from Unity Catalog on demand.
+
+  provider_home_candidate:
+    type: sqlite
+    path: ~/.mydude/local/provider_home_candidates.db
+    schema: provider_home_schema.sql
+    notes: >
+      Local candidate store (pre-outbox). Mirrors provider_home.candidates in SQLite
+      for offline operation. Synced to cloud Postgres on connectivity restored.
+
+  local_bcs_path:
+    type: offline_bcs
+    outbox_db: ~/.mydude/local/provider_home_candidates.db
+    outbox_table: outbox.promotion_event
+    replay_endpoint: "${BCS_GATE_URL}/outbox/replay"
+    idempotency_key_format: "{candidate_id}::{content_hash}::local"
+    sync_trigger: connectivity_restored
+    notes: >
+      Local BCS path: promotion events are written here offline and replayed
+      into the cloud BCS gate when connectivity is restored. The gate_receipt_id
+      is assigned only after the cloud BCS gate acknowledges.
+
+  offline_route_table:
+    type: yaml
+    path: infra/mydude/routing/route_table.yaml
+    refresh_trigger: sync_from_agents_home
+    notes: >
+      Static fallback route table. Used when agents_home (cloud) is unreachable.
+      agents_home always takes precedence when connectivity is present.
+
+  minio_object_store:
+    type: object_store
+    engine: minio
+    data_dir: ~/.mydude/minio
+    port: 9000
+    console_port: 9001
+    buckets:
+      - name: unity-catalog
+        mirror_of: "abfss://unity-catalog@mydudestg.dfs.core.windows.net/"
+        sync_direction: azure_to_local
+        notes: "Read-only mirror of Unity Catalog ADLS container"
+      - name: lancedb-l2
+        mirror_of: "abfss://lancedb-l2@mydudestg.dfs.core.windows.net/"
+        sync_direction: bidirectional
+      - name: offline-sync
+        mirror_of: "abfss://offline-sync@mydudestg.dfs.core.windows.net/"
+        sync_direction: local_to_azure
+        notes: "Local outputs staged here, uploaded when connected"
+    startup_command: >
+      minio server ~/.mydude/minio
+      --address :9000
+      --console-address :9001
+    notes: >
+      MinIO mirrors ADLS Gen2 buckets for offline operation.
+      Outputs written locally are offline-candidate until replayed.
+
+# Offline → Cloud promotion flow
+promotion_flow:
+  step_1: "Agent produces output → stored in provider_home_candidate (local SQLite)"
+  step_2: "Local BCS path writes outbox.promotion_event with idempotency key"
+  step_3: "Outbox worker monitors connectivity"
+  step_4: "On connectivity restore: replay outbox events to cloud BCS gate POST /outbox/replay"
+  step_5: "Cloud BCS gate runs V1-V7 scope gates"
+  step_6: "Cloud BCS gate writes to Unity Catalog with managed identity"
+  step_7: "gate_receipt_id returned; local candidate status updated to 'promoted'"
+  step_8: "agents_home.policy.model_team_policy updated with promoted model"

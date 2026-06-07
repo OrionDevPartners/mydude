@@ -1,0 +1,106 @@
+# =============================================================================
+# MyDude Offline Route Table
+# Used by the local sovereign stack when agents_home (cloud) is unreachable.
+# This file is baked into the local stack and updated on each successful sync.
+# =============================================================================
+#
+# AUTHORITY: agents_home is the authoritative source. This table is a
+# cached projection, valid for offline operation only. When connectivity
+# is restored, agents_home always takes precedence.
+#
+# exec_locus: in_azure | anthropic_hosted | local
+# fallback_tiers: 1=preferred 2=cloud_shift 3=ssh_edge 4=local_degraded 5=refuse
+# cloud_shift: true = egress permitted; false = local only (kill switch)
+# =============================================================================
+
+metadata:
+  version: "1.0.0"
+  generated_at: "2026-06-07T00:00:00Z"
+  authority: agents_home
+  status: offline_cache
+  valid_for_offline: true
+  max_age_hours: 24
+
+cloud_shift:
+  enabled: true
+  note: "Matches agents_home.routing.cloud_shift at time of last sync"
+
+domains:
+  general:
+    exec_locus_pin: in_azure
+    fallback_order:
+      - tier: 1
+        exec_locus: in_azure
+        provider: openai
+        model_id: gpt-4.1-mini
+        note: "Preferred — Azure-hosted via Foundry MaaS"
+      - tier: 1
+        exec_locus: anthropic_hosted
+        provider: anthropic
+        model_id: claude-sonnet-4-20250514
+        note: "Preferred — Anthropic-hosted"
+      - tier: 1
+        exec_locus: in_azure
+        provider: gemini
+        model_id: gemini-2.0-flash
+        note: "Preferred — Azure AI integration"
+      - tier: 2
+        exec_locus: in_azure
+        provider: grok
+        model_id: grok-2-latest
+        note: "Cloud shift fallback"
+      - tier: 4
+        exec_locus: local
+        provider: ollama
+        model_id: "qwen3:14b"
+        note: "Local degraded — MLX/Ollama"
+      - tier: 4
+        exec_locus: local
+        provider: ollama
+        model_id: "llama3.2:3b"
+        note: "Local degraded — smallest available"
+      - tier: 5
+        exec_locus: local
+        provider: none
+        model_id: none
+        note: "Refuse or queue — no local model available"
+
+  local:
+    exec_locus_pin: local
+    fallback_order:
+      - tier: 1
+        exec_locus: local
+        provider: ollama
+        model_id: "qwen3:14b"
+      - tier: 1
+        exec_locus: local
+        provider: mlx
+        model_id: "mlx-community/Qwen3-14B-8bit"
+      - tier: 4
+        exec_locus: local
+        provider: ollama
+        model_id: "llama3.2:3b"
+      - tier: 5
+        exec_locus: local
+        provider: none
+        model_id: none
+        note: "Refuse or queue"
+
+# Jurisdiction ladder (reference — enforced at runtime by jurisdiction.py)
+jurisdiction_ladder:
+  tier_0: "MyDude jurisdiction (agents_home) — routing authority"
+  tier_1: "Foundry Model Router — within MyDude-granted Azure deployments only"
+  tier_2: "LiteLLM — within MyDude-granted provider APIs only"
+
+# Known-good governance thresholds (cached from agents_home.policy.governed_threshold)
+governed_thresholds:
+  general:
+    min_compliance_score: 0.70
+    max_hallucination_risk: 0.30
+    require_consensus: true
+    min_providers: 2
+  local:
+    min_compliance_score: 0.65
+    max_hallucination_risk: 0.35
+    require_consensus: false
+    min_providers: 1

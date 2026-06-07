@@ -45,6 +45,9 @@ concurrency_env = "OPENAI_CONCURRENCY"
 default_concurrency = 4
 role_hint = "Implementation + patches + practical code changes"
 model_patterns = ['^gpt-4\.1(?!.*codex)', '^gpt-4o']
+# exec_locus: where this provider's models run (in_azure | anthropic_hosted | local)
+# Used by the jurisdiction router and model-promotion gate to enforce exec_locus_pin.
+exec_locus = "in_azure"
 
 [providers.anthropic]
 adapter = "anthropic_messages"
@@ -55,6 +58,7 @@ concurrency_env = "ANTHROPIC_CONCURRENCY"
 default_concurrency = 3
 role_hint = "Security review + architecture coherence + failure modes"
 alias_env = "ANTHROPIC_OPUS_ALIAS"
+exec_locus = "anthropic_hosted"
 
 [providers.gemini]
 adapter = "gemini_generate"
@@ -65,6 +69,7 @@ concurrency_env = "GEMINI_CONCURRENCY"
 default_concurrency = 3
 role_hint = "Edge cases + alternative approaches + high recall brainstorming"
 model_patterns = ['gemini.*2.*flash']
+exec_locus = "in_azure"
 
 [providers.grok]
 adapter = "openai_chat"
@@ -77,6 +82,7 @@ role_hint = "Creative solutions + unusual optimizations + growth/monetization an
 model_patterns = ['grok']
 base_url_env = "GROK_BASE_URL"
 default_base_url = "https://api.x.ai/v1"
+exec_locus = "in_azure"
 
 # =============================================================================
 # BROWSER capability — swappable, cost-ordered automation backends.
