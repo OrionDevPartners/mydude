@@ -17,6 +17,28 @@
     </div>
 </div>
 
+{% if gmail %}
+<div class="card">
+    <div class="card-header"><h3>Email login codes (Gmail)</h3></div>
+    <div class="card-body">
+        <p class="meta">{{ gmail.description }}</p>
+        <p style="margin-top:10px">
+            {% if gmail.connected %}
+            <span class="conn-dot conn-on"></span><span class="status-badge status-completed">Gmail connected</span>
+            &nbsp;MyDude can read one-time login codes from your email.
+            {% else %}
+            <span class="conn-dot conn-off"></span><span class="status-badge status-pending">Gmail not connected</span>
+            {% endif %}
+        </p>
+        {% if not gmail.connected %}
+        <div class="flash flash-warning" style="margin-top:12px">
+            Gmail isn't connected, so email-OTP logins will fall back to needing you. To enable automatic code reading, ask the assistant in chat to "connect Gmail" and authorize it through Replit.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
 <div class="card">
     <div class="card-header"><h3>Available Integrations</h3></div>
     <div class="card-body">
@@ -31,7 +53,10 @@
             <tbody>
                 {% for row in rows %}
                 <tr>
-                    <td><span class="provider-badge provider-{{ row.connector }}">{{ row.name }}</span></td>
+                    <td>
+                        <span class="provider-badge provider-{{ row.connector }}">{{ row.name }}</span>
+                        {% if row.description %}<div class="meta" style="margin-top:4px">{{ row.description }}</div>{% endif %}
+                    </td>
                     <td><span class="category-badge">{{ row.category }}</span></td>
                     <td>
                         {% if row.connected %}

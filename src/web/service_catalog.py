@@ -293,6 +293,7 @@ SERVICE_CATALOG = [
         "key_url": None,
         "connector": "google-mail",
         "steps": [],
+        "description": "Lets MyDude read one-time login / verification codes from your email, so email-OTP logins don't silently fall back to needing you.",
     },
     {
         "slug": "google-sheet",

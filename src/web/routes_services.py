@@ -54,21 +54,27 @@ async def connected_page(request: Request, _=Depends(require_auth)):
     status = get_connection_status(names) if proxy_available() else {}
 
     rows = []
+    gmail = None
     for svc in services:
         st = status.get(svc["connector"], {})
-        rows.append({
+        row = {
             "name": svc["name"],
             "category": svc["category"],
             "connector": svc["connector"],
             "connected": bool(st.get("connected")),
             "created_at": st.get("created_at"),
-        })
+            "description": svc.get("description"),
+        }
+        rows.append(row)
+        if svc["slug"] == "google-mail":
+            gmail = row
     rows.sort(key=lambda r: (not r["connected"], r["category"], r["name"]))
     connected_count = sum(1 for r in rows if r["connected"])
 
     return templates.TemplateResponse("connected.html", {
         "request": request,
         "rows": rows,
+        "gmail": gmail,
         "proxy_available": proxy_available(),
         "connected_count": connected_count,
         "total_count": len(rows),
