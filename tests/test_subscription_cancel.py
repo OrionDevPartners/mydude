@@ -46,28 +46,37 @@ class _Btn:
 
 
 class _FakeElement:
-    def __init__(self, page, label):
+    def __init__(self, page, btn):
         self._page = page
-        self._label = label
+        self._btn = btn
 
     async def is_visible(self):
-        return self._label is not None
+        return bool(self._btn and self._btn.visible)
+
+    async def inner_text(self):
+        return self._btn.text if self._btn else ""
+
+    async def text_content(self):
+        return self._btn.text if self._btn else ""
 
     async def click(self):
-        self._page._advance(self._label)
+        self._page._advance(self._btn.text)
 
 
 class _FakeLocator:
-    def __init__(self, page, labels):
+    def __init__(self, page, btns):
         self._page = page
-        self._labels = labels
+        self._btns = btns
 
     async def count(self):
-        return len(self._labels)
+        return len(self._btns)
 
     @property
     def first(self):
-        return _FakeElement(self._page, self._labels[0] if self._labels else None)
+        return _FakeElement(self._page, self._btns[0] if self._btns else None)
+
+    def nth(self, i):
+        return _FakeElement(self._page, self._btns[i] if 0 <= i < len(self._btns) else None)
 
 
 class _FakeQuery:
@@ -76,9 +85,9 @@ class _FakeQuery:
 
     def filter(self, has_text=None):
         needle = (has_text or "").lower()
-        labels = [b.text for b in self._page._current()
-                  if b.visible and needle in b.text.lower()]
-        return _FakeLocator(self._page, labels)
+        btns = [b for b in self._page._current()
+                if b.visible and needle in b.text.lower()]
+        return _FakeLocator(self._page, btns)
 
 
 class _FakeCancelPage:
@@ -118,9 +127,9 @@ class _FakeCancelPage:
 
     def get_by_role(self, role, name=None, exact=False):
         needle = (name or "").lower()
-        labels = [b.text for b in self._current()
-                  if b.role == role and b.visible and needle in b.text.lower()]
-        return _FakeLocator(self, labels)
+        btns = [b for b in self._current()
+                if b.role == role and b.visible and needle in b.text.lower()]
+        return _FakeLocator(self, btns)
 
     def locator(self, selector):
         return _FakeQuery(self)
@@ -169,6 +178,91 @@ def test_do_cancel_honest_when_no_control_found():
     assert not res.ok
     assert res.error and "cancel control" in res.error.lower(), res.error
     assert page.clicks == [], page.clicks
+
+
+def test_do_cancel_declines_retention_interstitial():
+    # initiate -> "pause instead" retention screen -> "are you sure?" -> done.
+    # On both interstitials the prominent control keeps you subscribed; the
+    # walker must take the decline path and reach the real confirm.
+    page = _FakeCancelPage([
+        [_Btn("Cancel membership")],
+        # Retention "pause instead" / discount upsell.
+        [_Btn("Keep my membership"),
+         _Btn("Pause membership instead"),
+         _Btn("No thanks, continue to cancel")],
+        # Extra "are you sure?" interstitial.
+        [_Btn("Stay subscribed"),
+         _Btn("Confirm cancellation")],
+        [],
+    ])
+    res = asyncio.run(_do_cancel(page, None, "browserbase", 45000, 4000))
+    assert res.ok, res.error
+    assert page.clicks == [
+        "Cancel membership",
+        "No thanks, continue to cancel",
+        "Confirm cancellation",
+    ], page.clicks
+
+
+def test_do_cancel_never_clicks_keep_even_when_label_substring_matches():
+    # The prominent retention button's text *contains* a cancel label
+    # ("Cancel anyway? ...") yet is really a KEEP control. The walker must skip
+    # it via the keep-guard and click the genuine decline control beside it.
+    page = _FakeCancelPage([
+        [_Btn("Cancel membership")],
+        [_Btn("Cancel anyway? No — keep my plan"),
+         _Btn("Cancel anyway")],
+        [],
+    ])
+    res = asyncio.run(_do_cancel(page, None, "browserbase", 45000, 4000))
+    assert res.ok, res.error
+    assert page.clicks == ["Cancel membership", "Cancel anyway"], page.clicks
+    assert "Cancel anyway? No — keep my plan" not in page.clicks
+
+
+def test_do_cancel_will_not_accept_retention_offer_when_only_keep_controls():
+    # When the only controls left keep you subscribed (no decline path), the
+    # walker must NOT click any of them; it stops rather than staying subscribed.
+    page = _FakeCancelPage([
+        [_Btn("Cancel membership")],
+        [_Btn("Keep my plan"),
+         _Btn("Pause membership instead"),
+         _Btn("Get the discount")],
+    ])
+    res = asyncio.run(_do_cancel(page, None, "browserbase", 45000, 4000))
+    assert page.clicks == ["Cancel membership"], page.clicks
+    for keep in ("Keep my plan", "Pause membership instead", "Get the discount"):
+        assert keep not in page.clicks
+
+
+def test_default_cancel_texts_cover_retention_decline_controls():
+    lower = [t.lower() for t in DEFAULT_CANCEL_TEXTS]
+
+    def covered(label):
+        l = label.lower()
+        return any(t in l or l in t for t in lower)
+
+    for label in [
+        "No thanks",
+        "No thanks, continue to cancel",
+        "Continue canceling",
+        "Decline offer",
+    ]:
+        assert covered(label), "DEFAULT_CANCEL_TEXTS missing decline coverage for %r" % label
+
+
+def test_looks_like_keep_flags_retention_controls():
+    for keep in [
+        "Keep my plan", "Pause membership instead", "Stay subscribed",
+        "Get the discount", "Don't cancel", "Remind me later",
+        "No, keep my membership",
+    ]:
+        assert backends_mod._looks_like_keep(keep), keep
+    for go in [
+        "Cancel membership", "No thanks, continue to cancel",
+        "Confirm cancellation", "Continue to cancel", "Yes, cancel",
+    ]:
+        assert not backends_mod._looks_like_keep(go), go
 
 
 def test_default_cancel_texts_cover_known_providers():
@@ -331,6 +425,11 @@ def _run_all():
         test_do_cancel_walks_multi_step_button_flow,
         test_do_cancel_finds_link_styled_control_via_fallback,
         test_do_cancel_honest_when_no_control_found,
+        test_do_cancel_declines_retention_interstitial,
+        test_do_cancel_never_clicks_keep_even_when_label_substring_matches,
+        test_do_cancel_will_not_accept_retention_offer_when_only_keep_controls,
+        test_default_cancel_texts_cover_retention_decline_controls,
+        test_looks_like_keep_flags_retention_controls,
         test_default_cancel_texts_cover_known_providers,
         test_confirm_cancel_refuses_without_pending,
         test_request_cancel_surfaces_gate_even_when_login_blocked,

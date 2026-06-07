@@ -191,6 +191,24 @@ DEFAULT_CANCEL_TEXTS = [
     "Proceed to cancel",
     "I still want to cancel",
     "Cancel anyway",
+    # Retention-screen decline controls. Real cancel flows interpose "pause
+    # instead" / discount-offer / survey / "are you sure?" interstitials whose
+    # prominent button keeps you subscribed. These are the *decline* controls
+    # that keep progressing toward the real cancel — try them before giving up.
+    "No thanks, continue to cancel",
+    "No thanks, cancel",
+    "No thanks",
+    "No, thanks",
+    "No, continue to cancel",
+    "Decline offer",
+    "Decline and cancel",
+    "Decline and continue",
+    "Skip and continue",
+    "Skip offer",
+    "Not now, cancel",
+    "Continue canceling",
+    "Continue cancelling",
+    "Continue with cancellation",
     # Confirmation controls
     "Confirm cancellation",
     "Complete cancellation",
@@ -201,6 +219,82 @@ DEFAULT_CANCEL_TEXTS = [
     "End now",
     "End my membership",
 ]
+
+
+# Controls that KEEP you subscribed. These must never be clicked while walking a
+# cancel flow, even when a substring of a cancel label happens to appear inside
+# their text (e.g. a "Cancel anyway? No — keep my plan" retention button). They
+# are matched as a safety guard against accidentally accepting a retention offer.
+RETENTION_KEEP_TEXTS = [
+    "keep my plan",
+    "keep my subscription",
+    "keep my membership",
+    "keep my benefits",
+    "keep plan",
+    "keep subscription",
+    "keep membership",
+    "keep benefits",
+    "keep my account",
+    "keep watching",
+    "keep listening",
+    "stay subscribed",
+    "stay a member",
+    "stay premium",
+    "remain subscribed",
+    "remain a member",
+    "no, keep",
+    "don't cancel",
+    "do not cancel",
+    "never mind",
+    "nevermind",
+    "go back",
+    "remind me later",
+    "maybe later",
+    "ask me later",
+    "pause instead",
+    "pause membership",
+    "pause my membership",
+    "pause subscription",
+    "pause my subscription",
+    "pause plan",
+    "pause my plan",
+    "pause billing",
+    "get the discount",
+    "claim offer",
+    "claim discount",
+    "accept offer",
+    "accept discount",
+    "apply discount",
+    "redeem offer",
+]
+
+
+def _looks_like_keep(text):
+    """True if a control's text reads as a retention/keep/pause/offer control.
+
+    Used to make sure the cancel walker declines retention offers instead of
+    accidentally clicking a "keep my plan" / "pause instead" / "accept discount"
+    button on an "are you sure?" interstitial.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return any(k in t for k in RETENTION_KEEP_TEXTS)
+
+
+async def _safe_text(el):
+    """Best-effort visible text of a Playwright element handle / locator."""
+    for attr in ("inner_text", "text_content"):
+        fn = getattr(el, attr, None)
+        if fn is None:
+            continue
+        try:
+            t = await fn()
+            if t:
+                return t
+        except Exception:
+            continue
+    return ""
 
 
 def _host_of(u):
@@ -414,6 +508,45 @@ async def _do_login(page, login_url, account_url, username, password, otp,
     return None
 
 
+async def _click_progressing_control(page, texts):
+    """Click the next cancel-progressing control on the current page.
+
+    Walks the candidate labels (real ``<button>`` first, then link / role=button
+    styled controls) and clicks the first visible match that is NOT a retention
+    "keep / pause / stay subscribed / accept offer" control. Returns the clicked
+    control's text, or ``None`` when nothing progresses the cancel.
+
+    The keep-guard (``_looks_like_keep``) means that even if a cancel label is a
+    substring of a retention button's text (e.g. searching "Cancel anyway" finds
+    "Cancel anyway? No — keep my plan"), that button is skipped and the genuine
+    decline/cancel control next to it is used instead.
+    """
+    finders = (
+        lambda label: page.get_by_role("button", name=label, exact=False),
+        lambda label: page.locator("a, button, [role=button]").filter(has_text=label),
+    )
+    for finder in finders:
+        for label in texts:
+            try:
+                loc = finder(label)
+                n = await loc.count()
+            except Exception:
+                continue
+            for i in range(n):
+                try:
+                    el = loc.nth(i)
+                    if not await el.is_visible():
+                        continue
+                    text = await _safe_text(el)
+                    if _looks_like_keep(text):
+                        continue  # never accept a retention/keep offer
+                    await el.click()
+                    return (text or label).strip()
+                except Exception:
+                    continue
+    return None
+
+
 async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
     """Click through cancel/confirm controls on the current (logged-in) page.
 
@@ -438,36 +571,15 @@ async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
     except Exception:
         await page.wait_for_timeout(1500)
     clicked = []
-    for _ in range(4):  # cancel flows are typically 1-3 confirmation steps
-        progressed = False
-        for label in texts:
-            try:
-                loc = page.get_by_role("button", name=label, exact=False)
-                if await loc.count() and await loc.first.is_visible():
-                    await loc.first.click()
-                    clicked.append(label)
-                    progressed = True
-                    await page.wait_for_timeout(2000)
-                    break
-            except Exception:
-                continue
-        if not progressed:
-            # Fall back to any link/button/role=button containing the text —
-            # many providers style the cancel control as an <a> or a div with
-            # role="button" rather than a real <button>.
-            for label in texts:
-                try:
-                    loc = page.locator("a, button, [role=button]").filter(has_text=label)
-                    if await loc.count() and await loc.first.is_visible():
-                        await loc.first.click()
-                        clicked.append(label)
-                        progressed = True
-                        await page.wait_for_timeout(2000)
-                        break
-                except Exception:
-                    continue
-        if not progressed:
+    # Allow a few extra steps over the 1-3 "happy path": retention flows can
+    # interpose a "pause instead" / discount / survey / "are you sure?" screen
+    # between initiate and confirm, adding one or two decline steps.
+    for _ in range(6):
+        text = await _click_progressing_control(page, texts)
+        if not text:
             break
+        clicked.append(text)
+        await page.wait_for_timeout(2000)
     if not clicked:
         return await _snapshot(
             page, backend_key, page.url, max_chars, ok=False,
