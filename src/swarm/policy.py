@@ -28,8 +28,11 @@ class PolicyDecision:
     reason: str
 
 
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").lower() in _TRUTHY
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "")
+    if not raw.strip():
+        return default
+    return raw.lower() in _TRUTHY
 
 
 def _env_list(name: str, default: List[str]) -> List[str]:
@@ -217,6 +220,9 @@ class PolicyEngine:
         if capability == "imap_read_receipts":
             return self._evaluate_email(params)
 
+        if capability == "gmail_fetch_code":
+            return self._evaluate_gmail(params)
+
         return PolicyDecision(True, "Allowed by policy.")
 
     def _evaluate_email(self, params: Dict[str, Any]) -> PolicyDecision:
@@ -231,5 +237,22 @@ class PolicyEngine:
             return PolicyDecision(
                 False,
                 "Email capability is disabled. Set ENABLE_EMAIL_CAPABILITY=true to enable it.",
+            )
+        return PolicyDecision(True, "Allowed by policy.")
+
+    def _evaluate_gmail(self, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for reading an emailed one-time code via the Gmail connector.
+
+        Unlike the IMAP receipt scan (which uses stored vault credentials and is
+        off by default), Gmail access is granted through Replit's OAuth flow —
+        an explicit, revocable user consent that *is* the gate. So this is
+        allowed by default once connected; the connection presence is enforced
+        downstream and every use is audited. An operator can still hard-disable
+        it by setting ENABLE_GMAIL_CAPABILITY=false.
+        """
+        if not _env_flag("ENABLE_GMAIL_CAPABILITY", default=True):
+            return PolicyDecision(
+                False,
+                "Gmail capability is disabled. Set ENABLE_GMAIL_CAPABILITY=true to enable it.",
             )
         return PolicyDecision(True, "Allowed by policy.")

@@ -234,6 +234,38 @@ class Integrations:
             audit_capability("ssh_fetch_code", status="error", detail=str(e), source=source)
             return "SSH bridge error: %s" % e
 
+    async def gmail_fetch_code(self, params: Dict[str, Any]) -> str:
+        """Read a recent emailed one-time verification code via Gmail (read-only).
+
+        Returns the SMS-style ``Most recent verification code: ...`` string on
+        success, an honest ``No ...`` when nothing matches, or a
+        ``Gmail bridge error: ...`` string the caller can treat as a failure.
+        The email body is never logged — only the extracted code leaves the
+        bridge — and the audit row records timing only, never the code.
+        """
+        from src.bridge.gmail_otp import GmailOtpReader, GmailBridgeError
+
+        source = params.get("source")
+        within = int(params.get("within_minutes", 10))
+        reader = GmailOtpReader()
+        if not reader.available():
+            audit_capability("gmail_fetch_code", status="error",
+                             detail="not connected", source=source)
+            return ("Gmail bridge error: Gmail is not connected. Connect Gmail "
+                    "so MyDude can read emailed verification codes.")
+
+        def run():
+            return reader.fetch_recent_code(within_minutes=within)
+
+        try:
+            out = await asyncio.to_thread(run)
+            audit_capability("gmail_fetch_code", target="within=%dm" % within,
+                             status="ok", source=source)
+            return out
+        except GmailBridgeError as e:
+            audit_capability("gmail_fetch_code", status="error", detail=str(e), source=source)
+            return "Gmail bridge error: %s" % e
+
     async def imap_read_receipts(self, params: Dict[str, Any]) -> str:
         """Read recent billing/receipt emails over IMAP (read-only).
 

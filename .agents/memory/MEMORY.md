@@ -1,3 +1,4 @@
 - [Capability governance gates](capability-gates.md) — how MyDude's browser/SSH capabilities must enforce allow-lists; pitfalls that bypass them.
 - [Two-phase cancel gate](two-phase-cancel-gate.md) — irreversible-action confirm gate must be decoupled from best-effort review login, or it goes invisible/untestable.
 - [Local Playwright in this container](playwright-local-env.md) — local Chromium can't launch (missing system libs); Browserbase is the prod path.
+- [Connector token in Python](connector-token-python.md) — no Python snippet exists; fetch OAuth token from the connector proxy with include_secrets=true.

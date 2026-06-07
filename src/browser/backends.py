@@ -388,8 +388,9 @@ async def _do_login(page, login_url, account_url, username, password, otp,
             return await _snapshot(
                 page, backend_key, page.url, max_chars, ok=False,
                 error="The site asked for a one-time code and none was available. "
-                      "SMS codes can be read from your Mac via the SSH bridge; "
-                      "authenticator-app codes can't be read.",
+                      "SMS codes can be read from your Mac via the SSH bridge and "
+                      "emailed codes from a connected Gmail; authenticator-app "
+                      "codes can't be read.",
             )
         await _fill_first(page, _OTP_SELECTORS, otp)
         if not await _click_first(page, _SUBMIT_SELECTORS):

@@ -63,12 +63,18 @@ def _credential(db, sub):
         return None, "The stored credential could not be decrypted."
 
 
-async def _maybe_fetch_otp(broker):
-    """Best-effort: pull a recent one-time code from the bridge (SMS on the Mac).
+def _code_from_output(out):
+    """Pull the first OTP-looking digit run from a bridge's output string."""
+    out = (out or "").strip()
+    if not out or out.lower().startswith("no "):
+        return None
+    import re
+    m = re.search(r"\b(\d{4,8})\b", out)
+    return m.group(1) if m else None
 
-    Returns the code string or None. Authenticator-app codes can't be read, so a
-    None here is honest, not a silent failure.
-    """
+
+async def _fetch_sms_code(broker):
+    """Best-effort: pull a recent SMS code from the Mac via the SSH bridge."""
     try:
         res = await broker.request("ssh_fetch_code", {"source": "subscriptions-ui"})
     except Exception:
@@ -76,13 +82,37 @@ async def _maybe_fetch_otp(broker):
     if not res.decision.allowed:
         return None
     out = (res.output or "").strip()
-    if not out or out.startswith("SSH bridge error") or out.lower().startswith("no "):
+    if out.startswith("SSH bridge error"):
         return None
-    # The bridge returns the code (and possibly surrounding text); take the first
-    # digit-run that looks like an OTP.
-    import re
-    m = re.search(r"\b(\d{4,8})\b", out)
-    return m.group(1) if m else None
+    return _code_from_output(out)
+
+
+async def _fetch_gmail_code(broker):
+    """Best-effort: pull a recent emailed code from a connected Gmail account."""
+    try:
+        res = await broker.request("gmail_fetch_code", {"source": "subscriptions-ui"})
+    except Exception:
+        return None
+    if not res.decision.allowed:
+        return None
+    out = (res.output or "").strip()
+    if out.lower().startswith("gmail bridge error"):
+        return None
+    return _code_from_output(out)
+
+
+async def _maybe_fetch_otp(broker):
+    """Best-effort: pull a recent one-time code, trying SMS then emailed codes.
+
+    Tries the SMS bridge (texts read from the Mac) first, then a connected Gmail
+    for services that email the code instead. Returns the code string or None.
+    A None here is honest — authenticator-app codes can't be read — not a silent
+    failure: the caller still surfaces a "needs you" when nothing is found.
+    """
+    code = await _fetch_sms_code(broker)
+    if code:
+        return code
+    return await _fetch_gmail_code(broker)
 
 
 # Only an actively-tracked subscription may drive a browser login/cancel. A

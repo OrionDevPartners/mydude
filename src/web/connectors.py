@@ -55,3 +55,41 @@ def get_connection_status(connector_names):
     except Exception as e:
         logger.warning("Connector status query failed: %s", e)
     return result
+
+
+def get_access_token(connector_name):
+    """Return a fresh OAuth access token for ``connector_name`` via the proxy.
+
+    Returns the token string, or None if the connector is not connected / the
+    proxy is unavailable. The token is fetched fresh on every call and is NEVER
+    cached here — tokens expire and the proxy refreshes them. The caller must
+    not log or persist the returned token.
+    """
+    hostname = os.environ.get("REPLIT_CONNECTORS_HOSTNAME")
+    token = _auth_token()
+    if not hostname or not token or not connector_name:
+        return None
+    try:
+        query = urllib.parse.urlencode({
+            "include_secrets": "true",
+            "connector_names": connector_name,
+        })
+        url = "https://%s/api/v2/connection?%s" % (hostname, query)
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json", "X_REPLIT_TOKEN": token},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = json.loads(resp.read().decode())
+        items = payload.get("items") or payload.get("connections") or []
+        for item in items:
+            settings = item.get("settings") or {}
+            access_token = (
+                settings.get("access_token")
+                or ((settings.get("oauth") or {}).get("credentials") or {}).get("access_token")
+            )
+            if access_token:
+                return access_token
+    except Exception as e:
+        logger.warning("Connector token query failed: %s", e)
+    return None

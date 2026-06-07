@@ -9,7 +9,7 @@ from src.swarm.integrations import Integrations, audit_capability
 _AUDITED_CAPABILITIES = {
     "browser_open", "browser_login", "browser_cancel",
     "ssh_run", "ssh_read_history", "ssh_fetch_code",
-    "imap_read_receipts",
+    "imap_read_receipts", "gmail_fetch_code",
 }
 
 
@@ -96,6 +96,10 @@ class CapabilityBroker:
 
         if capability == "imap_read_receipts":
             out = await self.integrations.imap_read_receipts(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "gmail_fetch_code":
+            out = await self.integrations.gmail_fetch_code(params)
             return BrokerResult(True, decision, out)
 
         return BrokerResult(True, decision, f"Capability executed (stub): {capability} {params}")
