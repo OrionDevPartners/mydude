@@ -187,7 +187,25 @@ class ReflexiveAuditor:
             timestamp=time.time(),
         )
         self._meta_claims.append(claim)
+        self._raise_governance_proposal(claim)
         return claim
+
+    def _raise_governance_proposal(self, claim: "MetaClaim") -> None:
+        """Convert each MetaClaim into a formal governance proposal.
+
+        The auditor never silently mutates swarm parameters. Instead every
+        meta-claim becomes a typed proposal (with an Origin and a Track)
+        that must be voted on and enacted before any parameter change takes
+        effect. Failures are suppressed so a DB outage never breaks the swarm.
+        """
+        try:
+            from src.swarm.governance_engine import GovernanceEngine
+            GovernanceEngine.from_meta_claim(claim)
+        except Exception as e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Failed to raise governance proposal for claim %s: %s", claim.claim_id, e
+            )
 
     def audit_wave(
         self,

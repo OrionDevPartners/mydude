@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Run Search - {{ product.name }}{% endblock %}
+{% block header_title %}Swarm Run Search{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h3>🔍 Search Swarm Runs</h3>
+        <span class="meta">{{ total }} run{{ 's' if total != 1 else '' }} indexed</span>
+    </div>
+    <div class="card-body">
+        <form method="get" action="/runs/search" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+            <input class="input" name="q" value="{{ q }}" placeholder="Search goals, synthesis, epistemic labels, provenance…" style="flex:1;min-width:220px;">
+            <select class="input" name="aborted" style="width:140px;">
+                <option value="" {% if not aborted_filter %}selected{% endif %}>All runs</option>
+                <option value="no" {% if aborted_filter == 'no' %}selected{% endif %}>Completed</option>
+                <option value="yes" {% if aborted_filter == 'yes' %}selected{% endif %}>Aborted</option>
+            </select>
+            <button class="btn btn-primary" type="submit">Search</button>
+            {% if q or aborted_filter %}
+            <a href="/runs/search" class="btn btn-outline">Clear</a>
+            {% endif %}
+        </form>
+    </div>
+</div>
+
+{% if runs %}
+<div class="card">
+    <div class="card-body" style="padding:0">
+    <div class="table-wrap">
+    <table class="table">
+        <thead>
+            <tr>
+                <th style="width:36%">Goal</th>
+                <th>Domain</th>
+                <th>Avg CS</th>
+                <th>Avg HR</th>
+                <th>Dissent</th>
+                <th>Epistemic</th>
+                <th>Status</th>
+                <th>When</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in runs %}
+        <tr class="{% if r.aborted %}row-muted{% endif %}">
+            <td>
+                <div class="mono" style="font-size:0.82rem;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ r.goal }}">
+                    {{ r.goal[:120] }}{% if r.goal|length > 120 %}…{% endif %}
+                </div>
+                {% if r.synthesis %}
+                <div class="meta" style="font-size:0.75rem;margin-top:2px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                    {{ r.synthesis[:100] }}{% if r.synthesis|length > 100 %}…{% endif %}
+                </div>
+                {% endif %}
+            </td>
+            <td class="mono" style="font-size:0.8rem;">{{ r.domain }}</td>
+            <td>
+                {% if r.avg_cs is not none %}
+                <strong>{{ r.avg_cs|round(1) }}</strong>
+                {% else %}<span class="meta">—</span>{% endif %}
+            </td>
+            <td>
+                {% if r.avg_hr is not none %}
+                {{ '%.3f'|format(r.avg_hr) }}
+                {% else %}<span class="meta">—</span>{% endif %}
+            </td>
+            <td>
+                {% if r.dissent_count %}
+                <span class="status-badge sev-warning">{{ r.dissent_count }}</span>
+                {% else %}<span class="meta">0</span>{% endif %}
+            </td>
+            <td style="font-size:0.75rem;">
+                {% if r.epistemic %}
+                <span title="verified">✓{{ r.epistemic.get('verified', 0) }}</span>
+                <span title="hypothesis" style="margin-left:4px;">H{{ r.epistemic.get('hypothesis', 0) }}</span>
+                {% if r.epistemic.get('unknown', 0) %}
+                <span title="unknown" style="color:var(--accent-red);margin-left:4px;">?{{ r.epistemic.get('unknown', 0) }}</span>
+                {% endif %}
+                {% else %}<span class="meta">—</span>{% endif %}
+            </td>
+            <td>
+                {% if r.aborted %}
+                <span class="status-badge sev-high">aborted</span>
+                {% else %}
+                <span class="status-badge sev-low">complete</span>
+                {% endif %}
+                {% if r.meta_claims_count %}
+                <span class="status-badge sev-info" style="margin-left:2px;">{{ r.meta_claims_count }}mc</span>
+                {% endif %}
+            </td>
+            <td class="meta" style="font-size:0.75rem;white-space:nowrap;">
+                {{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}
+            </td>
+            <td>
+                {% if r.task_run_id %}
+                <a href="/tasks/{{ r.task_run_id }}" class="btn btn-sm btn-outline">View</a>
+                {% else %}
+                <a href="/provenance?q={{ r.run_id[:8] }}" class="btn btn-sm btn-outline">Trace</a>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    </div>
+</div>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="?q={{ q }}&aborted={{ aborted_filter }}&page={{ page - 1 }}" class="btn btn-outline btn-sm">← Prev</a>
+    {% endif %}
+    <span class="meta">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="?q={{ q }}&aborted={{ aborted_filter }}&page={{ page + 1 }}" class="btn btn-outline btn-sm">Next →</a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% elif q or aborted_filter %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">No runs match your search. Try a broader query or clear the filter.</div>
+    </div>
+</div>
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">No swarm runs indexed yet. Runs are indexed automatically when a task completes.</div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

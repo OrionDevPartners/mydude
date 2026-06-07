@@ -197,7 +197,7 @@ class WaveOrchestrator:
             logger.warning("RedTeamAgent init failed: %s", e)
             self.red_team = None
 
-    async def run(self, goal: str, domain: str = "general", team: str = "default") -> Dict[str, Any]:
+    async def run(self, goal: str, domain: str = "general", team: str = "default", task_run_id: Optional[int] = None) -> Dict[str, Any]:
         # Jurisdiction routing: resolve the exec_locus / cloud_shift decision once
         # before dispatching any provider waves, then pin the provider swarm to it.
         jurisdiction = {}
@@ -230,12 +230,32 @@ class WaveOrchestrator:
             next=[],
         )
 
+        # Load enacted governance settings once at run-start so policy decisions
+        # made during the run reflect any proposals approved since last boot.
+        try:
+            from src.swarm.governance_settings import GovernanceSettings
+            gov = GovernanceSettings.load()
+        except Exception as e:
+            logger.warning("Failed to load governance settings: %s", e)
+            from src.swarm.governance_settings import GovernanceSettings
+            gov = GovernanceSettings()
+
         all_caps: List[Tuple[str, Dict[str, Any], str]] = []
         all_compliance_scores: List[Dict[str, Any]] = []
         all_dissent: List[str] = []
         aborted = False
 
-        for w in range(MAX_WAVES):
+        # Extra debate rounds: appended as additional wave iterations when enacted
+        total_waves = MAX_WAVES + gov.extra_debate_rounds
+
+        for w in range(total_waves):
+            # If skeptic override is enacted, inject a dedicated SKEPTIC job into
+            # the first wave's job list by setting a transient flag on the instance.
+            if w == 0 and gov.enable_skeptic_override:
+                self._skeptic_override_active = True
+            else:
+                self._skeptic_override_active = False
+
             wave_results = await self._run_wave(w, handoff)
 
             try:
@@ -259,13 +279,24 @@ class WaveOrchestrator:
                         control = get_control_action(hr)
                         self.hr_monitor.record(hr=hr, wave=w, agent=r.agent)
 
+                        # Enacted policy: if the agent's CS falls below the
+                        # governance-enacted min_cs_threshold, log a degradation note.
+                        cs_threshold = gov.min_cs_threshold
+                        cs_ok = report.score >= cs_threshold
                         all_compliance_scores.append({
                             "agent": r.agent,
                             "score": report.score,
                             "tier": report.tier.value,
                             "hr": round(hr, 3),
                             "control": control.description[:100],
+                            "below_cs_threshold": not cs_ok,
+                            "cs_threshold": cs_threshold,
                         })
+                        if not cs_ok:
+                            logger.warning(
+                                "Agent %s CS=%d is below enacted threshold %d (wave %d)",
+                                r.agent, report.score, cs_threshold, w,
+                            )
                         try:
                             if self.provenance is not None:
                                 self.provenance.add_provenance(
@@ -288,6 +319,16 @@ class WaveOrchestrator:
                     logger.warning("Hallucination monitor triggered abort after wave %d", w)
                     aborted = True
                     break
+
+                # Enacted policy: abort immediately when halt_on_critical is set
+                # and the sentinel has raised unacknowledged critical alerts.
+                if gov.halt_on_critical and self.sentinel is not None:
+                    if self.sentinel.should_escalate():
+                        logger.warning(
+                            "GovernanceSentinel triggered halt_on_critical abort after wave %d", w
+                        )
+                        aborted = True
+                        break
             except Exception as e:
                 logger.warning("Wave %d cognitive scoring sweep failed: %s", w, e)
 
@@ -316,6 +357,23 @@ class WaveOrchestrator:
                     )
                     if self.sentinel.should_escalate():
                         logger.warning("Sentinel ESCALATION triggered at wave %d", w)
+
+                    # Enacted policy: quarantine providers flagged by sentinel when
+                    # swarm.quarantine_flagged_providers is true.
+                    if gov.quarantine_flagged_providers:
+                        throttle_recs = self.sentinel.get_throttle_recommendations()
+                        quarantine_list = [
+                            p for p, rec in throttle_recs.items()
+                            if rec == "quarantine"
+                        ]
+                        if quarantine_list:
+                            try:
+                                self.llm.quarantine_providers(quarantine_list)
+                                logger.info(
+                                    "GovernanceSettings quarantined providers: %s", quarantine_list
+                                )
+                            except Exception as qe:
+                                logger.warning("Provider quarantine failed: %s", qe)
             except Exception as e:
                 logger.warning("Sentinel evaluation failed: %s", w, e)
 
@@ -394,7 +452,101 @@ class WaveOrchestrator:
                 "Pipeline halted to prevent unreliable outputs."
             )
 
+        self._index_run(goal, domain, final, aborted, all_compliance_scores, all_dissent, task_run_id=task_run_id)
+
         return final
+
+    def _index_run(
+        self,
+        goal: str,
+        domain: str,
+        final: Dict[str, Any],
+        aborted: bool,
+        compliance_scores: List[Dict],
+        dissent: List,
+        task_run_id: Optional[int] = None,
+    ) -> None:
+        """Write a compact, searchable SwarmRunIndex record for this run.
+
+        Called after every completed run so the /runs/search view can index
+        across goals, epistemic categories, provenance lineage, and dissent.
+        Failures are silently suppressed — a DB outage must never crash the swarm.
+        """
+        try:
+            import uuid as _uuid
+            import json as _json
+            from src.database import SessionLocal
+            from src.models import SwarmRunIndex
+
+            run_id = str(_uuid.uuid4())
+
+            synthesis = (
+                final.get("FACTS", [""])[0][:500]
+                if final.get("FACTS") else
+                (final.get("CLAIM_LEDGER") or "")[:500]
+            )
+
+            # Searchable claim text: extract all claim entries from the ledger
+            claim_text = (final.get("CLAIM_LEDGER") or "")[:4000]
+            # Augment with any fact entries from the final handoff
+            if final.get("FACTS"):
+                claim_text = claim_text + "\n" + "\n".join(str(f) for f in final.get("FACTS", [])[:20])
+
+            # Searchable dissent descriptors: role + reason + risk level per entry
+            dissent_entries = []
+            for entry in (final.get("DISSENT_LOG") or [])[:30]:
+                dissent_entries.append(str(entry)[:200])
+            dissent_json_str = _json.dumps(dissent_entries) if dissent_entries else "[]"
+
+            avg_cs = None
+            if compliance_scores:
+                scores = [c.get("score", 0) for c in compliance_scores if isinstance(c.get("score"), (int, float))]
+                if scores:
+                    avg_cs = sum(scores) / len(scores)
+
+            avg_hr = None
+            hr_data = final.get("HALLUCINATION_RISK", {})
+            if isinstance(hr_data, dict) and hr_data.get("average") is not None:
+                avg_hr = hr_data["average"]
+
+            epistemic_summary = {}
+            claim_ledger_text = final.get("CLAIM_LEDGER", "")
+            if claim_ledger_text and isinstance(claim_ledger_text, str):
+                for label in ("verified", "derived", "hypothesis", "unknown"):
+                    epistemic_summary[label] = claim_ledger_text.lower().count(label)
+
+            provenance_summary = final.get("PROVENANCE_SUMMARY", "")
+
+            meta_claims = final.get("META_CLAIMS", [])
+
+            db = SessionLocal()
+            try:
+                record = SwarmRunIndex(
+                    run_id=run_id,
+                    goal=goal[:2000],
+                    domain=(domain or "general")[:100],
+                    synthesis=synthesis,
+                    epistemic_summary_json=_json.dumps(epistemic_summary),
+                    provenance_lineage_json=(provenance_summary[:2000] if provenance_summary else ""),
+                    claim_text=claim_text[:5000] if claim_text else "",
+                    dissent_json=dissent_json_str,
+                    dissent_count=len(dissent),
+                    aborted=aborted,
+                    avg_cs=round(avg_cs, 2) if avg_cs is not None else None,
+                    avg_hr=round(avg_hr, 4) if avg_hr is not None else None,
+                    meta_claims_count=len(meta_claims),
+                    task_run_id=task_run_id,
+                )
+                db.add(record)
+                db.commit()
+                logger.info("Run indexed: %s (goal=%s)", run_id, goal[:60])
+            except Exception as e:
+                logger.warning("Failed to persist run index: %s", e)
+                db.rollback()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("_index_run failed: %s", e)
 
     async def _run_wave(self, wave_idx: int, handoff: Handoff) -> List[AgentResult]:
         jobs = self._build_jobs(wave_idx, handoff.goal)

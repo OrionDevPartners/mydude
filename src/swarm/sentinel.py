@@ -119,6 +119,14 @@ class GovernanceSentinel:
                     new_alerts.append(alert)
 
             self._alerts.extend(new_alerts)
+
+            # Raise governance proposals for every alert so sentinel escalations
+            # become formal proposals that must be voted on before any parameter
+            # change takes effect.  Failures are suppressed — a DB outage must
+            # never crash the sentinel.
+            for alert in new_alerts:
+                self._raise_proposal_for_alert(alert)
+
         except Exception:
             fallback = SentinelAlert(
                 alert_type="provider_anomaly",
@@ -130,6 +138,41 @@ class GovernanceSentinel:
             self._alerts.append(fallback)
 
         return new_alerts
+
+    def _raise_proposal_for_alert(self, alert: "SentinelAlert") -> None:
+        """Convert a SentinelAlert into a formal governance proposal.
+
+        Severity mapping to track:
+          critical → safety  (quorum 75%)
+          warning  → policy  (quorum 66%)
+          info/any → tuning  (quorum 50%)
+
+        This ensures no sentinel-recommended tuning change (quarantine a provider,
+        halt the pipeline, increase HR threshold) takes effect silently.
+        Failures are swallowed so a DB outage never breaks the sentinel loop.
+        """
+        try:
+            from src.swarm.governance_engine import GovernanceEngine, track_for_meta_claim
+            track = track_for_meta_claim(alert.alert_type, alert.severity)
+            GovernanceEngine().raise_proposal(
+                origin="sentinel",
+                track=track,
+                title=f"[{alert.alert_type}] {alert.description[:120]}",
+                description=alert.description,
+                proposed_action=alert.recommended_action,
+                evidence=[
+                    f"alert_id:{alert.alert_id}",
+                    f"severity:{alert.severity}",
+                    f"type:{alert.alert_type}",
+                ],
+                source_claim_id=alert.alert_id,
+            )
+        except Exception as e:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "Failed to raise governance proposal for sentinel alert %s: %s",
+                alert.alert_id, e,
+            )
 
     def get_active_alerts(self, severity: Optional[str] = None) -> List[SentinelAlert]:
         try:
@@ -151,9 +194,15 @@ class GovernanceSentinel:
             return False
 
     def should_escalate(self) -> bool:
+        """Return True when there are unacknowledged critical alerts.
+
+        Previously checked for severity=="emergency" which was never emitted
+        (sentinel only emits "critical"/"warning"). Now correctly triggers on
+        any unacknowledged critical alert, which is the intended escalation path.
+        """
         try:
             return any(
-                a.severity == "emergency" and not a.acknowledged
+                a.severity == "critical" and not a.acknowledged
                 for a in self._alerts
             )
         except Exception:

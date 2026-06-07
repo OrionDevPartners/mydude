@@ -3,6 +3,7 @@ from typing import Dict, Any, Optional
 
 from src.swarm.policy import PolicyEngine, PolicyDecision
 from src.swarm.integrations import Integrations, audit_capability
+from src.swarm.capability_contracts import validate_request as _contract_validate
 
 try:
     from infra.mydude.routing.jurisdiction import jurisdiction_hint as _jurisdiction_hint
@@ -33,7 +34,16 @@ class CapabilityBroker:
         self.integrations = integrations
 
     async def request(self, capability: str, params: Dict[str, Any]) -> BrokerResult:
-        # Inject jurisdiction routing hint (_jurisdiction key) before policy evaluation.
+        # Step 1: Contract validation — BEFORE the policy gate.
+        # Malformed or under-justified requests are rejected here with a clear
+        # reason recorded in the capability audit log.
+        # _contract_validate() audits ALL violations internally via _audit_violation()
+        # regardless of category — no need for a separate conditional audit here.
+        contract_violation = _contract_validate(capability, params)
+        if contract_violation:
+            return BrokerResult(False, PolicyDecision(False, contract_violation), None)
+
+        # Step 2: Jurisdiction routing hint injected before policy evaluation.
         # If PG_AGENTS_HOME_DSN is not set the hint is an empty dict (no-op).
         # The _jurisdiction key is stripped by policy.evaluate if it doesn't recognise it.
         domain = params.get("domain", "general")
@@ -42,6 +52,7 @@ class CapabilityBroker:
         if hint:
             params = {**params, **hint}
 
+        # Step 3: Policy gate.
         decision = self.policy.evaluate(capability, params)
         if not decision.allowed:
             # Record blocked attempts too, so the audit log captures the full

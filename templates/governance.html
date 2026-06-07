@@ -53,6 +53,150 @@
 
 <div class="card">
     <div class="card-header">
+        <h3>🗳️ Governance Proposals
+            {% if open_proposals %}<span class="status-badge sev-warning">{{ open_proposals }} open</span>{% endif %}
+        </h3>
+        <span class="meta">OpenGov-style voting on swarm self-governance changes</span>
+    </div>
+    <div class="card-body">
+        {% if proposals %}
+        <div class="table-wrap">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Track</th>
+                    <th>Origin</th>
+                    <th>Title</th>
+                    <th>Quorum</th>
+                    <th>Tally</th>
+                    <th>Status</th>
+                    <th>When</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for p in proposals %}
+            {% set tally = proposal_tallies.get(p.id, {}) %}
+            <tr class="{% if p.status != 'open' %}row-muted{% endif %}">
+                <td class="mono" style="font-size:0.78rem;">{{ p.proposal_id }}</td>
+                <td>
+                    <span class="status-badge {% if p.track == 'safety' %}sev-high{% elif p.track == 'policy' %}sev-warning{% else %}sev-info{% endif %}">
+                        {{ p.track }}
+                    </span>
+                </td>
+                <td class="mono" style="font-size:0.8rem;">{{ p.origin }}</td>
+                <td style="max-width:260px;">
+                    <div style="font-size:0.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ p.description or p.title }}">
+                        {{ p.title }}
+                    </div>
+                    {% if p.proposed_action %}
+                    <div class="meta" style="font-size:0.75rem;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ p.proposed_action }}">
+                        → {{ p.proposed_action[:90] }}{% if p.proposed_action|length > 90 %}…{% endif %}
+                    </div>
+                    {% endif %}
+                </td>
+                <td class="mono" style="font-size:0.8rem;">{{ (p.quorum_threshold * 100)|round|int }}%</td>
+                <td style="font-size:0.8rem;">
+                    {% if tally.get('total_effective', 0) > 0 %}
+                    <span class="status-badge sev-low">{{ (tally.yes_ratio * 100)|round|int }}% yes</span>
+                    <span class="meta">({{ tally.vote_count }} vote{{ 's' if tally.vote_count != 1 else '' }})</span>
+                    {% if tally.get('delegation_map') %}
+                    <span class="status-badge sev-info" title="Delegations: {{ tally.delegation_map | tojson }}">{{ tally.delegation_map | length }}↗</span>
+                    {% endif %}
+                    {% else %}
+                    <span class="meta">no votes</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if p.status == 'open' %}
+                        <span class="status-badge sev-info">open</span>
+                    {% elif p.status == 'enacted' %}
+                        <span class="status-badge sev-low">enacted</span>
+                    {% elif p.status == 'rejected' %}
+                        <span class="status-badge sev-high">rejected</span>
+                    {% else %}
+                        <span class="status-badge">{{ p.status }}</span>
+                    {% endif %}
+                </td>
+                <td class="meta" style="font-size:0.75rem;white-space:nowrap;">
+                    {{ p.created_at.strftime('%Y-%m-%d %H:%M') if p.created_at else '—' }}
+                </td>
+                <td>
+                {% if p.status == 'open' %}
+                <details style="position:relative;">
+                    <summary class="btn btn-sm btn-outline" style="cursor:pointer;list-style:none;">Act ▾</summary>
+                    <div style="position:absolute;right:0;top:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:0.75rem;min-width:220px;z-index:10;display:flex;flex-direction:column;gap:0.5rem;">
+                        <form method="post" action="/governance/proposals/{{ p.id }}/vote" style="display:flex;flex-direction:column;gap:0.3rem;">
+                            <select class="input" name="vote" style="font-size:0.82rem;padding:3px 6px;">
+                                <option value="yes">Yes — enact</option>
+                                <option value="no">No — reject</option>
+                                <option value="abstain">Abstain</option>
+                            </select>
+                            <input class="input" name="reason" placeholder="Reason (optional)" style="font-size:0.78rem;padding:3px 6px;">
+                            <button class="btn btn-sm btn-primary" type="submit">Vote</button>
+                        </form>
+                        <form method="post" action="/governance/proposals/{{ p.id }}/enact" style="margin:0">
+                            <button class="btn btn-sm btn-outline" type="submit" onclick="return confirm('Operator-enact proposal {{ p.proposal_id }}?')">⚡ Enact now</button>
+                        </form>
+                        <form method="post" action="/governance/proposals/{{ p.id }}/reject" style="margin:0">
+                            <button class="btn btn-sm btn-outline" type="submit" onclick="return confirm('Reject proposal {{ p.proposal_id }}?')">✕ Reject</button>
+                        </form>
+                        <form method="post" action="/governance/proposals/{{ p.id }}/delegate" style="display:flex;gap:4px;">
+                            <input class="input" name="delegate_to" placeholder="Delegate to…" style="font-size:0.78rem;padding:3px 6px;flex:1;">
+                            <button class="btn btn-sm btn-outline" type="submit">→</button>
+                        </form>
+                    </div>
+                </details>
+                {% else %}
+                <span class="meta" style="font-size:0.75rem;">
+                    {% if p.enacted_at %}{{ p.enacted_at.strftime('%m-%d %H:%M') }}{% endif %}
+                </span>
+                {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">No governance proposals yet. Proposals are raised automatically when the auditor or sentinel detects a tuning, policy, or safety concern during a task run.</div>
+        {% endif %}
+    </div>
+</div>
+
+{% if enactments %}
+<div class="card">
+    <div class="card-header"><h3>📜 Enactment History</h3></div>
+    <div class="card-body">
+        <div class="table-wrap">
+        <table class="table">
+            <thead><tr><th>Proposal</th><th>Enacted By</th><th>Action</th><th>When</th></tr></thead>
+            <tbody>
+            {% for e in enactments %}
+            <tr>
+                <td class="mono" style="font-size:0.8rem;">#{{ e.proposal_id }}</td>
+                <td class="mono" style="font-size:0.8rem;">{{ e.enacted_by }}</td>
+                <td class="meta" style="font-size:0.8rem;">
+                    {% if e.change_json %}
+                    {% set ch = e.change_json | tojson %}
+                    {{ e.change_json[:120] }}
+                    {% endif %}
+                </td>
+                <td class="meta" style="font-size:0.75rem;white-space:nowrap;">
+                    {{ e.created_at.strftime('%Y-%m-%d %H:%M') if e.created_at else '—' }}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-header">
         <h3>🚨 Sentinel Alerts
             {% if open_alerts %}<span class="status-badge sev-high">{{ open_alerts }} open</span>{% endif %}
         </h3>

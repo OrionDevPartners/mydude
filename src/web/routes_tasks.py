@@ -177,7 +177,7 @@ async def run_task(request: Request, prompt: str = Form(""), _=Depends(require_a
         integrations = Integrations()
         broker = CapabilityBroker(policy, integrations)
         orchestrator = WaveOrchestrator(broker)
-        result = await orchestrator.run(prompt)
+        result = await orchestrator.run(prompt, task_run_id=task_id)
 
         elapsed_ms = int((time.time() - start_time) * 1000)
         result_text = json.dumps(result, indent=2, default=str)

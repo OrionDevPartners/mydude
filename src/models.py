@@ -346,3 +346,86 @@ class AppSetting(Base):
     key = Column(String(120), unique=True, nullable=False, index=True)
     value = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class GovernanceProposal(Base):
+    """An OpenGov-style governance proposal raised by the auditor, sentinel, or operator.
+
+    Origins: auditor | sentinel | operator | system
+    Tracks:  tuning (≥50% quorum) | policy (≥66%) | safety (≥75%)
+    Status:  open | enacted | rejected | withdrawn
+    """
+    __tablename__ = "governance_proposals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    proposal_id = Column(String(30), unique=True, nullable=False, index=True)
+    origin = Column(String(50), nullable=False, default="system")
+    track = Column(String(20), nullable=False, default="tuning")
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    proposed_action = Column(Text, nullable=True)
+    evidence_json = Column(Text, nullable=True)
+    quorum_threshold = Column(Float, default=0.50)
+    status = Column(String(20), nullable=False, default="open", index=True)
+    source_claim_id = Column(String(50), nullable=True)
+    enacted_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GovernanceVote(Base):
+    """A vote cast on a governance proposal.
+
+    vote: yes | no | abstain | delegated
+    weight: typically 1.0 for operator; multi-provider quorum may use fractional weights
+    """
+    __tablename__ = "governance_votes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    proposal_id = Column(Integer, nullable=False, index=True)
+    voter = Column(String(100), nullable=False)
+    vote = Column(String(20), nullable=False)
+    weight = Column(Float, default=1.0)
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GovernanceEnactment(Base):
+    """Audit record written when a proposal is enacted (quorum or operator-direct).
+
+    change_json captures the enacted action, method, and tally snapshot so the
+    full audit trail (proposal → vote → enactment) is permanently recoverable.
+    """
+    __tablename__ = "governance_enactments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    proposal_id = Column(Integer, nullable=False, index=True)
+    enacted_by = Column(String(100), nullable=False)
+    change_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SwarmRunIndex(Base):
+    """Compact, searchable index record written at the end of every swarm run.
+
+    Enables full-text search across goals, epistemic categories, provenance
+    lineage, and dissent flags from the /runs/search dashboard view.
+    Links back to the TaskRun row (task_run_id) for the full result detail.
+    """
+    __tablename__ = "swarm_run_index"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(36), unique=True, nullable=False, index=True)
+    goal = Column(Text, nullable=False)
+    domain = Column(String(100), nullable=True)
+    synthesis = Column(Text, nullable=True)
+    epistemic_summary_json = Column(Text, nullable=True)
+    provenance_lineage_json = Column(Text, nullable=True)
+    claim_text = Column(Text, nullable=True)
+    dissent_json = Column(Text, nullable=True)
+    dissent_count = Column(Integer, default=0)
+    aborted = Column(Boolean, default=False)
+    avg_cs = Column(Float, nullable=True)
+    avg_hr = Column(Float, nullable=True)
+    meta_claims_count = Column(Integer, default=0)
+    task_run_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

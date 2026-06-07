@@ -1,5 +1,6 @@
+import json
 import logging
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Request, Depends, Form
 from fastapi.responses import RedirectResponse, HTMLResponse
 from sqlalchemy import func, Integer
 from src.database import SessionLocal
@@ -9,6 +10,10 @@ from src.models import (
     ProviderMetric,
     ClaimProvenanceRecord,
     SwarmMemoryLayer,
+    GovernanceProposal,
+    GovernanceVote,
+    GovernanceEnactment,
+    SwarmRunIndex,
 )
 from src.web.auth import require_auth
 
@@ -57,10 +62,43 @@ async def governance(request: Request, _=Depends(require_auth)):
                 "avg_rating": round(r.avg_rating, 2) if r.avg_rating is not None else None,
             })
         total_metrics = db.query(ProviderMetric).count()
+
+        proposals = (
+            db.query(GovernanceProposal)
+            .order_by(
+                GovernanceProposal.status.asc(),
+                GovernanceProposal.created_at.desc(),
+            )
+            .limit(50)
+            .all()
+        )
+        open_proposals = db.query(GovernanceProposal).filter(
+            GovernanceProposal.status == "open"
+        ).count()
+
+        from src.swarm.governance_engine import GovernanceEngine as _GE
+        _ge = _GE()
+        proposal_tallies = {}
+        for p in proposals:
+            try:
+                tally = _ge._resolve_vote_tally(db, p.id)
+                proposal_tallies[p.id] = tally
+            except Exception:
+                proposal_tallies[p.id] = {
+                    "yes": 0.0, "no": 0.0, "abstain": 0.0,
+                    "total_effective": 0.0, "yes_ratio": 0.0,
+                    "vote_count": 0, "delegation_map": {},
+                }
+
+        enactments = (
+            db.query(GovernanceEnactment)
+            .order_by(GovernanceEnactment.created_at.desc())
+            .limit(20)
+            .all()
+        )
     finally:
         db.close()
 
-    # Jurisdiction routing state: cloud_shift kill switch + per-provider exec_locus.
     cloud_shift_active = True
     exec_locus_dist = []
     try:
@@ -79,6 +117,10 @@ async def governance(request: Request, _=Depends(require_auth)):
         "total_metrics": total_metrics,
         "cloud_shift_active": cloud_shift_active,
         "exec_locus_dist": exec_locus_dist,
+        "proposals": proposals,
+        "open_proposals": open_proposals,
+        "proposal_tallies": proposal_tallies,
+        "enactments": enactments,
         "flash": request.query_params.get("flash"),
     })
 
@@ -96,6 +138,164 @@ async def ack_alert(alert_id: int, _=Depends(require_auth)):
     finally:
         db.close()
     return RedirectResponse(url="/governance?flash=Alert acknowledged", status_code=303)
+
+
+@router.post("/governance/proposals/{proposal_id}/vote")
+async def vote_proposal(
+    proposal_id: int,
+    vote: str = Form(""),
+    reason: str = Form(""),
+    _=Depends(require_auth),
+):
+    from urllib.parse import quote
+    vote = vote.strip().lower()
+    if vote not in ("yes", "no", "abstain"):
+        return RedirectResponse(
+            url="/governance?flash=" + quote("Invalid vote value."),
+            status_code=303,
+        )
+    try:
+        from src.swarm.governance_engine import GovernanceEngine
+        ok = GovernanceEngine().cast_vote(
+            proposal_db_id=proposal_id,
+            voter="operator",
+            vote=vote,
+            weight=1.0,
+            reason=reason.strip()[:500],
+        )
+        msg = "Vote recorded." if ok else "Vote failed: proposal may be closed or not found."
+    except Exception as e:
+        logger.warning("Vote failed: %s", e)
+        msg = "Vote failed: internal error."
+    return RedirectResponse(url="/governance?flash=" + quote(msg), status_code=303)
+
+
+@router.post("/governance/proposals/{proposal_id}/enact")
+async def enact_proposal(
+    proposal_id: int,
+    _=Depends(require_auth),
+):
+    from urllib.parse import quote
+    try:
+        from src.swarm.governance_engine import GovernanceEngine
+        ok = GovernanceEngine().operator_enact(proposal_db_id=proposal_id, operator="admin")
+        msg = "Proposal enacted." if ok else "Enactment failed: proposal may be closed or not found."
+    except Exception as e:
+        logger.warning("Enact failed: %s", e)
+        msg = "Enactment failed: internal error."
+    return RedirectResponse(url="/governance?flash=" + quote(msg), status_code=303)
+
+
+@router.post("/governance/proposals/{proposal_id}/reject")
+async def reject_proposal(
+    proposal_id: int,
+    _=Depends(require_auth),
+):
+    from urllib.parse import quote
+    try:
+        from src.swarm.governance_engine import GovernanceEngine
+        ok = GovernanceEngine().operator_reject(proposal_db_id=proposal_id)
+        msg = "Proposal rejected." if ok else "Rejection failed: proposal may be closed or not found."
+    except Exception as e:
+        logger.warning("Reject failed: %s", e)
+        msg = "Rejection failed: internal error."
+    return RedirectResponse(url="/governance?flash=" + quote(msg), status_code=303)
+
+
+@router.post("/governance/proposals/{proposal_id}/delegate")
+async def delegate_proposal(
+    proposal_id: int,
+    delegate_to: str = Form(""),
+    _=Depends(require_auth),
+):
+    from urllib.parse import quote
+    delegate_to = delegate_to.strip()[:100]
+    if not delegate_to:
+        return RedirectResponse(
+            url="/governance?flash=" + quote("Delegate-to voter name is required."),
+            status_code=303,
+        )
+    try:
+        from src.swarm.governance_engine import GovernanceEngine
+        ok = GovernanceEngine().delegate(
+            proposal_db_id=proposal_id,
+            delegator="operator",
+            delegate_to=delegate_to,
+        )
+        msg = f"Vote delegated to {delegate_to}." if ok else "Delegation failed."
+    except Exception as e:
+        logger.warning("Delegate failed: %s", e)
+        msg = "Delegation failed: internal error."
+    return RedirectResponse(url="/governance?flash=" + quote(msg), status_code=303)
+
+
+@router.get("/runs/search", response_class=HTMLResponse)
+async def runs_search(request: Request, _=Depends(require_auth)):
+    q = (request.query_params.get("q") or "").strip()
+    aborted_filter = request.query_params.get("aborted", "").strip().lower()
+    try:
+        page = max(1, int(request.query_params.get("page", 1) or 1))
+    except (TypeError, ValueError):
+        page = 1
+    per_page = 25
+    db = SessionLocal()
+    try:
+        query = db.query(SwarmRunIndex)
+        if q:
+            like = f"%{q}%"
+            query = query.filter(
+                SwarmRunIndex.goal.ilike(like)
+                | SwarmRunIndex.synthesis.ilike(like)
+                | SwarmRunIndex.epistemic_summary_json.ilike(like)
+                | SwarmRunIndex.provenance_lineage_json.ilike(like)
+                | SwarmRunIndex.claim_text.ilike(like)
+                | SwarmRunIndex.dissent_json.ilike(like)
+            )
+        if aborted_filter == "yes":
+            query = query.filter(SwarmRunIndex.aborted == True)
+        elif aborted_filter == "no":
+            query = query.filter(SwarmRunIndex.aborted == False)
+        total = query.count()
+        runs = (
+            query.order_by(SwarmRunIndex.created_at.desc())
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+            .all()
+        )
+        runs_data = []
+        for r in runs:
+            ep = {}
+            try:
+                ep = json.loads(r.epistemic_summary_json or "{}")
+            except Exception:
+                pass
+            runs_data.append({
+                "id": r.id,
+                "run_id": r.run_id,
+                "goal": r.goal,
+                "domain": r.domain or "general",
+                "synthesis": r.synthesis or "",
+                "epistemic": ep,
+                "dissent_count": r.dissent_count or 0,
+                "aborted": r.aborted,
+                "avg_cs": r.avg_cs,
+                "avg_hr": r.avg_hr,
+                "meta_claims_count": r.meta_claims_count or 0,
+                "task_run_id": r.task_run_id,
+                "created_at": r.created_at,
+            })
+    finally:
+        db.close()
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return templates.TemplateResponse("runs_search.html", {
+        "request": request,
+        "runs": runs_data,
+        "q": q,
+        "aborted_filter": aborted_filter,
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+    })
 
 
 @router.get("/provenance", response_class=HTMLResponse)
