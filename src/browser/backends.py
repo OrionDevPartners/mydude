@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import glob
 import os
+import re
 from pathlib import Path
 
 from src.browser.base import BrowserBackend, BrowserResult
@@ -155,17 +156,50 @@ _SUBMIT_SELECTORS = [
     "button:has-text('Continue')",
     "button:has-text('Submit')",
 ]
+# Real-world cancel/confirm control labels, ordered roughly by the step they
+# appear in (initiate → progress → confirm). Matching is case-insensitive
+# substring (``exact=False``), so each entry also catches close variants. The
+# list is intentionally broad because account pages differ per provider, and the
+# two-phase confirmation gate upstream bounds the blast radius of a wrong click.
+# Labels seen on the cataloged providers:
+#   Netflix      "Cancel Membership" → "Finish Cancellation"
+#   Spotify      "Cancel Premium" / "Cancel Plan" → "Yes, cancel" / "Continue to cancel"
+#   Amazon Prime "End Membership" / "Cancel My Benefits" → "End My Benefits" / "End Now"
+#   Disney+      "Cancel Subscription" → "Complete Cancellation"
+#   Hulu         "Cancel Your Subscription" → "Continue to Cancel"
+#   YouTube Prem "Continue to cancel" → "Deactivate" / "Yes, deactivate"
+#   Apple        "Cancel Subscription" → "Confirm"
 DEFAULT_CANCEL_TEXTS = [
+    # Initiating controls
     "Cancel subscription",
     "Cancel membership",
+    "Cancel Premium",
     "Cancel plan",
+    "Cancel your subscription",
+    "Cancel my plan",
+    "Cancel my subscription",
+    "Cancel my membership",
+    "End membership",
+    "End my benefits",
+    "Cancel my benefits",
+    "Deactivate membership",
+    "Cancel auto-renewal",
+    "Turn off auto-renew",
+    # Progression controls
     "Continue to cancel",
+    "Continue cancellation",
+    "Proceed to cancel",
+    "I still want to cancel",
+    "Cancel anyway",
+    # Confirmation controls
     "Confirm cancellation",
+    "Complete cancellation",
+    "Finish cancellation",
     "Confirm cancel",
     "Yes, cancel",
-    "End membership",
-    "Cancel anyway",
-    "Finish cancellation",
+    "Yes, deactivate",
+    "End now",
+    "End my membership",
 ]
 
 
@@ -386,6 +420,22 @@ async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
     user confirmation upstream. Returns a BrowserResult.
     """
     texts = confirm_texts or DEFAULT_CANCEL_TEXTS
+    # Account/billing pages are SPAs: the cancel control is rendered client-side
+    # and is usually absent right after navigation. Let the network settle and
+    # give the first cancel control a moment to mount before scanning, or the
+    # heuristic races the render and misreports "couldn't find a cancel control".
+    try:
+        await page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 8000))
+    except Exception:
+        pass
+    try:
+        first_scan = ", ".join(
+            "text=/%s/i" % re.escape(t) for t in texts[:6]
+        )
+        await page.wait_for_selector(first_scan, state="visible",
+                                     timeout=min(timeout_ms, 6000))
+    except Exception:
+        await page.wait_for_timeout(1500)
     clicked = []
     for _ in range(4):  # cancel flows are typically 1-3 confirmation steps
         progressed = False
@@ -401,10 +451,12 @@ async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
             except Exception:
                 continue
         if not progressed:
-            # Fall back to any link/button containing the text.
+            # Fall back to any link/button/role=button containing the text —
+            # many providers style the cancel control as an <a> or a div with
+            # role="button" rather than a real <button>.
             for label in texts:
                 try:
-                    loc = page.locator("a, button").filter(has_text=label)
+                    loc = page.locator("a, button, [role=button]").filter(has_text=label)
                     if await loc.count() and await loc.first.is_visible():
                         await loc.first.click()
                         clicked.append(label)
