@@ -194,6 +194,139 @@ def test_otp_gmail_blocked_is_honest_none():
     assert asyncio.run(manager._maybe_fetch_otp(broker)) is None
 
 
+# -- recorded Gmail REST round-trip ------------------------------------------
+# These exercise the real fetch_recent_code logic (search-query building, the
+# messages.list -> messages.get walk, and the "prefer an OTP-term-anchored
+# code, else newest code" selection) by stubbing only the HTTP layer
+# (_api_get) with recorded Gmail JSON payloads. No network or OAuth needed.
+
+def _plain_msg(subject, body):
+    return {
+        "payload": {
+            "headers": [{"name": "Subject", "value": subject}],
+            "mimeType": "text/plain",
+            "body": {"data": _b64(body)},
+        },
+    }
+
+
+def _make_reader_with_api(list_payload, get_payloads, list_error=None):
+    """Reader whose HTTP layer replays recorded Gmail JSON.
+
+    ``list_payload`` is the messages.list response; ``get_payloads`` maps a
+    message id to its messages.get response. ``list_error`` (if set) is raised
+    instead of returning the listing, to simulate a transport failure. Every
+    call is recorded on ``reader.captured`` for query-construction asserts.
+    """
+    reader = GmailOtpReader(access_token="fake-token")
+    reader.captured = []
+
+    def fake_api_get(token, path, params=None):
+        assert token == "fake-token"
+        reader.captured.append({"path": path, "params": params})
+        if path == "/messages":
+            if list_error is not None:
+                raise list_error
+            return list_payload
+        mid = path.rsplit("/", 1)[-1]
+        return get_payloads[mid]
+
+    reader._api_get = fake_api_get
+    return reader
+
+
+def test_fetch_recent_code_typical():
+    reader = _make_reader_with_api(
+        {"messages": [{"id": "m1"}]},
+        {"m1": _plain_msg("Sign in", "Your code is 482913. It expires soon.")},
+    )
+    out = reader.fetch_recent_code()
+    assert out.startswith("Most recent verification code: 482913"), out
+
+
+def test_fetch_recent_code_html_only():
+    msg = {
+        "payload": {
+            "headers": [{"name": "Subject", "value": "Security code"}],
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {"mimeType": "text/html",
+                 "body": {"data": _b64("<p>Your verification code: <b>551133</b></p>")}},
+            ],
+        },
+    }
+    reader = _make_reader_with_api({"messages": [{"id": "m1"}]}, {"m1": msg})
+    out = reader.fetch_recent_code()
+    assert out.startswith("Most recent verification code: 551133"), out
+
+
+def test_fetch_recent_code_no_otp_mail():
+    reader = _make_reader_with_api(
+        {"messages": [{"id": "m1"}, {"id": "m2"}]},
+        {
+            "m1": _plain_msg("Weekly newsletter", "Thanks for reading our updates today."),
+            "m2": _plain_msg("Welcome aboard", "We are glad to have you with us."),
+        },
+    )
+    out = reader.fetch_recent_code()
+    assert out == "No verification code was found in recent email.", out
+
+
+def test_fetch_recent_code_empty_listing():
+    reader = _make_reader_with_api({"messages": []}, {})
+    out = reader.fetch_recent_code(within_minutes=10)
+    assert out.startswith("No recent verification email"), out
+
+
+def test_fetch_recent_code_http_error_surfaces():
+    reader = _make_reader_with_api(
+        {"messages": []}, {},
+        list_error=GmailBridgeError("Gmail API returned HTTP 401."),
+    )
+    raised = False
+    try:
+        reader.fetch_recent_code()
+    except GmailBridgeError:
+        raised = True
+    assert raised
+
+
+def test_fetch_recent_code_prefers_otp_anchored():
+    # Newest message has a (non-OTP) number; an OTP-anchored one is preferred.
+    reader = _make_reader_with_api(
+        {"messages": [{"id": "m1"}, {"id": "m2"}]},
+        {
+            "m1": _plain_msg("Receipt", "Order 998877 confirmed."),
+            "m2": _plain_msg("Login", "Your login code is 445566."),
+        },
+    )
+    out = reader.fetch_recent_code()
+    assert out.startswith("Most recent verification code: 445566"), out
+
+
+def test_fetch_recent_code_fallback_when_no_otp_term():
+    # Terse "123456 to continue" with no OTP term still yields the code.
+    reader = _make_reader_with_api(
+        {"messages": [{"id": "m1"}]},
+        {"m1": _plain_msg("Hi", "Use 123456 to continue.")},
+    )
+    out = reader.fetch_recent_code()
+    assert out.startswith("Most recent verification code: 123456"), out
+
+
+def test_fetch_recent_code_builds_query():
+    reader = _make_reader_with_api(
+        {"messages": [{"id": "m1"}]},
+        {"m1": _plain_msg("Sign in", "Your code is 482913.")},
+    )
+    reader.fetch_recent_code(within_minutes=10)
+    list_call = next(c for c in reader.captured if c["path"] == "/messages")
+    q = list_call["params"]["q"]
+    assert q.startswith("after:"), q
+    assert "verification" in q, q
+    assert list_call["params"]["maxResults"] == 10, list_call["params"]
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
