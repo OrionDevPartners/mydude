@@ -1,0 +1,258 @@
+# Bonado — TOTAL STACK (Local + Azure + Agent Runtime + Routing + Governance)
+
+> One picture: local sovereign stack, Azure capacity stack, the Azure equivalent of
+> AWS Bedrock AgentCore, how routing crosses them, and where governance binds. Built
+> to the locked rules: **Bonado owns routing authority; BCS is the only truth gate;
+> every Azure/agent-runtime service is an ADAPTER or PROJECTION, never an authority.**
+> Verified June 2026. All model IDs/SKUs are registry refs, verified at provision time.
+
+-----
+
+## 0. The AgentCore question, answered
+
+**AWS Bedrock AgentCore** = the operational middle layer for agents: it
+*“sits in the middle as the operational layer that helps the agent run, remember,
+connect, stay observable, and remain governable”* — runtime, memory (short+long),
+gateway (tools), identity, code interpreter, browser, observability, eval, and a
+policy capability that runs outside the agent.
+
+**The Azure equivalent = Microsoft Foundry Agent Service + Agent Framework**, plus the
+Azure primitives that fill each AgentCore module. The decomposition maps 1:1:
+
+```
+ AGENTCORE MODULE        AZURE EQUIVALENT                         BONADO ROLE
+ ─────────────────────────────────────────────────────────────────────────────────
+ Runtime (microVM,       Foundry Agent Service runtime +          ADAPTER (execution)
+  session isolation)      Container Apps (per-session isolation)
+ Memory (short/long,      provider_home (candidate) + Master_DB    GOVERNED — Bonado's
+  fact extraction)        + LanceDB/AI Search projections           memory wins, NOT
+                          (NOT AgentCore-style auto-memory)         the runtime's auto-memory
+ Gateway (tools→agent)    Foundry toolboxes + MCP endpoints        ADAPTER (tool access)
+ Identity (creds)         Entra managed identities + Key Vault     GOVERNED (RBAC)
+ Code Interpreter         Foundry code interpreter tool            ADAPTER (sandbox)
+ Browser                  Foundry browser tool                     ADAPTER
+ Observability            Azure Monitor + Foundry tracing          feeds governance
+ Evaluation               Foundry continuous-eval / auto-eval      FEEDS promotion gate
+ Policy (outside agent)   *** Bonado agents_home + BCS ***          AUTHORITY (stays Bonado)
+```
+
+**The one rule that makes this safe:** the AgentCore “Policy capability that runs
+outside the agent” and its auto-Memory are the two modules that look like authority.
+In Bonado they are **replaced, not adopted** — policy stays in agents_home, truth-
+memory stays in BCS/Iceberg. Foundry Agent Service gives you AgentCore-class agent
+*capability* (run/connect/tools/sandbox/browser/observe); Bonado keeps *authority*
+(decide/promote/remember-as-truth). Maximum capability, zero authority inversion.
+
+-----
+
+## 1. TOTAL STACK — one diagram
+
+```
+ ┌──────────────────────────────────── ENTRY SURFACES ───────────────────────────────────┐
+ │  desktop app · CLI · IDE · browser sidebar · API · SSH-attached machine                  │
+ └───────────────────────────────────────────┬─────────────────────────────────────────────┘
+                                              ▼
+ ╔══════════════════════════════ BONADO ROUTER  (agents_home) ══════════════════════════════╗
+ ║  ROUTING AUTHORITY — decides: privacy · budget · capability · online/offline ·            ║
+ ║  may-this-leave-the-machine · which model-TEAM · domain index policy · steering frame ·    ║
+ ║  exec-locus (in_azure | anthropic_hosted | local) · cloud_shift on/off (kill switch)       ║
+ ╚════════╤═══════════════════════════╤════════════════════════════╤═══════════════════════╝
+          │ jurisdiction = LOCAL       │ jurisdiction = AZURE        │ jurisdiction = SSH/CLOUD
+          ▼                            ▼                             ▼
+ ┌───────────────────┐   ┌──────────────────────────────────────┐  ┌────────────────────┐
+ │ LOCAL SOVEREIGN    │   │ AZURE CAPACITY STACK                   │  │ SSH edge node /     │
+ │ STACK (Mac, every  │   │ (RG: bonado-os-6-6-26)                 │  │ Bonado Cloud        │
+ │ install ships one) │   │                                        │  │ (scale/sync/billing)│
+ │                    │   │  ┌── AGENT RUNTIME (AgentCore-equiv) ─┐ │  └────────────────────┘
+ │ • agents_home cache│   │  │ Foundry Agent Service + Framework  │ │
+ │ • model registry   │   │  │  runtime · toolbox/MCP gateway ·   │ │
+ │ • capacity probes  │   │  │  code interpreter · browser ·      │ │
+ │ • MLX/Ollama infer │   │  │  Voice Live (audio I/O)            │ │
+ │ • LanceDB L1       │   │  └─────────────┬──────────────────────┘ │
+ │ • provider_home    │   │                │ executes model TEAMS    │
+ │   candidate/outbox │   │  ┌─────────────▼──────────────────────┐ │
+ │ • local BCS path   │   │  │ MODEL SUPPLY (exec adapter)         │ │
+ │ • qwen3 embed      │   │  │  Foundry MaaS: GPT-x · Claude · Grok│ │
+ │ • offline route tbl│   │  │  · MAI media · embeddings(harrier)  │ │
+ │                    │   │  │  Foundry Model Router (confined to  │ │
+ │ OFFLINE-CAPABLE,   │   │  │   Bonado-granted model set ONLY)    │ │
+ │ outputs = OFFLINE  │   │  │  Serverless GPU: A100 vLLM / T4 embed│ │
+ │ CANDIDATE till sync│   │  └─────────────┬──────────────────────┘ │
+ └─────────┬──────────┘   │                │ candidate events only   │
+           │              │                ▼                          │
+           │              │  provider_home (Postgres, isolated)       │
+           │              │   private candidate cognition + outbox    │
+           │              └────────────────┬──────────────────────────┘
+           │   offline outbox replays       │ candidate events (NOT truth)
+           └───────────────┬────────────────┘
+                           ▼
+              ╔═════════════════════════════════════════════════╗
+              ║  BCS PROMOTION GATE   (Container App, min-1)      ║
+              ║  = ONLY truth writer · single Entra identity ·     ║
+              ║    idempotency keys (candidate_id/content_hash/    ║
+              ║    gate_receipt_id) · lease lock · scope-gate V1-V7║
+              ╚═══════════════════════╤═════════════════════════════╝
+                                      │ catalog-controlled, single-authority append
+                                      ▼
+              ┌─────────────────────────────────────────────────┐
+              │  UNITY CATALOG (managed Iceberg REST)  + ADLS Gen2 │  DURABLE TRUTH
+              │  = SINGLE COMMIT AUTHORITY (credential-vended)      │  (append-only)
+              │  RA-GRS = DR/read replica, NEVER alternate writer  │
+              └───────────────────────┬─────────────────────────────┘
+                       promoted events materialize / project into
+        ┌──────────────────────┬──────────────────┬───────────────────────┐
+        ▼                      ▼                  ▼                       ▼
+  Master_DB (DuckDB)    LanceDB L2 (ADLS)   Azure AI Search        MLflow / Azure
+  governed query        vector projection   hybrid projection      Monitor lineage
+  surface (derived)     (rebuildable)       (rebuildable)          + eval signal
+        │                      └────────┬─────────┘                       │
+        │                               ▼                                  │
+        │                  fan-out query gateway (min-1)                   │
+        │                  scatter-gather · governed race                  │
+        │                  (LanceDB ⟷ AI Search) per domain policy         │
+        ▼                                                                  ▼
+  consumers read Master_DB                              eval feeds MODEL-PROMOTION GATE
+                                                        (benchmark+cost+modality+EXEC-LOCUS)
+                                                        -> governed roster rotation in agents_home
+```
+
+-----
+
+## 2. The DB stack, explicitly (local ⟷ Azure, by authority role)
+
+```
+ AUTHORITY ROLE        LOCAL (Mac sovereign)        AZURE (capacity)              DISCIPLINE
+ ─────────────────────────────────────────────────────────────────────────────────────────
+ GOVERNANCE            agents_home policy cache     Azure DB for PostgreSQL       single authority;
+   (routing/policy)    (DuckDB)                      Flexible Server — agents_home  explicit vCore +
+                                                     schema/DB, own role/creds      storage autoscale,
+                                                                                    HA standby (not
+                                                                                    vCore autoscale)
+ PRIVATE COGNITION     provider_home (DuckDB)       same PG server, provider_home  separate role/
+   (candidate+outbox)                                schema/DB, own role/creds       creds/migrations
+                                                                                    from day one
+ TRUTH ADMISSION       local BCS path               BCS gate (Container App,       single Entra
+   (promotion)                                       min-1) — sole catalog writer   identity; idempotent
+ DURABLE TRUTH         (reads cloud catalog          Unity Catalog + ADLS Gen2     ONE catalog commit
+   (append-only)        replica when online;          = commit authority            authority; RA-GRS
+                        local snapshot cache offline)                               = DR only
+ OPERATING SURFACE     Master_DB (DuckDB,            Master_DB (DuckDB in          derived; rebuildable
+   (fast query)         local replica)                Container App)
+ RECALL — vector       LanceDB L1 (hot)             LanceDB L2 (ADLS)             projection; rebuild
+ RECALL — hybrid       (none offline)               Azure AI Search                projection; rebuild
+ OBJECT STORE          MinIO                        ADLS Gen2                      content-addressed;
+   (payload anchor)                                                                Mac mirrors cloud
+ LINEAGE/EVAL          local receipts               MLflow + Azure Monitor +       feeds promotion gate
+                                                     Foundry continuous-eval
+```
+
+**Two migrators (Codex correction — Unity can’t own Postgres DDL):**
+
+- **Unity/Iceberg migrator** → ledger/table schemas (commits via catalog)
+- **Postgres governance migrator** → agents_home + provider_home DDL
+- both emit CompletionClaims through the BCS / scope-completion gate (V1–V7)
+
+-----
+
+## 3. Routing — the nested jurisdiction ladder (who decides what)
+
+```
+ BONADO (agents_home)  = WHOLE-SYSTEM JURISDICTION
+   decides: leave machine? cloud? SSH? local-only? which model-team? exec-locus?
+   ├─ if jurisdiction = AZURE EXEC:
+   │     Foundry Model Router  = picks among Bonado-GRANTED Azure deployments only
+   │       (never decides "may this leave the machine")
+   ├─ if jurisdiction = PROVIDER EXEC:
+   │     LiteLLM  = retries / switches provider APIs within granted set
+   └─ if jurisdiction = LOCAL:
+         MLX/Ollama  = sovereign, offline; outputs = offline-candidate till sync
+
+ 5-tier Bonado fallback:
+   1 preferred route   2 cloud shift (if policy allows leave-machine)
+   3 SSH edge shift    4 local-only degraded   5 refuse/queue
+```
+
+Three fallback layers, strictly nested: **Bonado (jurisdiction) ⊃ Foundry (Azure-
+internal) ⊃ LiteLLM (provider-internal).** Adapters act only inside a jurisdiction
+Bonado already granted. `cloud_shift=false` in agents_home is the emergency kill
+switch on egress itself.
+
+-----
+
+## 4. Governance layers (top = authority, descending = capacity/projection)
+
+```
+ LAYER                         WHAT IT GOVERNS                         CAN IT WRITE TRUTH?
+ ─────────────────────────────────────────────────────────────────────────────────────
+ agents_home                   routing · policy · model_team_policy ·  NO (governs, not truth)
+   = GOVERNANCE AUTHORITY        index_policy · schema_manifest ·
+                                 governed_threshold · cloud_shift ·
+                                 budget/cost caps · db_fallback_route
+ BCS gate                      promotion: candidate -> truth           YES — the ONLY writer
+   = PROMOTION AUTHORITY         (scope gate V1-V7 + idempotency)
+ Unity Catalog                 durable commit of promoted events       only via BCS identity
+   = TRUTH AUTHORITY
+ ─────────────────── everything below holds NO authority ───────────────────
+ Foundry Agent Service         agent run/tools/sandbox/browser/voice   NO (adapter)
+ Foundry Model Router          pick within granted Azure model set     NO (adapter)
+ Master_DB / LanceDB /         recall + fast query                     NO (rebuildable projection)
+   AI Search
+ Azure Monitor / MLflow /      observability + eval signal             NO (feeds gate)
+   Foundry eval
+ Entra identities / Key Vault  who-can-act (RBAC) + secret refs        enforce, don't originate
+```
+
+**Identity discipline (the cloud expression of single-authority):**
+
+- exactly ONE managed identity holds Unity Catalog write (the BCS gate’s)
+- provider_home, Master_DB readers, fan-out gateway, all actors = read-only to catalog
+- Foundry Agent Service identity = tool/runtime scope only, never catalog write
+- network: VNet/private endpoints, KV private, Postgres private, public-deny Azure Policy
+- model-promotion gate asserts EXEC-LOCUS so a Claude-on-Anthropic-infra model never
+  silently satisfies an `exec_locus=in_azure` domain (jurisdiction integrity)
+
+-----
+
+## 5. How “maximum model capability” is achieved WITHOUT authority loss
+
+You wanted AgentCore-class maximum capability. You get it via Foundry Agent Service:
+
+- **Runtime + session isolation** → agents run, isolated per session
+- **Gateway/toolboxes/MCP** → models call any API/tool as managed connectors
+- **Code interpreter + browser** → agents execute code, browse, act
+- **Voice Live + MAI media + GPT-image** → full multimodal I/O (text/image/OCR/audio/video)
+- **Model teams** → highest-benchmark roster per domain, governed by Bonado
+- **Continuous eval** → auto-detects better models → governed promotion (auto-rotate)
+
+…and authority never moves because:
+
+- the agent runtime’s **auto-memory is bypassed** — Bonado memory (provider_home →
+  BCS → Iceberg) is the only memory that becomes truth
+- the runtime’s **outside-the-agent policy is bypassed** — agents_home is the policy
+- every agent output is a **candidate** until BCS promotes it
+- the Model Router sees only a **Bonado-granted** model set; it never decides egress
+
+Result: agents get every capability AgentCore/Foundry offers; truth, memory, policy,
+and jurisdiction stay 100% Bonado.
+
+-----
+
+## 6. Next artifact (specs lane)
+
+Per Codex’s verdict, the next deliverable is the **`bonado-os-6-6-26` identity-first
+provisioning manifest** (RBAC/identity graph + network boundary + dual-dialect
+governance DDL + two migrators + model-promotion gate with exec-locus assertion +
+acceptance doctors proving no authority inversion), not a longer service list.
+
+Open decisions before IaC:
+
+1. Postgres split: separate roles/creds/migrations from day one (recommended), or
+   same-schema phase-one?
+1. IaC dialect: Bicep or Terraform?
+1. Agent runtime depth: full Foundry Agent Service (managed runtime/gateway/browser),
+   or Container-Apps-hosted agents calling Foundry only for models? (Former = max
+   capability, more managed surface to govern; latter = thinner, more sovereign.)
+
+```
+
+```
