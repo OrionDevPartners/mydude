@@ -1114,6 +1114,77 @@ select {
     -webkit-text-fill-color: transparent;
 }
 
+/* Signature footer — personal brand sign-off */
+.signature-footer {
+    margin-top: 32px;
+    padding: 8px 0 4px;
+    display: flex;
+    justify-content: center;
+}
+.signature-card {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 18px 26px;
+    max-width: 520px;
+    width: 100%;
+    background: var(--bg-card);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--glass-highlight), var(--glass-shadow);
+}
+.signature-avatar {
+    flex: 0 0 auto;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1.15rem;
+    letter-spacing: 0.5px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--highlight-2), var(--highlight));
+    box-shadow: 0 6px 18px rgba(233, 69, 96, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+}
+.signature-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.signature-note {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    font-style: italic;
+}
+.signature-name {
+    margin: 0;
+    font-family: "Snell Roundhand", "Apple Chancery", "Brush Script MT", "Segoe Script", "Lucida Handwriting", cursive;
+    font-size: 1.85rem;
+    line-height: 1.1;
+    color: var(--highlight-2);
+}
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+    .signature-name {
+        background: linear-gradient(90deg, var(--highlight-2), var(--highlight));
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+}
+.signature-role {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+}
+
 /* Fallback for browsers without backdrop-filter: use more opaque
    surfaces so translucent glass panels stay readable. */
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{{ product.name }}{% endblock %}</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=4">
+    <link rel="stylesheet" href="/static/css/style.css?v=6">
 </head>
 <body>
     <div class="layout">
@@ -66,6 +66,16 @@
             <div class="content">
                 {% block content %}{% endblock %}
             </div>
+            <footer class="signature-footer">
+                <div class="signature-card">
+                    <div class="signature-avatar" aria-hidden="true">BP</div>
+                    <div class="signature-body">
+                        <p class="signature-note">Enjoy.</p>
+                        <p class="signature-name">Bo Pennington</p>
+                        <p class="signature-role">Creator &middot; {{ product.name }}</p>
+                    </div>
+                </div>
+            </footer>
         </main>
     </div>
     <script>
