@@ -75,6 +75,25 @@
 {% endif %}
 
 {% if full %}
+    {% set jur = parsed.get('JURISDICTION') %}
+    {% if jur %}
+    <div class="report-block">
+        <h4 class="report-block-title">🌐 Jurisdiction Routing</h4>
+        <div class="table-wrap">
+        <table class="table">
+            <tbody>
+                <tr><td>Exec locus</td><td class="mono">{{ jur.get('exec_locus') or '-' }}</td></tr>
+                <tr><td>Fallback tier</td><td class="mono">{{ jur.get('fallback_tier') if jur.get('fallback_tier') is not none else '-' }}</td></tr>
+                <tr><td>Cloud shift</td><td>{% if jur.get('cloud_shift_active') %}<span class="status-badge sev-low">on</span>{% else %}<span class="status-badge sev-high">off</span>{% endif %}</td></tr>
+                <tr><td>Outcome</td><td class="mono">{{ jur.get('outcome') or '-' }}</td></tr>
+                <tr><td>Domain / team</td><td class="mono">{{ jur.get('domain') or 'general' }} / {{ jur.get('team') or 'default' }}</td></tr>
+                <tr><td>Source</td><td class="meta">{{ jur.get('source') or '-' }}</td></tr>
+            </tbody>
+        </table>
+        </div>
+    </div>
+    {% endif %}
+
     {% set cs = parsed.get('COMPLIANCE_SCORES') %}
     {% if cs %}
     <div class="report-block">

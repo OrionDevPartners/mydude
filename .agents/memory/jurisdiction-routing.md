@@ -1,0 +1,30 @@
+---
+name: Jurisdiction routing wiring
+description: How MyDude task runs enforce exec_locus pins, the cloud_shift kill switch, and the 5-tier fallback ladder.
+---
+
+The routing brain lives in infra/mydude/routing/jurisdiction.py (JurisdictionRouter,
+CloudShiftKillSwitch) and is bridged by src/swarm/jurisdiction.py. The live runner
+enforces it at the provider-selection layer, not by replacing the router.
+
+**How enforcement works:** MultiProviderLLM._available_adapters() applies a
+jurisdiction filter (exec_locus pin + cloud_shift). The orchestrator calls
+jurisdiction_metadata() once at the start of run() and pins the swarm via
+LLM.apply_jurisdiction(). exec_locus per provider comes from config/providers.toml
+([providers.*].exec_locus), NOT a DB.
+
+**Kill switch:** cloud_shift off (CLOUD_SHIFT_ENABLED=false or agents_home DB) drops
+every non-local provider. There are currently NO local-exec providers declared, so
+the ladder correctly resolves to refuse (tier 5) until one is added — that is honest
+behavior, not a bug.
+
+**Gotcha:** jurisdiction_metadata() prefers the agents_home router when its module
+imports successfully, even with no PG_AGENTS_HOME_DSN — in that case decide() returns
+refused/tier-5 because model_team_policy is unreachable. The orchestrator overrides
+that with the live team's effective_routing() when a real provider team exists, so the
+recorded tier reflects actual provider availability. The env-fallback branch (tier 1
+on / tier 4 off) only runs if the infra module import fails.
+
+**Where it surfaces:** result["JURISDICTION"] → persisted into
+TaskRun.provider_scores; shown on /governance (cloud_shift + exec_locus distribution)
+and in the task-detail report macro.

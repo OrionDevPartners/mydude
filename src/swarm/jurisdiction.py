@@ -71,6 +71,35 @@ def filter_providers_by_exec_locus(provider_keys: list, domain_exec_locus_pin: s
     return [k for k in provider_keys if get_exec_locus(k) == domain_exec_locus_pin]
 
 
+def provider_exec_locus_distribution() -> list:
+    """Return per-provider exec_locus + availability for the governance dashboard.
+
+    Each entry: {provider, exec_locus, available, routable}. ``routable`` is True
+    when the provider has its secret AND survives the current cloud_shift state
+    (cloud providers are dropped when cloud_shift is disabled).
+    """
+    out: list = []
+    try:
+        from src.providers.config import llm_provider_specs
+        from src.providers.secrets import has_secret
+
+        cloud_shift = get_cloud_shift()
+        for spec in llm_provider_specs():
+            locus = get_exec_locus(spec.key)
+            is_local = locus == "local"
+            available = bool(spec.secrets) and all(has_secret(s) for s in spec.secrets)
+            routable = available and (cloud_shift or is_local)
+            out.append({
+                "provider": spec.key,
+                "exec_locus": locus,
+                "available": available,
+                "routable": routable,
+            })
+    except Exception as e:
+        logger.debug("provider_exec_locus_distribution failed: %s", e)
+    return out
+
+
 def jurisdiction_metadata(domain: str = "general", team: str = "default") -> dict:
     """Return jurisdiction routing metadata for a request.
 
@@ -82,8 +111,10 @@ def jurisdiction_metadata(domain: str = "general", team: str = "default") -> dic
         "domain": domain,
         "team": team,
         "cloud_shift_active": cloud_shift_active,
+        # Kill switch: when cloud egress is disabled we pin to local execution
+        # and record the local_degraded fallback tier (4) rather than preferred (1).
         "exec_locus": "local" if not cloud_shift_active else "in_azure",
-        "fallback_tier": 1,
+        "fallback_tier": 4 if not cloud_shift_active else 1,
         "jurisdiction_source": "env_fallback",
     }
 

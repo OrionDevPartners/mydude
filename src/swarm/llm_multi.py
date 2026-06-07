@@ -70,9 +70,56 @@ class MultiProviderLLM:
         self.circuit_breaker = CircuitBreaker()
         self.budget_tokens = _env_int("PROVIDER_BUDGET_TOKENS", 1200)
         self._resolved = False
+        # Jurisdiction routing state (set by the orchestrator before a run).
+        # exec_locus_pin: "any" allows all loci; otherwise only providers whose
+        # exec_locus matches the pin are eligible. cloud_shift_active=False is the
+        # kill switch — all non-local providers are dropped.
+        self.exec_locus_pin = "any"
+        self.cloud_shift_active = True
+
+    def apply_jurisdiction(self, exec_locus_pin: str = "any", cloud_shift_active: bool = True) -> None:
+        """Pin provider selection to a jurisdiction decision before a run."""
+        self.exec_locus_pin = exec_locus_pin or "any"
+        self.cloud_shift_active = bool(cloud_shift_active)
+
+    def _passes_jurisdiction(self, adapter) -> bool:
+        from src.swarm.jurisdiction import get_exec_locus
+        locus = get_exec_locus(adapter.key)
+        is_local = locus == "local"
+        # Kill switch: no cloud egress -> only local providers survive.
+        if not self.cloud_shift_active and not is_local:
+            return False
+        # exec_locus pin: when pinned, only matching providers survive.
+        if self.exec_locus_pin not in ("any", "", None):
+            if self.exec_locus_pin == "local":
+                return is_local
+            return locus == self.exec_locus_pin
+        return True
 
     def _available_adapters(self):
-        return [a for a in self.adapters if a.is_available()]
+        return [a for a in self.adapters if a.is_available() and self._passes_jurisdiction(a)]
+
+    def effective_routing(self):
+        """Return (fallback_tier, exec_locus, outcome) for the current state.
+
+        Reflects the fallback ladder actually in effect after jurisdiction
+        filtering: preferred (1) when cloud providers are routable, local_degraded
+        (4) when only local survive (or the kill switch is on), refuse (5) when
+        nothing is routable.
+        """
+        from src.swarm.jurisdiction import get_exec_locus
+        routable = self._available_adapters()
+        if routable:
+            loci = {get_exec_locus(a.key) for a in routable}
+            if not self.cloud_shift_active or loci == {"local"}:
+                return 4, "local", "degraded"
+            if self.exec_locus_pin not in ("any", "", None):
+                return 1, self.exec_locus_pin, "executed"
+            return 1, next(iter(loci)), "executed"
+        if not self.cloud_shift_active:
+            return 5, "local", "refused"
+        pin = self.exec_locus_pin if self.exec_locus_pin not in ("any", "", None) else "in_azure"
+        return 5, pin, "refused"
 
     def available(self) -> Dict[str, bool]:
         return {a.key: a.is_available() for a in self.adapters}

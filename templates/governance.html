@@ -8,6 +8,51 @@
 
 <div class="card">
     <div class="card-header">
+        <h3>🌐 Jurisdiction Routing</h3>
+        {% if cloud_shift_active %}
+            <span class="status-badge sev-low">cloud_shift: ON</span>
+        {% else %}
+            <span class="status-badge sev-high">cloud_shift: OFF (kill switch)</span>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        <p class="meta">
+            {% if cloud_shift_active %}
+                Cloud egress is permitted. Providers are routed by their exec_locus pin.
+            {% else %}
+                Cloud egress is disabled. All cloud providers are dropped; runs fall through to local_degraded or refuse.
+            {% endif %}
+        </p>
+        {% if exec_locus_dist %}
+        <div class="table-wrap">
+        <table class="table">
+            <thead><tr><th>Provider</th><th>exec_locus</th><th>Secret present</th><th>Routable now</th></tr></thead>
+            <tbody>
+            {% for p in exec_locus_dist %}
+            <tr>
+                <td><span class="provider-badge provider-{{ p.provider }}">{{ p.provider }}</span></td>
+                <td class="mono">{{ p.exec_locus }}</td>
+                <td>{% if p.available %}✓{% else %}<span class="meta">—</span>{% endif %}</td>
+                <td>
+                    {% if p.routable %}
+                        <span class="status-badge sev-low">routable</span>
+                    {% else %}
+                        <span class="status-badge sev-medium">blocked</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">No LLM providers configured in env_1.</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
         <h3>🚨 Sentinel Alerts
             {% if open_alerts %}<span class="status-badge sev-high">{{ open_alerts }} open</span>{% endif %}
         </h3>

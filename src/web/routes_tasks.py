@@ -187,6 +187,8 @@ async def run_task(request: Request, prompt: str = Form(""), _=Depends(require_a
             scores["compliance"] = result["COMPLIANCE_SCORES"]
         if "HALLUCINATION_RISK" in result:
             scores["hallucination_risk"] = result["HALLUCINATION_RISK"]
+        if "JURISDICTION" in result:
+            scores["jurisdiction"] = result["JURISDICTION"]
 
         task_run.result = result_text
         task_run.status = "completed"

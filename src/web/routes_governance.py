@@ -59,6 +59,17 @@ async def governance(request: Request, _=Depends(require_auth)):
         total_metrics = db.query(ProviderMetric).count()
     finally:
         db.close()
+
+    # Jurisdiction routing state: cloud_shift kill switch + per-provider exec_locus.
+    cloud_shift_active = True
+    exec_locus_dist = []
+    try:
+        from src.swarm.jurisdiction import get_cloud_shift, provider_exec_locus_distribution
+        cloud_shift_active = get_cloud_shift()
+        exec_locus_dist = provider_exec_locus_distribution()
+    except Exception as e:
+        logger.warning("Jurisdiction state lookup failed: %s", e)
+
     return templates.TemplateResponse("governance.html", {
         "request": request,
         "alerts": alerts,
@@ -66,6 +77,8 @@ async def governance(request: Request, _=Depends(require_auth)):
         "ledger": ledger,
         "metrics": metrics,
         "total_metrics": total_metrics,
+        "cloud_shift_active": cloud_shift_active,
+        "exec_locus_dist": exec_locus_dist,
         "flash": request.query_params.get("flash"),
     })
 

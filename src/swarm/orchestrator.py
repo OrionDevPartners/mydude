@@ -10,6 +10,11 @@ from src.swarm.prompts import PORTER_SYSTEM_PROMPT, WORKER_SYSTEM_PROMPT
 from src.swarm.utils import safe_json_dumps, clamp_list
 from src.swarm.broker import CapabilityBroker
 
+try:
+    from src.swarm.jurisdiction import jurisdiction_metadata
+except Exception:
+    jurisdiction_metadata = None
+
 from src.swarm.constitution import ClaimLedger, CONSTITUTION_RULES, validate_language, StopCondition, IntentBinding
 from src.swarm.compliance import analyze_agent_output, compute_effective_weight, generate_correction_patch, ComplianceTier
 from src.swarm.hallucination import (
@@ -96,11 +101,26 @@ class AgentResult:
 class LLM:
     def __init__(self):
         self._team = None
+        self._jurisdiction: Optional[Dict[str, Any]] = None
+
+    def apply_jurisdiction(self, meta: Dict[str, Any]) -> None:
+        """Record a jurisdiction decision and propagate it to the live team."""
+        self._jurisdiction = meta or {}
+        if self._team is not None:
+            self._team.apply_jurisdiction(
+                exec_locus_pin=self._jurisdiction.get("exec_locus", "any"),
+                cloud_shift_active=self._jurisdiction.get("cloud_shift_active", True),
+            )
 
     def _get_team(self):
         if self._team is None and LLM_PROVIDER != "stub":
             from src.swarm.llm_multi import MultiProviderLLM
             self._team = MultiProviderLLM()
+            if self._jurisdiction:
+                self._team.apply_jurisdiction(
+                    exec_locus_pin=self._jurisdiction.get("exec_locus", "any"),
+                    cloud_shift_active=self._jurisdiction.get("cloud_shift_active", True),
+                )
         return self._team
 
     async def call(self, system: str, user: str) -> str:
@@ -177,7 +197,18 @@ class WaveOrchestrator:
             logger.warning("RedTeamAgent init failed: %s", e)
             self.red_team = None
 
-    async def run(self, goal: str) -> Dict[str, Any]:
+    async def run(self, goal: str, domain: str = "general", team: str = "default") -> Dict[str, Any]:
+        # Jurisdiction routing: resolve the exec_locus / cloud_shift decision once
+        # before dispatching any provider waves, then pin the provider swarm to it.
+        jurisdiction = {}
+        if jurisdiction_metadata is not None:
+            try:
+                jurisdiction = jurisdiction_metadata(domain=domain, team=team)
+                self.llm.apply_jurisdiction(jurisdiction)
+            except Exception as e:
+                logger.warning("Jurisdiction metadata resolution failed: %s", e)
+        self.jurisdiction = jurisdiction
+
         handoff = Handoff(
             goal=goal.strip(),
             facts=[
@@ -303,6 +334,20 @@ class WaveOrchestrator:
         from src.swarm.hallucination import get_risk_tier
         tier = get_risk_tier(avg_hr)
 
+        # Record the exec_locus / fallback tier actually used for this run. When a
+        # live provider team exists, ask it for the effective routing after the
+        # jurisdiction filter; otherwise fall back to the resolved metadata.
+        jur = dict(self.jurisdiction or {})
+        try:
+            team = self.llm._get_team()
+            if team is not None:
+                eff_tier, eff_locus, eff_outcome = team.effective_routing()
+                jur["fallback_tier"] = eff_tier
+                jur["exec_locus"] = eff_locus
+                jur["outcome"] = eff_outcome
+        except Exception as e:
+            logger.warning("Effective routing resolution failed: %s", e)
+
         final = {
             "GOAL": handoff.goal,
             "FACTS": clamp_list(handoff.facts, 10),
@@ -332,6 +377,15 @@ class WaveOrchestrator:
             "AUDITOR_STATUS": self.auditor.get_status() if self.auditor else {},
             "SENTINEL_ALERTS": [{"type": a.alert_type, "severity": a.severity, "desc": a.description[:200]} for a in (self.sentinel.get_active_alerts() if self.sentinel else [])],
             "META_CLAIMS": [{"category": mc.category, "severity": mc.severity, "desc": mc.description[:150]} for mc in (self.auditor.get_meta_claims() if self.auditor else [])][:10],
+            "JURISDICTION": {
+                "domain": jur.get("domain", "general"),
+                "team": jur.get("team", "default"),
+                "exec_locus": jur.get("exec_locus"),
+                "fallback_tier": jur.get("fallback_tier"),
+                "cloud_shift_active": jur.get("cloud_shift_active"),
+                "outcome": jur.get("outcome"),
+                "source": jur.get("jurisdiction_source"),
+            },
         }
 
         if aborted:
