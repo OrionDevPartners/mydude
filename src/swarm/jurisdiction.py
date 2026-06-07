@@ -17,17 +17,22 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Optional
 
 logger = logging.getLogger("mydude.swarm.jurisdiction")
 
+# Short TTL cache for the cloud_shift lookup. The swarm consults cloud_shift on
+# every provider fanout (several times per task); without this, an
+# agents_home-backed deployment would open a synchronous DB connection in the
+# event loop on each call. A few seconds of staleness is acceptable for a kill
+# switch and keeps the hot path cheap.
+_CLOUD_SHIFT_TTL = 5.0
+_cloud_shift_cache: Optional[bool] = None
+_cloud_shift_ts: float = 0.0
 
-def get_cloud_shift() -> bool:
-    """Return True if cloud egress is permitted.
 
-    Reads from agents_home.routing.cloud_shift when configured; falls back to
-    the CLOUD_SHIFT_ENABLED env var (default: true).
-    """
+def _resolve_cloud_shift() -> bool:
     env_override = os.environ.get("CLOUD_SHIFT_ENABLED", "").lower()
     if env_override in ("false", "0", "no", "off"):
         logger.info("cloud_shift disabled by CLOUD_SHIFT_ENABLED env var.")
@@ -44,6 +49,20 @@ def get_cloud_shift() -> bool:
     except Exception as e:
         logger.debug("agents_home cloud_shift query failed (%s); defaulting to enabled.", e)
         return True
+
+
+def get_cloud_shift() -> bool:
+    """Return True if cloud egress is permitted (cached for _CLOUD_SHIFT_TTL).
+
+    Reads from agents_home.routing.cloud_shift when configured; falls back to
+    the CLOUD_SHIFT_ENABLED env var (default: true).
+    """
+    global _cloud_shift_cache, _cloud_shift_ts
+    now = time.monotonic()
+    if _cloud_shift_cache is None or (now - _cloud_shift_ts) > _CLOUD_SHIFT_TTL:
+        _cloud_shift_cache = _resolve_cloud_shift()
+        _cloud_shift_ts = now
+    return _cloud_shift_cache
 
 
 def get_exec_locus(provider_key: str) -> str:

@@ -23,7 +23,10 @@ browser = "engine"
 [llm]
 # Providers the LLM swarm may use. Remove a key to drop that provider; the
 # swarm degrades gracefully to whatever remains configured at runtime.
-enabled = ["openai", "anthropic", "gemini", "grok"]
+# Local providers (ollama, mlx) are exec_locus=local: they only enter the
+# fanout when their local server is actually listening, and they are the
+# local_degraded fallback tier when cloud_shift=false or cloud is unavailable.
+enabled = ["openai", "anthropic", "gemini", "grok", "ollama", "mlx"]
 
 # Providers whose secrets MUST be present at boot. The boot handshake hard-fails
 # (the app refuses to serve traffic) if any required secret is missing. Must be
@@ -83,6 +86,39 @@ model_patterns = ['grok']
 base_url_env = "GROK_BASE_URL"
 default_base_url = "https://api.x.ai/v1"
 exec_locus = "in_azure"
+
+# -----------------------------------------------------------------------------
+# LOCAL / SOVEREIGN providers — offline inference, no API key required.
+# These run on the local sovereign stack (infra/mydude/local/sovereign_stack.yaml).
+# exec_locus=local marks them as the local_degraded fallback tier: the
+# jurisdiction router selects them when cloud_shift=false or exec_locus_pin=local,
+# and the swarm only includes one in the fanout when its server is listening.
+# No `secrets` entry — availability is gated on the local server, not a key.
+# -----------------------------------------------------------------------------
+
+[providers.ollama]
+adapter = "ollama_chat"
+secrets = []
+model_env = "OLLAMA_MODEL"
+default_model = "llama3.2:3b"
+concurrency_env = "OLLAMA_CONCURRENCY"
+default_concurrency = 2
+role_hint = "Local sovereign inference — privacy-preserving offline fallback"
+base_url_env = "OLLAMA_BASE_URL"
+default_base_url = "http://localhost:11434/v1"
+exec_locus = "local"
+
+[providers.mlx]
+adapter = "mlx_chat"
+secrets = []
+model_env = "MLX_MODEL"
+default_model = "mlx-community/Qwen3-14B-8bit"
+concurrency_env = "MLX_CONCURRENCY"
+default_concurrency = 1
+role_hint = "Local Apple-silicon inference — privacy-preserving offline fallback"
+base_url_env = "MLX_BASE_URL"
+default_base_url = "http://localhost:11435/v1"
+exec_locus = "local"
 
 # =============================================================================
 # BROWSER capability — swappable, cost-ordered automation backends.

@@ -169,6 +169,60 @@ class JurisdictionRouter:
         self.cloud_shift = CloudShiftKillSwitch(dsn=dsn)
         self.model_teams = ModelTeamResolver(dsn=dsn)
 
+    def _local_provider_candidates(self) -> list[dict]:
+        """Local-provider candidates for the local_degraded tier.
+
+        Used when agents_home has no policy rows for the local exec_locus (e.g.
+        offline, or no PG_AGENTS_HOME_DSN configured). Reads exec_locus=local
+        providers from config/providers.toml and pairs each with its installed
+        model from the local model registry (falling back to the config default).
+        This is what makes the router *select local providers* when
+        cloud_shift=false / exec_locus_pin=local even without a policy DB.
+        """
+        candidates: list[dict] = []
+        try:
+            import tomllib
+            from pathlib import Path
+
+            cfg_path = Path(__file__).resolve().parents[3] / "config" / "providers.toml"
+            with open(cfg_path, "rb") as f:
+                cfg = tomllib.load(f)
+        except Exception as e:
+            logger.debug("local provider config read failed: %s", e)
+            return candidates
+
+        try:
+            import sys
+            root = Path(__file__).resolve().parents[3]
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            from src.providers.local_registry import default_model_for_provider
+
+            _resolve = default_model_for_provider
+        except Exception:
+            _resolve = None  # type: ignore
+
+        for key, prov in (cfg.get("providers", {}) or {}).items():
+            if prov.get("exec_locus") != "local":
+                continue
+            default_model = prov.get("default_model", "")
+            model_id = default_model
+            if _resolve is not None:
+                try:
+                    model_id = _resolve(key, default_model) or default_model
+                except Exception:
+                    model_id = default_model
+            candidates.append(
+                {
+                    "model_id": model_id,
+                    "provider": key,
+                    "exec_locus_pin": "local",
+                    "cost_cap_usd": 0.0,
+                    "latency_budget_ms": None,
+                }
+            )
+        return candidates
+
     def decide(
         self,
         domain: str = "general",
@@ -209,8 +263,13 @@ class JurisdictionRouter:
             tier = FallbackTier.PREFERRED
 
         if not candidates:
-            # Tier 4: local degraded
+            # Tier 4: local degraded. Prefer a policy-driven local team if one
+            # exists; otherwise fall back to the exec_locus=local providers in
+            # config/providers.toml (Ollama/MLX) so we degrade to local instead
+            # of refusing when no policy DB is configured.
             local_candidates = self.model_teams.resolve(domain, ExecLocus.LOCAL, team)
+            if not local_candidates:
+                local_candidates = self._local_provider_candidates()
             if local_candidates:
                 exec_locus = ExecLocus.LOCAL
                 candidates = local_candidates

@@ -5,7 +5,9 @@ new provider = add an adapter here + register it in ``registry.py`` + add a
 ``[providers.<key>]`` block in config/providers.toml. No other code changes.
 """
 import asyncio
+import socket
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from src.providers.base import LLMAdapter
 from src.providers.secrets import get_secret, get_env
@@ -114,3 +116,111 @@ class GeminiGenerateAdapter(LLMAdapter):
             return None
         ms = await asyncio.to_thread(genai.list_models)
         return [m.name for m in ms]
+
+
+def _server_listening(base_url: str, timeout: float = 0.3) -> bool:
+    """Fast TCP probe: True if something is listening on the base_url host:port.
+
+    Local inference servers (Ollama, mlx_lm) are only sometimes running. Gating
+    availability on a cheap socket connect keeps a dead local box from poisoning
+    the swarm fanout, while staying synchronous (no event-loop blocking beyond
+    the short timeout) for use inside ``is_available``.
+    """
+    try:
+        parsed = urlparse(base_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+class _LocalOpenAICompatAdapter(OpenAIChatAdapter):
+    """Base for local, OpenAI-compatible inference servers (no API key needed).
+
+    Subclasses (Ollama, MLX) only differ by their default base URL and the
+    registry ``provider`` name used to resolve a default model. Availability is
+    gated on the local server actually listening, so when it is down the swarm
+    transparently falls back to whatever cloud providers remain — and when all
+    cloud providers are unavailable the ladder degrades to these instead of
+    refusing (exec_locus=local, the local_degraded tier).
+    """
+
+    #: provider key in the local model registry (config key mirrors this)
+    REGISTRY_PROVIDER = ""
+    #: default endpoint when no base_url is configured in env_1/env_2
+    DEFAULT_BASE_URL = ""
+    #: placeholder key — local servers ignore it but the SDK requires one
+    PLACEHOLDER_KEY = "local"
+
+    def _base_url(self) -> str:
+        configured = None
+        if self.spec.base_url_env or self.spec.default_base_url:
+            configured = get_env(self.spec.base_url_env, self.spec.default_base_url)
+        return configured or self.DEFAULT_BASE_URL
+
+    def _build_client(self):
+        if AsyncOpenAI is None:
+            return None
+        api_key = (
+            get_secret(self.spec.secrets[0]) if self.spec.secrets else None
+        ) or self.PLACEHOLDER_KEY
+        return AsyncOpenAI(api_key=api_key, base_url=self._base_url())
+
+    #: how long a server-up probe result is trusted before re-probing (seconds)
+    PROBE_TTL = 5.0
+
+    def is_available(self) -> bool:
+        # No secret to require; availability == client built AND server is up.
+        # The TCP probe is cached for PROBE_TTL so the several is_available()
+        # calls per task (and pure-cloud tasks that never use local) don't each
+        # block the event loop on a localhost connect.
+        if self.client() is None:
+            return False
+        import time
+
+        now = time.monotonic()
+        last = getattr(self, "_probe_ts", None)
+        if last is None or (now - last) > self.PROBE_TTL:
+            self._probe_up = _server_listening(self._base_url())
+            self._probe_ts = now
+        return self._probe_up
+
+    async def resolve_model(self) -> str:
+        if self._resolved:
+            return self._model
+        env_model = get_env(self.spec.model_env) if self.spec.model_env else None
+        if env_model:
+            self._model = env_model
+        else:
+            try:
+                from src.providers.local_registry import default_model_for_provider
+
+                self._model = (
+                    default_model_for_provider(
+                        self.REGISTRY_PROVIDER, self.spec.default_model
+                    )
+                    or self.spec.default_model
+                )
+            except Exception:
+                self._model = self.spec.default_model
+        self._resolved = True
+        return self._model
+
+
+class OllamaAdapter(_LocalOpenAICompatAdapter):
+    """Ollama local inference via its OpenAI-compatible API (localhost:11434/v1)."""
+
+    REGISTRY_PROVIDER = "ollama"
+    DEFAULT_BASE_URL = "http://localhost:11434/v1"
+    PLACEHOLDER_KEY = "ollama"
+
+
+class MLXAdapter(_LocalOpenAICompatAdapter):
+    """Apple MLX local inference via the mlx_lm OpenAI-compatible server
+    (localhost:11435/v1)."""
+
+    REGISTRY_PROVIDER = "mlx"
+    DEFAULT_BASE_URL = "http://localhost:11435/v1"
+    PLACEHOLDER_KEY = "mlx"

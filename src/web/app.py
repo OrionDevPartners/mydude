@@ -130,6 +130,16 @@ async def startup():
     except Exception as e:
         logger.warning("Failed to sync app settings: %s", e)
 
+    # Local model registry (optional sovereign-stack manifest at
+    # ~/.mydude/local/model_registry.yaml). Read at startup so the local
+    # providers can resolve installed models; absent file degrades to empty.
+    try:
+        from src.providers.local_registry import load_local_models
+        local_models = load_local_models()
+        logger.info("Local model registry: %d local model(s) available", len(local_models))
+    except Exception as e:
+        logger.warning("Local model registry load failed: %s", e)
+
     # Boot handshake (env_1 -> env_2): validate provider config and that every
     # required secret is present. A failure here is intentionally fatal so the
     # app never serves traffic in a misconfigured state.

@@ -7,6 +7,8 @@ from src.providers.adapters import (
     OpenAIChatAdapter,
     AnthropicMessagesAdapter,
     GeminiGenerateAdapter,
+    OllamaAdapter,
+    MLXAdapter,
 )
 
 
@@ -18,6 +20,8 @@ ADAPTER_REGISTRY = {
     "openai_chat": OpenAIChatAdapter,
     "anthropic_messages": AnthropicMessagesAdapter,
     "gemini_generate": GeminiGenerateAdapter,
+    "ollama_chat": OllamaAdapter,
+    "mlx_chat": MLXAdapter,
 }
 
 
