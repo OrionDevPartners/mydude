@@ -3,9 +3,111 @@
 {% block header_title %}Swarm Memory{% endblock %}
 
 {% block content %}
+{% if err %}
+<div class="flash flash-error">{{ err }}</div>
+{% endif %}
+{% if msg %}
+<div class="flash flash-success">{{ msg }}</div>
+{% endif %}
+
+{# ── Substrate status panel ── #}
 <div class="card">
     <div class="card-header">
-        <h3>🧠 Memory Layers</h3>
+        <h3>🧠 Memory Substrate</h3>
+        <span class="meta">Cognee (local KG) ↔ Mem0 (cloud)</span>
+    </div>
+    <div class="card-body">
+        {% if status %}
+        <div class="chips" style="flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+            {% set local = status.get('local', {}) %}
+            <div class="chip">
+                <span class="chip-label">Local KG (Cognee)</span>
+                <span class="chip-value">{{ local.get('cache_entries', local.get('nodes', '—')) }}</span>
+                <span class="chip-sub">
+                    {% if local.get('available') %}nodes: {{ local.get('nodes', '—') }}{% else %}unavailable{% endif %}
+                </span>
+            </div>
+            {% set cloud = status.get('cloud', {}) %}
+            <div class="chip">
+                <span class="chip-label">Cloud (Mem0)</span>
+                <span class="chip-value">{{ cloud.get('records', '—') }}</span>
+                <span class="chip-sub">mode: {{ cloud.get('mode', '—') }}</span>
+            </div>
+            <div class="chip">
+                <span class="chip-label">Audit Events</span>
+                <span class="chip-value">{{ status.get('audit_events', 0) }}</span>
+                <span class="chip-sub">in buffer</span>
+            </div>
+            {% if status.get('last_sync') %}
+            <div class="chip">
+                <span class="chip-label">Last Sync</span>
+                <span class="chip-value chip-value--sm">synced</span>
+                <span class="chip-sub">this session</span>
+            </div>
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="flash flash-warning">Memory substrate not available. The swarm runs without long-term memory.</div>
+        {% endif %}
+
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <form method="post" action="/memory/sync" style="display:inline-flex;gap:8px;align-items:center;">
+                <select name="direction" class="input" style="width:auto;padding:6px 10px;">
+                    <option value="both">Both directions</option>
+                    <option value="local→cloud">Local → Cloud</option>
+                    <option value="cloud→local">Cloud → Local</option>
+                </select>
+                <button type="submit" class="btn btn-primary btn-sm">Sync Memory</button>
+            </form>
+            <form method="post" action="/memory/consolidate">
+                <button type="submit" class="btn btn-outline btn-sm">Consolidate + Decay</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+{# ── Audit log ── #}
+{% if events %}
+<div class="card">
+    <div class="card-header">
+        <h3>Memory Audit Log</h3>
+        <span class="meta">Last {{ events|length }} events</span>
+    </div>
+    <div class="card-body">
+        <div class="table-wrap">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Detail</th>
+                    <th>IDs</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for ev in events %}
+                <tr>
+                    <td>
+                        <span class="status-badge status-{% if ev.type == 'recall' %}completed{% elif ev.type == 'persist' %}running{% elif ev.type == 'sync' %}pending{% else %}default{% endif %}">
+                            {{ ev.type|upper }}
+                        </span>
+                    </td>
+                    <td class="truncate" style="max-width:520px;">{{ ev.detail }}</td>
+                    <td class="meta">
+                        {% if ev.memory_ids %}{{ ev.memory_ids|join(', ') }}{% else %}-{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{# ── Legacy SwarmMemoryLayer list ── #}
+<div class="card">
+    <div class="card-header">
+        <h3>Session Memory Layers</h3>
         <span class="meta">{{ total }} entries</span>
     </div>
     <div class="card-body">
@@ -37,9 +139,28 @@
         {% endfor %}
         {% else %}
         <div class="empty-state">
-            {% if q or layer %}No memory entries match your filters.{% else %}No swarm memory yet. The swarm stores compliant, low-risk insights here across runs for reuse.{% endif %}
+            {% if q or layer %}No memory entries match your filters.{% else %}No session memory layers yet. The swarm populates this during task execution.{% endif %}
         </div>
         {% endif %}
+    </div>
+</div>
+
+{# ── How it works ── #}
+<div class="card">
+    <div class="card-header">
+        <h3>How It Works</h3>
+    </div>
+    <div class="card-body">
+        <ul class="report-list">
+            <li><strong>Local KG (Cognee)</strong> — embedded knowledge graph on disk. Entities and relations are extracted from every task's facts and decisions using pattern-based NER and TF-IDF indexing.</li>
+            <li><strong>Cloud store (Mem0)</strong> — cloud-backed memory layer. Runs in local-file fallback mode when <code>MEM0_API_KEY</code> is unset.</li>
+            <li><strong>Recall</strong> — before wave 0, semantically related prior memories are injected into the swarm's fact set via TF-IDF cosine similarity (replaces keyword Jaccard).</li>
+            <li><strong>Persist</strong> — after the final wave, load-bearing facts, decisions, and VERIFIED claims are written to long-term memory keyed by goal topic.</li>
+            <li><strong>Semantic contradiction check</strong> — TF-IDF cosine + temporal-conflict detection. Catches "deadline is Monday" vs "finish by Friday" type contradictions that pure keyword overlap misses.</li>
+            <li><strong>Sync bridge</strong> — bidirectional rsync between local and cloud. Last-writer-wins on timestamp; VERIFIED claims are never overwritten by lower-confidence entries.</li>
+            <li><strong>Consolidate</strong> — promotes high-confidence memories to VERIFIED status and applies exponential decay to rarely-accessed entries.</li>
+            <li><strong>RECURSIVE_REASONER role</strong> — a new cognitive role that traverses the KG across prior tasks to surface remembered facts and flag semantic contradictions with verified long-term memories.</li>
+        </ul>
     </div>
 </div>
 {% endblock %}

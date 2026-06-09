@@ -191,5 +191,55 @@
     {% if parsed.get('COGNITIVE_ARCHITECTURE') %}
     <p class="meta cog-arch">{{ parsed.get('COGNITIVE_ARCHITECTURE') }}</p>
     {% endif %}
+
+    {% set mem = parsed.get('MEMORY') %}
+    {% if mem %}
+    <div class="report-block">
+        <h4 class="report-block-title">🧠 Recursive Memory</h4>
+        {% set mst = mem.get('status', {}) %}
+        <div class="chips" style="flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+            {% if mst.get('recalled') is not none %}
+            <div class="chip">
+                <span class="chip-label">Recalled</span>
+                <span class="chip-value">{{ mst.get('recalled', 0) }}</span>
+                <span class="chip-sub">prior memories injected</span>
+            </div>
+            {% endif %}
+            {% if mst.get('persisted') is not none %}
+            <div class="chip">
+                <span class="chip-label">Persisted</span>
+                <span class="chip-value">{{ mst.get('persisted', 0) }}</span>
+                <span class="chip-sub">facts stored</span>
+            </div>
+            {% endif %}
+            {% if mst.get('promoted') is not none %}
+            <div class="chip">
+                <span class="chip-label">Promoted</span>
+                <span class="chip-value">{{ mst.get('promoted', 0) }}</span>
+                <span class="chip-sub">to verified</span>
+            </div>
+            {% endif %}
+            {% if mem.get('session_id') %}
+            <div class="chip">
+                <span class="chip-label">Session</span>
+                <span class="chip-value chip-value--sm">{{ mem.get('session_id') }}</span>
+            </div>
+            {% endif %}
+        </div>
+        {% if mst.get('sync') %}
+        <p class="meta">Sync: {{ mst.get('sync') }}</p>
+        {% endif %}
+        {% if mem.get('recent_events') %}
+        <details class="score-details"><summary>Memory Events ({{ mem.get('recent_events')|length }})</summary>
+            <ul class="report-list">
+            {% for ev in mem.get('recent_events') %}
+                <li><span class="status-badge tier-trusted">{{ ev.get('type', '?')|upper }}</span> {{ ev.get('detail', '') }}</li>
+            {% endfor %}
+            </ul>
+        </details>
+        {% endif %}
+        <p class="meta" style="margin-top:8px;"><a href="/memory" class="btn btn-sm btn-outline">View Memory →</a></p>
+    </div>
+    {% endif %}
 {% endif %}
 {% endmacro %}

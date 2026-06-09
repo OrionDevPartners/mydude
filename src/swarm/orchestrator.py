@@ -33,6 +33,16 @@ except Exception:
     ProvenanceTree = None
     ConsistencyChecker = None
 
+_orchestrator_logger = logging.getLogger(__name__)
+
+try:
+    from src.memory import get_substrate, MemorySubstrate
+    _memory_substrate = get_substrate()
+except Exception as _mem_exc:
+    _orchestrator_logger.warning("MemorySubstrate unavailable: %s", _mem_exc)
+    _memory_substrate = None
+    MemorySubstrate = None
+
 try:
     from src.swarm.auditor import ReflexiveAuditor
 except Exception:
@@ -175,9 +185,13 @@ class WaveOrchestrator:
 
         try:
             self.consistency = ConsistencyChecker() if ConsistencyChecker else None
+            if self.consistency is not None and _memory_substrate is not None:
+                self.consistency.set_substrate(_memory_substrate)
         except Exception as e:
             logger.warning("ConsistencyChecker init failed: %s", e)
             self.consistency = None
+
+        self._memory = _memory_substrate
 
         try:
             self.auditor = ReflexiveAuditor() if ReflexiveAuditor else None
@@ -209,13 +223,34 @@ class WaveOrchestrator:
                 logger.warning("Jurisdiction metadata resolution failed: %s", e)
         self.jurisdiction = jurisdiction
 
+        # ── Recursive memory: recall related prior memories before wave 0 ──
+        recalled_facts: List[str] = []
+        memory_status: Dict[str, Any] = {"recalled": 0, "substrate": "unavailable"}
+        if self._memory is not None:
+            try:
+                recalled_facts = self._memory.inject_for_task(goal, top_k=5)
+                memory_status = {
+                    "recalled": len(recalled_facts),
+                    "substrate": self._memory.status(),
+                }
+                if recalled_facts:
+                    logger.info(
+                        "[MEMORY:RECALL] Injected %d prior memories into wave-0 handoff",
+                        len(recalled_facts),
+                    )
+            except Exception as e:
+                logger.warning("Memory recall at task start failed: %s", e)
+
+        import uuid as _uuid
+        _session_id = str(_uuid.uuid4())[:8]
+
         handoff = Handoff(
             goal=goal.strip(),
             facts=[
                 "Runtime: Telegram bot on Replit (polling).",
                 "Guardrails: brokered capabilities; policy gates; no raw secrets.",
                 "Target: multi-project swarm; git + terraform + asana + 1Password patterns.",
-            ],
+            ] + recalled_facts,
             decisions=[
                 "Use Porter waves + compression to prevent token blowup.",
                 "Bound concurrency; simulate 100+ agents via queued microtasks.",
@@ -465,6 +500,65 @@ class WaveOrchestrator:
                 "Pipeline halted to prevent unreliable outputs."
             )
 
+        # ── Recursive memory: persist load-bearing facts/decisions at task end ──
+        memory_events: List[Dict] = []
+        if self._memory is not None:
+            try:
+                persisted = self._memory.persist_handoff(
+                    goal=goal,
+                    facts=clamp_list(handoff.facts, 10),
+                    decisions=clamp_list(handoff.decisions, 8),
+                    claim_ledger_summary=handoff.claim_ledger_summary or "",
+                    session_id=_session_id,
+                )
+
+                # Promote VERIFIED claims from the ledger summary into long-term memory
+                if handoff.claim_ledger_summary:
+                    import re as _re
+                    verified_lines = _re.findall(
+                        r"\[CLM-\d+\]\s+verified\s+c=[\d.]+:\s+(.+)",
+                        handoff.claim_ledger_summary,
+                        _re.IGNORECASE,
+                    )
+                    for vline in verified_lines[:5]:
+                        self._memory.write_claim(
+                            content=vline[:400],
+                            category="verified_claim",
+                            confidence=0.95,
+                            source=f"claim_ledger:{_session_id}",
+                            verified=True,
+                            metadata={"goal": goal[:100]},
+                        )
+
+                # Consolidate high-confidence memories, apply decay
+                promoted = self._memory.consolidate(min_confidence=0.8)
+
+                # Run a deferred background sync (local→cloud direction only)
+                try:
+                    sync_report = self._memory.sync(direction="local→cloud", min_confidence=0.6)
+                    memory_events = self._memory.audit_events(limit=10)
+                    memory_status["persisted"] = len(persisted)
+                    memory_status["promoted"] = promoted
+                    memory_status["sync"] = sync_report.summary()
+                except Exception as e:
+                    logger.warning("Memory sync after task failed: %s", e)
+
+                logger.info(
+                    "[MEMORY:PERSIST] Persisted %d entries; promoted %d; session=%s",
+                    len(persisted),
+                    promoted,
+                    _session_id,
+                )
+            except Exception as e:
+                logger.warning("Memory persist at task end failed: %s", e)
+
+        final["MEMORY"] = {
+            "session_id": _session_id,
+            "status": memory_status,
+            "recent_events": memory_events[:5],
+        }
+
+        # Index the completed run (including MEMORY metadata) for the search dashboard
         self._index_run(goal, domain, final, aborted, all_compliance_scores, all_dissent, task_run_id=task_run_id)
 
         return final

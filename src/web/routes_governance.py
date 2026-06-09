@@ -430,45 +430,6 @@ async def provenance(request: Request, _=Depends(require_auth)):
     })
 
 
-@router.get("/memory", response_class=HTMLResponse)
-async def memory(request: Request, _=Depends(require_auth)):
-    q = (request.query_params.get("q") or "").strip()
-    layer = (request.query_params.get("layer") or "").strip()
-    db = SessionLocal()
-    try:
-        query = db.query(SwarmMemoryLayer)
-        if q:
-            like = f"%{q}%"
-            query = query.filter(
-                (SwarmMemoryLayer.content.ilike(like))
-                | (SwarmMemoryLayer.summary.ilike(like))
-                | (SwarmMemoryLayer.topic.ilike(like))
-            )
-        if layer:
-            query = query.filter(SwarmMemoryLayer.layer_type == layer)
-        layers = (
-            query.order_by(SwarmMemoryLayer.created_at.desc())
-            .limit(100)
-            .all()
-        )
-        layer_types = [
-            r[0] for r in db.query(SwarmMemoryLayer.layer_type)
-            .distinct()
-            .all()
-            if r[0]
-        ]
-        total = db.query(SwarmMemoryLayer).count()
-    finally:
-        db.close()
-    return templates.TemplateResponse("memory.html", {
-        "request": request,
-        "layers": layers,
-        "layer_types": layer_types,
-        "q": q,
-        "layer": layer,
-        "total": total,
-    })
-
 
 @router.get("/system", response_class=HTMLResponse)
 async def system_health(request: Request, _=Depends(require_auth)):

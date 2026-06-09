@@ -62,28 +62,140 @@ def _jaccard_similarity(set_a: set, set_b: set) -> float:
     return len(set_a & set_b) / len(set_a | set_b)
 
 
+def _tfidf_cosine_compliance(text_a: str, text_b: str) -> float:
+    """
+    TF-IDF cosine similarity for compliance consensus scoring.
+
+    Replaces Jaccard as the primary agreement metric: detects when two
+    provider outputs converge on the same topic even when phrased differently,
+    and avoids inflating agreement scores for texts that share only stopwords.
+    """
+    import math
+    try:
+        stop = _STOPWORDS
+        def tokens(t: str) -> list:
+            return [w for w in re.split(r"\W+", t.lower())
+                    if len(w) > 2 and w not in stop]
+
+        ta = tokens(text_a)
+        tb = tokens(text_b)
+        if not ta or not tb:
+            return 0.0
+
+        from collections import Counter
+        cta = Counter(ta)
+        ctb = Counter(tb)
+        all_terms = set(cta) | set(ctb)
+
+        # Smooth IDF (sklearn-style): idf = log((N+1)/(df+1)) + 1
+        # With N=2, terms in both docs get idf≈1.0; terms in only one get idf≈1.41.
+        # This avoids the zero-collapse that happens when N==df (plain log(N/df)=0).
+        N = 2
+        vec_a: dict = {}
+        vec_b: dict = {}
+        for term in all_terms:
+            df = (1 if term in cta else 0) + (1 if term in ctb else 0)
+            idf = math.log((N + 1) / (df + 1)) + 1.0
+            vec_a[term] = (cta.get(term, 0) / max(len(ta), 1)) * idf
+            vec_b[term] = (ctb.get(term, 0) / max(len(tb), 1)) * idf
+
+        dot = sum(vec_a[t] * vec_b[t] for t in all_terms)
+        mag_a = math.sqrt(sum(v * v for v in vec_a.values()))
+        mag_b = math.sqrt(sum(v * v for v in vec_b.values()))
+        if mag_a == 0 or mag_b == 0:
+            return 0.0
+        return round(dot / (mag_a * mag_b), 4)
+    except Exception:
+        return 0.0
+
+
+def _kg_semantic_check(claim_text: str) -> dict:
+    """
+    Query the live memory substrate KG for semantic support/contradiction.
+
+    Returns a dict with:
+      - kg_available: bool  — whether substrate was reachable
+      - kg_contradiction: bool  — KG found a conflicting VERIFIED claim
+      - kg_support: bool  — KG found a supporting (similar + verified) claim
+      - kg_confidence_delta: float  — adjustment to apply (-0.25 / +0.10 / 0.0)
+
+    Falls back gracefully to {kg_available: False, ...} when the substrate
+    is not loaded yet (e.g., early import or test context).
+    """
+    _default = {
+        "kg_available": False,
+        "kg_contradiction": False,
+        "kg_support": False,
+        "kg_confidence_delta": 0.0,
+    }
+    try:
+        from src.memory import get_substrate
+        substrate = get_substrate()
+        # 1. Check for contradictions in the KG
+        contradictions = substrate.find_contradictions(claim_text, threshold=0.20)
+        kg_contradiction = bool(contradictions)
+
+        # 2. Look for supporting VERIFIED claims via recall
+        recalled = substrate.recall(claim_text, top_k=3, min_confidence=0.7)
+        kg_support = any(e.verified for e in recalled)
+
+        if kg_contradiction:
+            delta = -0.25
+        elif kg_support:
+            delta = 0.10
+        else:
+            delta = 0.0
+
+        return {
+            "kg_available": True,
+            "kg_contradiction": kg_contradiction,
+            "kg_support": kg_support,
+            "kg_confidence_delta": delta,
+        }
+    except Exception:
+        return _default
+
+
 def consensus_confidence_boost(
     provider_texts: list, claim_text: str, threshold: int = 3
 ) -> dict:
+    """
+    Enhanced consensus scoring:
+      1. TF-IDF cosine (primary) + Jaccard (fallback) across provider outputs.
+      2. KG-backed semantic check: query the live memory substrate for
+         contradictions or supporting VERIFIED claims, then adjust confidence.
+
+    This replaces pure keyword/Jaccard scoring with a two-layer semantic
+    signal: lexical agreement across providers + KG-backed entailment.
+    """
     claim_keywords = _extract_keywords(claim_text)
     total = len(provider_texts)
     agreeing = 0
     for provider_text in provider_texts:
         provider_keywords = _extract_keywords(provider_text)
-        if _jaccard_similarity(claim_keywords, provider_keywords) > 0.4:
+        # Primary: TF-IDF cosine (semantic, non-zero for shared terms)
+        tfidf_sim = _tfidf_cosine_compliance(claim_text, provider_text)
+        # Fallback: Jaccard keyword overlap
+        jaccard_sim = _jaccard_similarity(claim_keywords, provider_keywords)
+        combined = max(tfidf_sim, jaccard_sim * 0.8)
+        if combined > 0.30:
             agreeing += 1
-    if agreeing >= threshold:
-        return {
-            "boosted": True,
-            "confidence": 1.0,
-            "agreeing_providers": agreeing,
-            "total_providers": total,
-        }
+
+    raw_confidence = agreeing / max(total, 1)
+
+    # KG-backed semantic adjustment
+    kg = _kg_semantic_check(claim_text)
+    adjusted_confidence = max(0.0, min(1.0, raw_confidence + kg["kg_confidence_delta"]))
+
+    boosted = agreeing >= threshold and not kg["kg_contradiction"]
     return {
-        "boosted": False,
-        "confidence": agreeing / max(total, 1),
+        "boosted": boosted,
+        "confidence": 1.0 if boosted else adjusted_confidence,
         "agreeing_providers": agreeing,
         "total_providers": total,
+        "kg_available": kg["kg_available"],
+        "kg_contradiction": kg["kg_contradiction"],
+        "kg_support": kg["kg_support"],
     }
 
 

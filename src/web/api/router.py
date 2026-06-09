@@ -735,6 +735,38 @@ async def api_memory(request: Request, _=Depends(require_auth)):
     return {"layers": rows, "layer_types": layer_types, "q": q, "layer": layer, "total": total}
 
 
+@router.post("/memory/sync")
+async def api_memory_sync(request: Request, _=Depends(require_auth)):
+    from src.memory import get_substrate
+    substrate = get_substrate()
+    if substrate is None:
+        raise HTTPException(status_code=503, detail="Memory substrate unavailable")
+    try:
+        data = await request.json()
+        direction = data.get("direction", "both")
+        if direction not in ("both", "local→cloud", "cloud→local"):
+            direction = "both"
+        report = substrate.sync(direction=direction, min_confidence=0.5)
+        return {"ok": True, "summary": report.summary()}
+    except Exception as e:
+        logger.error("Memory sync failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/memory/consolidate")
+async def api_memory_consolidate(_=Depends(require_auth)):
+    from src.memory import get_substrate
+    substrate = get_substrate()
+    if substrate is None:
+        raise HTTPException(status_code=503, detail="Memory substrate unavailable")
+    try:
+        promoted = substrate.consolidate(min_confidence=0.75)
+        return {"ok": True, "promoted": promoted}
+    except Exception as e:
+        logger.error("Memory consolidation failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/system")
 async def api_system(_=Depends(require_auth)):
     results = {}

@@ -13,6 +13,7 @@ class CognitiveRole(Enum):
     REFLEXIVE_AUDITOR = "reflexive_auditor"
     RED_TEAM = "red_team"
     FALSIFIER = "falsifier"
+    RECURSIVE_REASONER = "recursive_reasoner"
 
 
 class DebateRound(Enum):
@@ -65,6 +66,7 @@ ROLE_BASE_WEIGHTS: Dict[CognitiveRole, float] = {
     CognitiveRole.REFLEXIVE_AUDITOR: 0.7,
     CognitiveRole.RED_TEAM: 0.5,
     CognitiveRole.FALSIFIER: 0.85,
+    CognitiveRole.RECURSIVE_REASONER: 0.95,
 }
 
 
@@ -174,6 +176,7 @@ def get_role_prompt_suffix(role: CognitiveRole) -> str:
         CognitiveRole.REFLEXIVE_AUDITOR: "META-COGNITIVE MODE: Review CS/HR trends, detect drift, propose parameter adjustments. Output meta-claims about system performance.",
         CognitiveRole.RED_TEAM: "ADVERSARIAL MODE: Test for prompt injection, evidence fabrication, constraint bypass. Report vulnerabilities without exploiting them.",
         CognitiveRole.FALSIFIER: "FALSIFICATION MODE: Actively seek counterexamples and logical flaws in proposals. Stress-test claims. Successful falsification strengthens surviving claims.",
+        CognitiveRole.RECURSIVE_REASONER: "RECURSIVE REASONING MODE: Traverse the semantic knowledge graph across prior tasks. Surface remembered facts that constrain or inform this task. Identify claim chains that extend beyond this session. Flag semantic contradictions with verified long-term memories.",
     }
     return suffixes.get(role, "")
 
@@ -221,4 +224,5 @@ def map_wave_to_cognitive_roles(wave_idx: int) -> List[CognitiveRole]:
             CognitiveRole.SYNTHESIZER,
             CognitiveRole.RED_TEAM,
             CognitiveRole.REFLEXIVE_AUDITOR,
+            CognitiveRole.RECURSIVE_REASONER,
         ]

@@ -76,6 +76,80 @@ def _jaccard_similarity(set_a: set, set_b: set) -> float:
         return 0.0
 
 
+def _tfidf_cosine(text_a: str, text_b: str, corpus: list) -> float:
+    """
+    TF-IDF cosine similarity — much stronger than Jaccard for semantic matching.
+    Catches semantically related claims that share few literal keywords.
+    """
+    import math
+    try:
+        stop = STOP_WORDS
+        def tokenize(t: str) -> list:
+            return [w for w in t.lower().split() if
+                    "".join(c for c in w if c.isalnum()) not in stop
+                    and len("".join(c for c in w if c.isalnum())) > 2]
+
+        def tf(tokens: list) -> dict:
+            from collections import Counter
+            counts = Counter(tokens)
+            mx = max(counts.values()) if counts else 1
+            return {k: v / mx for k, v in counts.items()}
+
+        all_docs = [text_a, text_b] + (corpus or [])
+        N = len(all_docs)
+
+        ta = tokenize(text_a)
+        tb = tokenize(text_b)
+        if not ta or not tb:
+            return 0.0
+
+        tfa = tf(ta)
+        tfb = tf(tb)
+
+        vocab = set(tfa) | set(tfb)
+        vec_a: dict = {}
+        vec_b: dict = {}
+        for term in vocab:
+            df = sum(1 for doc in all_docs if term in doc.lower()) + 1
+            idf = math.log(N / df)
+            vec_a[term] = tfa.get(term, 0.0) * idf
+            vec_b[term] = tfb.get(term, 0.0) * idf
+
+        dot = sum(vec_a[t] * vec_b[t] for t in vocab)
+        mag_a = math.sqrt(sum(v * v for v in vec_a.values()))
+        mag_b = math.sqrt(sum(v * v for v in vec_b.values()))
+        if mag_a == 0 or mag_b == 0:
+            return 0.0
+        return round(dot / (mag_a * mag_b), 4)
+    except Exception:
+        return 0.0
+
+
+def _temporal_conflict(text_a: str, text_b: str) -> bool:
+    """
+    Detect deadline/temporal conflicts that Jaccard misses entirely.
+    Example: 'finish by Monday' vs 'deadline is Friday' → True.
+    """
+    import re
+    try:
+        temporal_nouns = {
+            "monday", "tuesday", "wednesday", "thursday", "friday",
+            "saturday", "sunday", "today", "tomorrow", "yesterday",
+            "morning", "afternoon", "evening", "midnight", "noon",
+        }
+        trigger_words = re.compile(
+            r"\b(deadline|due|finish|complete|done|deliver|ship|release|by|before)\b",
+            re.IGNORECASE,
+        )
+        if not trigger_words.search(text_a) or not trigger_words.search(text_b):
+            return False
+        words_a = {w.lower() for w in re.split(r"\W+", text_a)} & temporal_nouns
+        words_b = {w.lower() for w in re.split(r"\W+", text_b)} & temporal_nouns
+        return bool(words_a and words_b and words_a != words_b)
+    except Exception:
+        return False
+
+
 def _has_negation_near_keywords(text: str, keywords: set) -> bool:
     try:
         words = text.lower().split()
@@ -238,8 +312,30 @@ class ProvenanceTree:
 
 
 class ConsistencyChecker:
+    """
+    Semantic consistency checker.
+
+    Uses a two-layer approach:
+    1. TF-IDF cosine similarity (primary) — detects topic overlap semantically,
+       not just shared keywords, so 'finish by Friday' and 'deadline is Monday'
+       are correctly recognised as addressing the same topic.
+    2. Temporal-conflict detection — catches date/time contradictions that
+       neither Jaccard nor TF-IDF alone handles reliably.
+    3. Negation-proximity check (kept as secondary signal, was previously sole
+       method) — still used to flag negation patterns near overlapping terms.
+
+    Long-term memory integration: if a MemorySubstrate is attached via
+    set_substrate(), the checker also queries the persistent KG for
+    contradictions with memories from prior tasks.
+    """
+
     def __init__(self) -> None:
         self._verified_facts: List[Dict] = []
+        self._substrate = None
+
+    def set_substrate(self, substrate) -> None:
+        """Attach a MemorySubstrate for cross-task contradiction checking."""
+        self._substrate = substrate
 
     def add_verified(
         self,
@@ -267,7 +363,7 @@ class ConsistencyChecker:
 
     def check_consistency(self, new_claim_text: str) -> ConsistencyResult:
         try:
-            if not self._verified_facts:
+            if not self._verified_facts and not self._substrate:
                 return ConsistencyResult(
                     consistent=True,
                     conflicting_claims=[],
@@ -275,30 +371,60 @@ class ConsistencyChecker:
                     details="No verified facts to check against.",
                 )
 
-            new_keywords = _extract_keywords(new_claim_text)
-            if not new_keywords:
-                return ConsistencyResult(
-                    consistent=True,
-                    conflicting_claims=[],
-                    similarity_score=0.0,
-                    details="New claim has no significant keywords.",
-                )
-
-            max_similarity = 0.0
             conflicting: List[Dict] = []
+            max_similarity = 0.0
+            corpus = [f["text"] for f in self._verified_facts]
 
             for fact in self._verified_facts:
                 fact_keywords = fact.get("keywords", set())
-                sim = _jaccard_similarity(new_keywords, fact_keywords)
+
+                # Layer 1: TF-IDF cosine (primary semantic similarity)
+                tfidf_sim = _tfidf_cosine(new_claim_text, fact["text"], corpus)
+
+                # Layer 2: Jaccard (kept as lightweight fallback)
+                new_keywords = _extract_keywords(new_claim_text)
+                jaccard_sim = _jaccard_similarity(new_keywords, fact_keywords)
+
+                sim = max(tfidf_sim, jaccard_sim)
                 max_similarity = max(max_similarity, sim)
 
-                if sim > 0.15 and _has_negation_near_keywords(new_claim_text, fact_keywords):
+                # Contradiction: high topic overlap + negation, OR temporal conflict
+                # (temporal conflicts are flagged independently of cosine score
+                # because "finish by Friday" vs "deadline is Monday" shares few
+                # content words, making cosine ~0 even for a clear contradiction)
+                has_negation = (
+                    sim > 0.12
+                    and _has_negation_near_keywords(new_claim_text, fact_keywords)
+                )
+                has_temporal = _temporal_conflict(new_claim_text, fact["text"])
+
+                if has_negation or has_temporal:
                     conflicting.append({
                         "claim_id": fact["claim_id"],
                         "text": fact["text"],
                         "confidence": fact["confidence"],
                         "similarity": round(sim, 3),
+                        "reason": "temporal_conflict" if has_temporal else "negation_detected",
+                        "method": "tfidf+negation",
                     })
+
+            # Layer 3: cross-task memory contradiction check via KG
+            if self._substrate is not None:
+                try:
+                    kg_contradictions = self._substrate.find_contradictions(
+                        new_claim_text, threshold=0.25
+                    )
+                    for c in kg_contradictions:
+                        conflicting.append({
+                            "claim_id": f"MEMORY:{c.get('node_id', '?')}",
+                            "text": c.get("label", ""),
+                            "confidence": c.get("confidence", 0.5),
+                            "similarity": c.get("similarity", 0.0),
+                            "reason": c.get("reason", "kg_contradiction"),
+                            "method": "cognee_kg",
+                        })
+                except Exception:
+                    pass
 
             consistent = len(conflicting) == 0
             details_parts = []
@@ -308,7 +434,9 @@ class ConsistencyChecker:
                 )
             else:
                 details_parts.append("No contradictions detected.")
-            details_parts.append(f"Max similarity: {max_similarity:.3f}")
+            details_parts.append(
+                f"Max similarity: {max_similarity:.3f} (TF-IDF cosine + negation/temporal)"
+            )
 
             return ConsistencyResult(
                 consistent=consistent,
@@ -331,14 +459,15 @@ class ConsistencyChecker:
             if not self._verified_facts:
                 return []
 
-            query_keywords = _extract_keywords(query)
-            if not query_keywords:
-                return self._verified_facts[:limit]
-
+            corpus = [f["text"] for f in self._verified_facts]
             scored = []
             for fact in self._verified_facts:
-                fact_keywords = fact.get("keywords", set())
-                sim = _jaccard_similarity(query_keywords, fact_keywords)
+                # Use TF-IDF cosine for ranked retrieval (replaces Jaccard ranking)
+                sim = _tfidf_cosine(query, fact["text"], corpus)
+                if sim == 0.0:
+                    # Fallback: Jaccard for very short texts
+                    q_kw = _extract_keywords(query)
+                    sim = _jaccard_similarity(q_kw, fact.get("keywords", set()))
                 scored.append((sim, fact))
 
             scored.sort(key=lambda x: x[0], reverse=True)

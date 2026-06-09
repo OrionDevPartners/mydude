@@ -1,0 +1,24 @@
+Apache License
+Version 2.0, January 2004
+http://www.apache.org/licenses/
+
+Mem0 — Intelligent Memory Layer for AI Applications
+Original project: https://github.com/mem0ai/mem0
+Copyright 2024 Mem0 Inc. and contributors
+
+NOTICE: This vendored copy is a trimmed, self-contained adaptation of Mem0's
+memory store and client interface, modified to integrate with the MyDude.io
+governance stack. Only the memory store, add/search/delete operations, and the
+sync/bridge interface are included. All modifications are original work.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

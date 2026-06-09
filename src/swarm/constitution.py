@@ -1,8 +1,54 @@
+import logging
 import re
 import uuid
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _semantic_validate_claim(claim_text: str, premises: List[str]) -> float:
+    """
+    Semantic premise→claim validation via the memory substrate KG.
+
+    - Checks each premise against the KG for contradiction with the claim.
+    - Checks the claim itself for support from VERIFIED KG entries.
+    - Returns a confidence delta in [-0.20, +0.10] to apply on top of the
+      parsed confidence value.  Always returns 0.0 if substrate is unavailable
+      so parsing is never blocked.
+    """
+    if not premises and not claim_text:
+        return 0.0
+    try:
+        from src.memory import get_substrate
+        substrate = get_substrate()
+
+        # Check each premise for contradiction with the claim
+        contradicting_premises = 0
+        for premise in premises:
+            contras = substrate.find_contradictions(premise, threshold=0.15)
+            for c in contras:
+                # A KG contradiction involving the claim's topic is a warning
+                if claim_text[:80].lower() in c.get("text", "").lower():
+                    contradicting_premises += 1
+                    break
+
+        # Check claim for contradiction with known VERIFIED facts
+        claim_contras = substrate.find_contradictions(claim_text, threshold=0.20)
+        claim_contradicted = bool(claim_contras)
+
+        # Check for KG-support (VERIFIED recalls)
+        recalled = substrate.recall(claim_text, top_k=3, min_confidence=0.7)
+        kg_supported = any(e.verified for e in recalled)
+
+        if claim_contradicted or contradicting_premises > 0:
+            return -0.20
+        if kg_supported:
+            return 0.10
+        return 0.0
+    except Exception:
+        return 0.0
 
 
 class EpistemicCategory(Enum):
@@ -44,11 +90,23 @@ class ClaimLedger:
     ) -> Claim:
         self._counter += 1
         claim_id = f"CLM-{self._counter:03d}"
+
+        # Semantic premise→claim validation: adjust confidence based on KG
+        # entailment/contradiction check.  Never raises — returns delta 0.0
+        # if substrate unavailable so claim parsing is never blocked.
+        sem_delta = _semantic_validate_claim(text, premises or [])
+        adjusted_confidence = max(0.0, min(1.0, confidence + sem_delta))
+        if sem_delta != 0.0:
+            logger.debug(
+                "Claim %s semantic delta %.2f (%.2f→%.2f): %s",
+                claim_id, sem_delta, confidence, adjusted_confidence, text[:80],
+            )
+
         claim = Claim(
             claim_id=claim_id,
             text=text,
             label=label,
-            confidence=confidence,
+            confidence=adjusted_confidence,
             evidence_pointers=evidence_pointers or [],
             premises=premises or [],
             failure_modes=failure_modes or [],
