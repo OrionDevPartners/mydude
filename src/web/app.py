@@ -1,73 +1,59 @@
 import os
 import secrets
 import logging
+import pathlib
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from src.web.branding import PRODUCT_NAME
-from src.web.templating import templates
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title=PRODUCT_NAME, docs_url=None, redoc_url=None)
 
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
-
-_ERROR_TITLES = {
-    404: "Page not found",
-    403: "Forbidden",
-    429: "Too many requests",
-    500: "Something went wrong",
-}
+_SPA_INDEX = pathlib.Path("static/spa/index.html")
 
 
-def _render_error(request: Request, status_code: int, message: str):
-    title = _ERROR_TITLES.get(status_code, "Error")
-    return templates.TemplateResponse(
-        "error.html",
-        {
-            "request": request,
-            "status_code": status_code,
-            "title": title,
-            "message": message,
-        },
-        status_code=status_code,
-    )
+def _is_api_request(request: Request) -> bool:
+    return request.url.path.startswith("/api/") or request.url.path == "/api"
+
+
+def _error_response(request: Request, status_code: int, detail: str):
+    if _is_api_request(request):
+        return JSONResponse({"detail": detail}, status_code=status_code)
+    # For browser navigation, serve the SPA which renders its own error UI
+    if _SPA_INDEX.is_file():
+        return FileResponse(_SPA_INDEX, status_code=200)
+    return JSONResponse({"detail": detail}, status_code=status_code)
 
 
 @app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
-    # Preserve redirect-style exceptions (e.g. require_auth -> /login).
     location = (exc.headers or {}).get("Location") if exc.headers else None
     if exc.status_code in _REDIRECT_CODES and location:
         return RedirectResponse(url=location, status_code=exc.status_code)
-    # Use the provided detail only for client errors; never echo it for 5xx.
     if exc.status_code >= 500:
-        message = "An unexpected error occurred. Please try again later."
+        detail = "An unexpected error occurred. Please try again later."
     else:
-        message = exc.detail if isinstance(exc.detail, str) else _ERROR_TITLES.get(exc.status_code, "Request error")
-    return _render_error(request, exc.status_code, message)
+        detail = exc.detail if isinstance(exc.detail, str) else "Request error"
+    return _error_response(request, exc.status_code, detail)
 
 
 @app.exception_handler(RequestValidationError)
 async def _validation_exception_handler(request: Request, exc: RequestValidationError):
-    # Malformed/missing fields: respond cleanly without echoing the raw payload.
-    return _render_error(request, 400, "The request was malformed or missing required fields.")
+    return _error_response(request, 400, "The request was malformed or missing required fields.")
 
 
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request: Request, exc: Exception):
-    # Log the full traceback server-side; never leak it to the client.
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
-    return _render_error(
-        request,
-        500,
-        "An unexpected error occurred. Please try again later.",
-    )
+    return _error_response(request, 500, "An unexpected error occurred. Please try again later.")
+
 
 _session_secret = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 app.add_middleware(SessionMiddleware, secret_key=_session_secret)
@@ -76,7 +62,7 @@ _is_production = os.environ.get("REPLIT_DEPLOYMENT") == "1"
 
 
 @app.middleware("http")
-async def _no_cache_static(request: Request, call_next):
+async def _cache_headers(request: Request, call_next):
     response = await call_next(request)
     if not _is_production and request.url.path.startswith("/static"):
         response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -85,21 +71,9 @@ async def _no_cache_static(request: Request, call_next):
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-from src.web.auth import router as auth_router
-from src.web.routes_keys import router as keys_router
-from src.web.routes_services import router as services_router
-from src.web.routes_tasks import router as tasks_router
-from src.web.routes_governance import router as governance_router
-from src.web.routes_capabilities import router as capabilities_router
-from src.web.routes_subscriptions import router as subscriptions_router
+from src.web.api.router import router as api_router  # noqa: E402
 
-app.include_router(auth_router)
-app.include_router(keys_router)
-app.include_router(services_router)
-app.include_router(tasks_router)
-app.include_router(governance_router)
-app.include_router(capabilities_router)
-app.include_router(subscriptions_router)
+app.include_router(api_router)
 
 
 @app.get("/health")
@@ -107,8 +81,42 @@ async def health():
     return {"status": "ok"}
 
 
+# SPA fallback — all non-API, non-static paths serve the React SPA index.
+# Registered last so /api/* and /static/* mounts take priority.
+@app.get("/{full_path:path}")
+async def _spa_fallback(full_path: str):
+    if _SPA_INDEX.is_file():
+        return FileResponse(_SPA_INDEX)
+    return JSONResponse({"detail": "Frontend not built. Run: cd frontend && npm run build"}, status_code=404)
+
+
+def _ensure_spa_built():
+    """Build the React SPA if the output directory is missing (e.g. clean deployment clone)."""
+    if _SPA_INDEX.is_file():
+        return
+    build_script = pathlib.Path("scripts/build-frontend.sh")
+    if not build_script.is_file():
+        logger.warning("SPA not built and build script not found — frontend will be unavailable")
+        return
+    import subprocess
+    logger.info("static/spa/index.html not found — running frontend build…")
+    try:
+        result = subprocess.run(
+            ["bash", str(build_script)],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode == 0:
+            logger.info("Frontend build complete")
+        else:
+            logger.error("Frontend build failed:\n%s\n%s", result.stdout, result.stderr)
+    except Exception as e:
+        logger.error("Frontend build error: %s", e)
+
+
 @app.on_event("startup")
 async def startup():
+    _ensure_spa_built()
+
     try:
         from src.database import init_db
         init_db()
@@ -130,9 +138,6 @@ async def startup():
     except Exception as e:
         logger.warning("Failed to sync app settings: %s", e)
 
-    # Local model registry (optional sovereign-stack manifest at
-    # ~/.mydude/local/model_registry.yaml). Read at startup so the local
-    # providers can resolve installed models; absent file degrades to empty.
     try:
         from src.providers.local_registry import load_local_models
         local_models = load_local_models()
@@ -140,14 +145,8 @@ async def startup():
     except Exception as e:
         logger.warning("Local model registry load failed: %s", e)
 
-    # Boot handshake (env_1 -> env_2): validate provider config and that every
-    # required secret is present. A failure here is intentionally fatal so the
-    # app never serves traffic in a misconfigured state.
     from src.providers.handshake import run_handshake
     run_handshake()
 
-    # Browser capability handshake — validates backend config and any required
-    # backend secrets. With the default empty required list it simply boots the
-    # capability disabled until credentials are added.
     from src.browser.handshake import run_browser_handshake
     run_browser_handshake()
