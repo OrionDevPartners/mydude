@@ -240,6 +240,19 @@ class WaveOrchestrator:
             from src.swarm.governance_settings import GovernanceSettings
             gov = GovernanceSettings()
 
+        # Enacted policy: apply a concurrency cap to per-wave agent calls when a
+        # governance proposal has lowered swarm.max_concurrency. The cap can only
+        # tighten (never raise) the env-configured WAVE_CONCURRENCY ceiling.
+        if gov.max_concurrency and gov.max_concurrency > 0:
+            effective_concurrency = min(WAVE_CONCURRENCY, gov.max_concurrency)
+            self.sem = asyncio.Semaphore(effective_concurrency)
+            logger.info(
+                "GovernanceSettings applied concurrency cap: %d (env ceiling %d)",
+                effective_concurrency, WAVE_CONCURRENCY,
+            )
+        else:
+            self.sem = asyncio.Semaphore(WAVE_CONCURRENCY)
+
         all_caps: List[Tuple[str, Dict[str, Any], str]] = []
         all_compliance_scores: List[Dict[str, Any]] = []
         all_dissent: List[str] = []

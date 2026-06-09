@@ -97,13 +97,24 @@
                     {% endif %}
                 </td>
                 <td class="mono" style="font-size:0.8rem;">{{ (p.quorum_threshold * 100)|round|int }}%</td>
-                <td style="font-size:0.8rem;">
+                <td style="font-size:0.8rem;min-width:150px;">
                     {% if tally.get('total_effective', 0) > 0 %}
-                    <span class="status-badge sev-low">{{ (tally.yes_ratio * 100)|round|int }}% yes</span>
-                    <span class="meta">({{ tally.vote_count }} vote{{ 's' if tally.vote_count != 1 else '' }})</span>
-                    {% if tally.get('delegation_map') %}
-                    <span class="status-badge sev-info" title="Delegations: {{ tally.delegation_map | tojson }}">{{ tally.delegation_map | length }}↗</span>
-                    {% endif %}
+                    {% set yes_pct = (tally.yes_ratio * 100)|round|int %}
+                    {% set quorum_pct = (p.quorum_threshold * 100)|round|int %}
+                    {% set quorum_met = tally.yes_ratio >= p.quorum_threshold %}
+                    <div class="quorum-meter" title="Yes {{ yes_pct }}% vs quorum {{ quorum_pct }}%">
+                        <div class="quorum-meter-track">
+                            <div class="quorum-meter-fill {% if quorum_met %}met{% endif %}" style="width:{{ yes_pct }}%;"></div>
+                            <div class="quorum-meter-marker" style="left:{{ quorum_pct }}%;" title="Quorum {{ quorum_pct }}%"></div>
+                        </div>
+                        <div class="quorum-meter-label">
+                            <span class="{% if quorum_met %}meter-met{% endif %}">{{ yes_pct }}% yes</span>
+                            <span class="meta">· quorum {{ quorum_pct }}% · {{ tally.vote_count }} vote{{ 's' if tally.vote_count != 1 else '' }}</span>
+                            {% if tally.get('delegation_map') %}
+                            <span class="status-badge sev-info" title="Delegations: {{ tally.delegation_map | tojson }}">{{ tally.delegation_map | length }}↗</span>
+                            {% endif %}
+                        </div>
+                    </div>
                     {% else %}
                     <span class="meta">no votes</span>
                     {% endif %}

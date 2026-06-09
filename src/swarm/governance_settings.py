@@ -12,6 +12,7 @@ Enacted settings (written by GovernanceEngine._apply_enacted_action):
   swarm.quarantine_flagged_providers bool — auto-quarantine providers with 3+ failures
   swarm.extra_debate_rounds       int    — extra debate rounds appended per wave
   swarm.enable_skeptic_override   bool   — force a dedicated SKEPTIC pass next wave
+  swarm.max_concurrency           int    — cap concurrent agent calls per wave (0 = no enacted cap)
 
 Usage:
   gs = GovernanceSettings.load()
@@ -37,6 +38,7 @@ class GovernanceSettings:
     quarantine_flagged_providers: bool = False
     extra_debate_rounds: int = _DEFAULT_EXTRA_ROUNDS
     enable_skeptic_override: bool = False
+    max_concurrency: int = 0  # 0 = no enacted cap; fall back to env WAVE_CONCURRENCY
 
     @classmethod
     def load(cls) -> "GovernanceSettings":
@@ -80,11 +82,13 @@ class GovernanceSettings:
                 quarantine_flagged_providers=_bool("swarm.quarantine_flagged_providers", False),
                 extra_debate_rounds=min(max(_int("swarm.extra_debate_rounds", 0), 0), 5),
                 enable_skeptic_override=_bool("swarm.enable_skeptic_override", False),
+                max_concurrency=min(max(_int("swarm.max_concurrency", 0), 0), 32),
             )
             logger.debug(
-                "GovernanceSettings loaded: halt=%s min_cs=%d min_ev=%.2f quarantine=%s extra_rounds=%d skeptic=%s",
+                "GovernanceSettings loaded: halt=%s min_cs=%d min_ev=%.2f quarantine=%s extra_rounds=%d skeptic=%s max_conc=%d",
                 gs.halt_on_critical, gs.min_cs_threshold, gs.min_evidence_strength,
                 gs.quarantine_flagged_providers, gs.extra_debate_rounds, gs.enable_skeptic_override,
+                gs.max_concurrency,
             )
             return gs
         except Exception as e:

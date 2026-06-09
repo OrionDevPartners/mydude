@@ -382,6 +382,14 @@ class GovernanceEngine:
             "value": "true",
             "description": "Force a dedicated skeptic pass on the next wave",
         },
+        {
+            "keywords": ["concurrency cap", "cap concurrency", "reduce concurrency",
+                         "limit concurrency", "lower concurrency", "throttle concurrency"],
+            "setting_key": "swarm.max_concurrency",
+            "op": "set",
+            "value": "4",
+            "description": "Cap concurrent agent calls per wave to 4 to reduce provider load",
+        },
     ]
 
     def _apply_enacted_action(self, db: Any, prop: Any) -> List[str]:

@@ -1212,3 +1212,42 @@ select {
     background: rgba(255, 255, 255, 0.3);
     background-clip: padding-box;
 }
+
+/* Governance quorum meter */
+.quorum-meter {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 130px;
+}
+.quorum-meter-track {
+    position: relative;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.quorum-meter-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    background: var(--warning);
+    transition: width 0.3s ease;
+}
+.quorum-meter-fill.met { background: var(--success); }
+.quorum-meter-marker {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--text-primary);
+    opacity: 0.85;
+}
+.quorum-meter-label {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.quorum-meter-label .meter-met { color: var(--success); font-weight: 600; }
