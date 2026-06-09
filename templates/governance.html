@@ -197,6 +197,36 @@
 
 <div class="card">
     <div class="card-header">
+        <h3>🩺 Swarm Health
+            {% if failed_indexes or governance_proposal_failures %}
+            <span class="status-badge sev-warning">{{ failed_indexes + governance_proposal_failures }} failures</span>
+            {% endif %}
+        </h3>
+        <span class="meta">Silent-failure counters from critical swarm paths</span>
+    </div>
+    <div class="card-body">
+        <div class="table-wrap">
+        <table class="table">
+            <thead><tr><th>Metric</th><th>Count</th><th>Meaning</th></tr></thead>
+            <tbody>
+            <tr>
+                <td>Failed indexes</td>
+                <td><span class="status-badge {% if failed_indexes %}sev-warning{% else %}sev-low{% endif %}">{{ failed_indexes }}</span></td>
+                <td class="meta">Run-index writes that failed after a completed run (history/search may be incomplete).</td>
+            </tr>
+            <tr>
+                <td>Governance proposal raise failures</td>
+                <td><span class="status-badge {% if governance_proposal_failures %}sev-warning{% else %}sev-low{% endif %}">{{ governance_proposal_failures }}</span></td>
+                <td class="meta">Auditor meta-claims that could not be converted into governance proposals.</td>
+            </tr>
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
         <h3>🚨 Sentinel Alerts
             {% if open_alerts %}<span class="status-badge sev-high">{{ open_alerts }} open</span>{% endif %}
         </h3>

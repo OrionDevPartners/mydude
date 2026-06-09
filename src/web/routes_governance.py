@@ -108,6 +108,19 @@ async def governance(request: Request, _=Depends(require_auth)):
     except Exception as e:
         logger.warning("Jurisdiction state lookup failed: %s", e)
 
+    # Structured error counters: surface silent-failure paths so operators can
+    # see them instead of having them disappear into the logs.
+    failed_indexes = 0
+    governance_proposal_failures = 0
+    try:
+        from src.swarm.error_metrics import (
+            get_metric, METRIC_FAILED_INDEXES, METRIC_GOVERNANCE_PROPOSAL_FAILURES,
+        )
+        failed_indexes = get_metric(METRIC_FAILED_INDEXES)
+        governance_proposal_failures = get_metric(METRIC_GOVERNANCE_PROPOSAL_FAILURES)
+    except Exception as e:
+        logger.warning("Error-metric lookup failed: %s", e)
+
     return templates.TemplateResponse("governance.html", {
         "request": request,
         "alerts": alerts,
@@ -117,6 +130,8 @@ async def governance(request: Request, _=Depends(require_auth)):
         "total_metrics": total_metrics,
         "cloud_shift_active": cloud_shift_active,
         "exec_locus_dist": exec_locus_dist,
+        "failed_indexes": failed_indexes,
+        "governance_proposal_failures": governance_proposal_failures,
         "proposals": proposals,
         "open_proposals": open_proposals,
         "proposal_tallies": proposal_tallies,

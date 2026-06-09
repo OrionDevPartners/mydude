@@ -543,10 +543,22 @@ class WaveOrchestrator:
             except Exception as e:
                 logger.warning("Failed to persist run index: %s", e)
                 db.rollback()
+                self._record_index_failure()
             finally:
                 db.close()
         except Exception as e:
             logger.warning("_index_run failed: %s", e)
+            self._record_index_failure()
+
+    @staticmethod
+    def _record_index_failure() -> None:
+        """Count an _index_run failure so it surfaces as a 'failed indexes'
+        metric in the Governance Center instead of vanishing into the logs."""
+        try:
+            from src.swarm.error_metrics import increment_metric, METRIC_FAILED_INDEXES
+            increment_metric(METRIC_FAILED_INDEXES)
+        except Exception:
+            pass
 
     async def _run_wave(self, wave_idx: int, handoff: Handoff) -> List[AgentResult]:
         jobs = self._build_jobs(wave_idx, handoff.goal)

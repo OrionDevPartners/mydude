@@ -41,6 +41,29 @@ class CapabilityBroker:
         # regardless of category — no need for a separate conditional audit here.
         contract_violation = _contract_validate(capability, params)
         if contract_violation:
+            # Surface contract violations in the Governance Center as sentinel
+            # alerts, not just buried in logs / the capability audit trail.
+            # Operators need to see malformed or under-justified capability
+            # requests since they often indicate a misbehaving agent or role.
+            try:
+                from src.swarm.error_metrics import record_sentinel_event
+                # Never use credential-bearing params as the alert target.
+                target = (params.get("url") or params.get("login_url")
+                          or params.get("command") or params.get("browser"))
+                description = f"Capability '{capability}' rejected by contract: {contract_violation}"
+                if target:
+                    description += f" (target: {target})"
+                record_sentinel_event(
+                    alert_type="contract_violation",
+                    severity="warning",
+                    description=description,
+                    recommended_action=(
+                        "Review the requesting agent/role; ensure capability "
+                        "requests are well-formed and carry required justification."
+                    ),
+                )
+            except Exception:
+                pass
             return BrokerResult(False, PolicyDecision(False, contract_violation), None)
 
         # Step 2: Jurisdiction routing hint injected before policy evaluation.

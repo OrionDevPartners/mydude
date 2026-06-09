@@ -206,6 +206,15 @@ class ReflexiveAuditor:
             _logging.getLogger(__name__).warning(
                 "Failed to raise governance proposal for claim %s: %s", claim.claim_id, e
             )
+            # Count the failure so it surfaces as a metric in the Governance
+            # Center rather than silently disappearing into the logs.
+            try:
+                from src.swarm.error_metrics import (
+                    increment_metric, METRIC_GOVERNANCE_PROPOSAL_FAILURES,
+                )
+                increment_metric(METRIC_GOVERNANCE_PROPOSAL_FAILURES)
+            except Exception:
+                pass
 
     def audit_wave(
         self,
