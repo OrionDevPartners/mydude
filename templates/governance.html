@@ -85,13 +85,28 @@
         {% if exec_locus_dist %}
         <div class="table-wrap">
         <table class="table">
-            <thead><tr><th>Provider</th><th>exec_locus</th><th>Secret present</th><th>Routable now</th></tr></thead>
+            <thead><tr><th>Provider</th><th>exec_locus</th><th>Secret / server</th><th>Endpoint</th><th>Routable now</th></tr></thead>
             <tbody>
             {% for p in exec_locus_dist %}
             <tr>
                 <td><span class="provider-badge provider-{{ p.provider }}">{{ p.provider }}</span></td>
                 <td class="mono">{{ p.exec_locus }}</td>
-                <td>{% if p.available %}✓{% else %}<span class="meta">—</span>{% endif %}</td>
+                <td>
+                    {% if p.exec_locus == "local" %}
+                        {% if p.server_up == true %}
+                            <span class="status-badge sev-low">server up</span>
+                        {% elif p.server_up == false %}
+                            <span class="status-badge sev-high">server down</span>
+                        {% else %}
+                            <span class="meta">—</span>
+                        {% endif %}
+                    {% else %}
+                        {% if p.available %}✓{% else %}<span class="meta">—</span>{% endif %}
+                    {% endif %}
+                </td>
+                <td class="mono" style="font-size:0.8em;word-break:break-all">
+                    {% if p.endpoint %}{{ p.endpoint }}{% else %}<span class="meta">—</span>{% endif %}
+                </td>
                 <td>
                     {% if p.routable %}
                         <span class="status-badge sev-low">routable</span>
@@ -104,6 +119,12 @@
             </tbody>
         </table>
         </div>
+        <p class="meta" style="margin-top:0.5rem">
+            Local providers (exec_locus=local) show their configured endpoint and live server status.
+            To reach a node over Cloudflare Mesh, set <code>OLLAMA_BASE_URL</code> / <code>MLX_BASE_URL</code>
+            to the Mesh IP and <code>LOCAL_PROBE_TIMEOUT=2.0</code>.
+            See <code>docs/cloudflare-mesh-local-llm.md</code> for setup instructions.
+        </p>
         {% else %}
         <div class="empty-state">No LLM providers configured in env_1.</div>
         {% endif %}

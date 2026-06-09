@@ -119,12 +119,18 @@ class GeminiGenerateAdapter(LLMAdapter):
 
 
 def _server_listening(base_url: str, timeout: float = 0.3) -> bool:
-    """Fast TCP probe: True if something is listening on the base_url host:port.
+    """TCP probe: True if something is listening on the base_url host:port.
 
     Local inference servers (Ollama, mlx_lm) are only sometimes running. Gating
     availability on a cheap socket connect keeps a dead local box from poisoning
     the swarm fanout, while staying synchronous (no event-loop blocking beyond
-    the short timeout) for use inside ``is_available``.
+    the timeout) for use inside ``is_available``.
+
+    When the local model server is reached over Cloudflare Mesh (a remote 100.96.x.x
+    address) rather than localhost, the round-trip is higher. Use a larger timeout
+    via the provider's ``probe_timeout_env`` / ``default_probe_timeout`` config, or
+    the shared ``LOCAL_PROBE_TIMEOUT`` env var, rather than assuming sub-millisecond
+    localhost latency.
     """
     try:
         parsed = urlparse(base_url)
@@ -145,6 +151,15 @@ class _LocalOpenAICompatAdapter(OpenAIChatAdapter):
     transparently falls back to whatever cloud providers remain — and when all
     cloud providers are unavailable the ladder degrades to these instead of
     refusing (exec_locus=local, the local_degraded tier).
+
+    Cloudflare Mesh support
+    -----------------------
+    Set the provider's base_url_env to a Mesh IP (e.g.
+    ``OLLAMA_BASE_URL=http://100.96.0.1:11434/v1``) to reach a local model node
+    enrolled as a Cloudflare Mesh peer. The probe timeout must be relaxed for
+    cross-network latency — set ``OLLAMA_PROBE_TIMEOUT`` (or the shared
+    ``LOCAL_PROBE_TIMEOUT``) to a value like ``2.0`` seconds instead of the
+    localhost default. See docs/cloudflare-mesh-local-llm.md for full setup.
     """
 
     #: provider key in the local model registry (config key mirrors this)
@@ -153,6 +168,36 @@ class _LocalOpenAICompatAdapter(OpenAIChatAdapter):
     DEFAULT_BASE_URL = ""
     #: placeholder key — local servers ignore it but the SDK requires one
     PLACEHOLDER_KEY = "local"
+    #: env var name for per-provider probe timeout override (set in subclass)
+    PROBE_TIMEOUT_ENV = ""
+    #: default TCP probe timeout in seconds (localhost-tuned; override for Mesh)
+    DEFAULT_PROBE_TIMEOUT = 0.5
+
+    def _probe_timeout(self) -> float:
+        """Return the TCP probe timeout for this provider.
+
+        Resolution order:
+          1. Provider-specific env var (e.g. OLLAMA_PROBE_TIMEOUT)
+          2. Shared LOCAL_PROBE_TIMEOUT env var (applies to all local providers)
+          3. DEFAULT_PROBE_TIMEOUT class default
+
+        Set to 2.0+ when reaching a node over Cloudflare Mesh.
+        """
+        import os
+        if self.PROBE_TIMEOUT_ENV:
+            val = os.environ.get(self.PROBE_TIMEOUT_ENV, "").strip()
+            if val:
+                try:
+                    return float(val)
+                except ValueError:
+                    pass
+        shared = os.environ.get("LOCAL_PROBE_TIMEOUT", "").strip()
+        if shared:
+            try:
+                return float(shared)
+            except ValueError:
+                pass
+        return self.DEFAULT_PROBE_TIMEOUT
 
     def _base_url(self) -> str:
         configured = None
@@ -175,7 +220,7 @@ class _LocalOpenAICompatAdapter(OpenAIChatAdapter):
         # No secret to require; availability == client built AND server is up.
         # The TCP probe is cached for PROBE_TTL so the several is_available()
         # calls per task (and pure-cloud tasks that never use local) don't each
-        # block the event loop on a localhost connect.
+        # block the event loop on a socket connect (even a Mesh one).
         if self.client() is None:
             return False
         import time
@@ -183,7 +228,7 @@ class _LocalOpenAICompatAdapter(OpenAIChatAdapter):
         now = time.monotonic()
         last = getattr(self, "_probe_ts", None)
         if last is None or (now - last) > self.PROBE_TTL:
-            self._probe_up = _server_listening(self._base_url())
+            self._probe_up = _server_listening(self._base_url(), timeout=self._probe_timeout())
             self._probe_ts = now
         return self._probe_up
 
@@ -210,17 +255,29 @@ class _LocalOpenAICompatAdapter(OpenAIChatAdapter):
 
 
 class OllamaAdapter(_LocalOpenAICompatAdapter):
-    """Ollama local inference via its OpenAI-compatible API (localhost:11434/v1)."""
+    """Ollama local inference via its OpenAI-compatible API (localhost:11434/v1).
+
+    To reach an Ollama node over Cloudflare Mesh, set:
+      OLLAMA_BASE_URL=http://<mesh-ip>:11434/v1
+      OLLAMA_PROBE_TIMEOUT=2.0   (or LOCAL_PROBE_TIMEOUT=2.0 for all local providers)
+    """
 
     REGISTRY_PROVIDER = "ollama"
     DEFAULT_BASE_URL = "http://localhost:11434/v1"
     PLACEHOLDER_KEY = "ollama"
+    PROBE_TIMEOUT_ENV = "OLLAMA_PROBE_TIMEOUT"
 
 
 class MLXAdapter(_LocalOpenAICompatAdapter):
     """Apple MLX local inference via the mlx_lm OpenAI-compatible server
-    (localhost:11435/v1)."""
+    (localhost:11435/v1).
+
+    To reach an MLX node over Cloudflare Mesh, set:
+      MLX_BASE_URL=http://<mesh-ip>:11435/v1
+      MLX_PROBE_TIMEOUT=2.0   (or LOCAL_PROBE_TIMEOUT=2.0 for all local providers)
+    """
 
     REGISTRY_PROVIDER = "mlx"
     DEFAULT_BASE_URL = "http://localhost:11435/v1"
     PLACEHOLDER_KEY = "mlx"
+    PROBE_TIMEOUT_ENV = "MLX_PROBE_TIMEOUT"

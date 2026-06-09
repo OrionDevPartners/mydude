@@ -90,12 +90,64 @@ def filter_providers_by_exec_locus(provider_keys: list, domain_exec_locus_pin: s
     return [k for k in provider_keys if get_exec_locus(k) == domain_exec_locus_pin]
 
 
+def _probe_local_endpoint(base_url: str, timeout: float = 0.5) -> bool:
+    """Thin wrapper around the adapter TCP probe for use outside adapter instances."""
+    import socket
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(base_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _local_endpoint_status(spec) -> dict:
+    """Return endpoint + live reachability info for a local (exec_locus=local) provider.
+
+    Reads the configured base URL from env (same resolution as the adapter) and
+    probes it with a short TCP connect, respecting the provider-specific timeout env
+    var (e.g. OLLAMA_PROBE_TIMEOUT) and the shared LOCAL_PROBE_TIMEOUT fallback.
+    The status keys are:
+      endpoint   — the resolved base URL string
+      server_up  — True/False/None (None if probe was skipped)
+    """
+    import os
+    from src.providers.secrets import get_env
+
+    base_url = get_env(spec.base_url_env, spec.default_base_url) or ""
+
+    if not base_url:
+        return {"endpoint": "", "server_up": None}
+
+    # Resolve probe timeout: provider-specific, then shared, then 0.5 s default.
+    provider_timeout_env = f"{spec.key.upper()}_PROBE_TIMEOUT"
+    timeout = 0.5
+    for env_name in (provider_timeout_env, "LOCAL_PROBE_TIMEOUT"):
+        val = os.environ.get(env_name, "").strip()
+        if val:
+            try:
+                timeout = float(val)
+                break
+            except ValueError:
+                pass
+
+    server_up = _probe_local_endpoint(base_url, timeout=timeout)
+    return {"endpoint": base_url, "server_up": server_up}
+
+
 def provider_exec_locus_distribution() -> list:
     """Return per-provider exec_locus + availability for the governance dashboard.
 
-    Each entry: {provider, exec_locus, available, routable}. ``routable`` is True
-    when the provider has its secret AND survives the current cloud_shift state
-    (cloud providers are dropped when cloud_shift is disabled).
+    Each entry: {provider, exec_locus, available, routable, endpoint, server_up}.
+    ``routable`` is True when the provider has its secret AND survives the current
+    cloud_shift state (cloud providers are dropped when cloud_shift is disabled).
+
+    For local (exec_locus=local) providers ``endpoint`` is the configured base URL
+    (localhost or a Cloudflare Mesh IP) and ``server_up`` is the live TCP probe
+    result, so operators can see the Mesh link status at a glance.
     """
     out: list = []
     try:
@@ -107,13 +159,24 @@ def provider_exec_locus_distribution() -> list:
             locus = get_exec_locus(spec.key)
             is_local = locus == "local"
             available = bool(spec.secrets) and all(has_secret(s) for s in spec.secrets)
+            if is_local:
+                # Local providers have no secrets; availability is purely server-up.
+                available = True
             routable = available and (cloud_shift or is_local)
-            out.append({
+            entry: dict = {
                 "provider": spec.key,
                 "exec_locus": locus,
                 "available": available,
                 "routable": routable,
-            })
+                "endpoint": None,
+                "server_up": None,
+            }
+            if is_local:
+                try:
+                    entry.update(_local_endpoint_status(spec))
+                except Exception as e:
+                    logger.debug("local endpoint probe failed for %s: %s", spec.key, e)
+            out.append(entry)
     except Exception as e:
         logger.debug("provider_exec_locus_distribution failed: %s", e)
     return out

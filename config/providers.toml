@@ -94,6 +94,25 @@ exec_locus = "in_azure"
 # jurisdiction router selects them when cloud_shift=false or exec_locus_pin=local,
 # and the swarm only includes one in the fanout when its server is listening.
 # No `secrets` entry — availability is gated on the local server, not a key.
+#
+# Cloudflare Mesh (remote local node)
+# ------------------------------------
+# When MyDude is cloud-deployed but the model server runs on a separate box that
+# is enrolled as a Cloudflare Mesh peer (warp-cli headless, WARP-to-WARP enabled),
+# set base_url_env to the node's stable Mesh IP instead of localhost. Example:
+#
+#   OLLAMA_BASE_URL=http://100.96.0.1:11434/v1   # Mesh IP of the Ollama node
+#   MLX_BASE_URL=http://100.96.0.2:11435/v1       # Mesh IP of the MLX node
+#
+# Also raise the TCP availability probe timeout to account for cross-network
+# latency — 0.5 s is too tight for Mesh; use 2.0 s or higher:
+#
+#   LOCAL_PROBE_TIMEOUT=2.0           # shared fallback for all local providers
+#   OLLAMA_PROBE_TIMEOUT=2.0          # per-provider override (takes precedence)
+#   MLX_PROBE_TIMEOUT=2.0
+#
+# Nothing else needs to change: the same URL is used for the probe and all API
+# calls. See docs/cloudflare-mesh-local-llm.md for the full node-side setup guide.
 # -----------------------------------------------------------------------------
 
 [providers.ollama]
@@ -104,8 +123,11 @@ default_model = "llama3.2:3b"
 concurrency_env = "OLLAMA_CONCURRENCY"
 default_concurrency = 2
 role_hint = "Local sovereign inference — privacy-preserving offline fallback"
+# Set to a Cloudflare Mesh IP to reach a remote Ollama node (e.g. http://100.96.0.1:11434/v1)
 base_url_env = "OLLAMA_BASE_URL"
 default_base_url = "http://localhost:11434/v1"
+# Probe timeout env var: set OLLAMA_PROBE_TIMEOUT=2.0 when using a Mesh endpoint
+probe_timeout_env = "OLLAMA_PROBE_TIMEOUT"
 exec_locus = "local"
 
 [providers.mlx]
@@ -116,8 +138,11 @@ default_model = "mlx-community/Qwen3-14B-8bit"
 concurrency_env = "MLX_CONCURRENCY"
 default_concurrency = 1
 role_hint = "Local Apple-silicon inference — privacy-preserving offline fallback"
+# Set to a Cloudflare Mesh IP to reach a remote MLX node (e.g. http://100.96.0.2:11435/v1)
 base_url_env = "MLX_BASE_URL"
 default_base_url = "http://localhost:11435/v1"
+# Probe timeout env var: set MLX_PROBE_TIMEOUT=2.0 when using a Mesh endpoint
+probe_timeout_env = "MLX_PROBE_TIMEOUT"
 exec_locus = "local"
 
 # =============================================================================
