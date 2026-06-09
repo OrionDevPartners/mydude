@@ -5,7 +5,7 @@ import { logout } from '@/lib/api'
 import {
   LayoutDashboard, History, Key, Globe, Plug, Zap,
   ShieldCheck, GitBranch, Brain, Activity, CreditCard,
-  LogOut, Menu, X
+  Cpu, LogOut, Menu, X
 } from 'lucide-react'
 
 interface NavItem { label: string; to: string; icon: ReactNode; section?: string }
@@ -22,6 +22,7 @@ const NAV: NavItem[] = [
   { label: 'Memory', to: '/memory', icon: <Brain size={16} /> },
   { label: 'System Health', to: '/system', icon: <Activity size={16} /> },
   { label: 'Subscriptions', to: '/subscriptions', icon: <CreditCard size={16} />, section: 'TOOLS' },
+  { label: 'Local AI Models', to: '/local-models', icon: <Cpu size={16} /> },
 ]
 
 function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {

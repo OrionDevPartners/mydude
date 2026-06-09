@@ -1350,3 +1350,23 @@ select {
     white-space: nowrap;
 }
 .quorum-meter-label .meter-met { color: var(--success); font-weight: 600; }
+
+/* Copy-command rows on the Local AI Models panel */
+.copy-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.copy-row .copy-cmd {
+    flex: 1 1 240px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.85rem;
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+    border-radius: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-secondary, #cdd3e0);
+}

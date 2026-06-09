@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Local AI Models - {{ product.name }}{% endblock %}
+{% block header_title %}Local AI Models{% endblock %}
+
+{% block content %}
+{% if msg %}<div class="flash flash-success">{{ msg }}</div>{% endif %}
+{% if err %}<div class="flash flash-error">{{ err }}</div>{% endif %}
+
+<div class="card">
+    <div class="card-body">
+        <p class="form-hint">
+            Local AI models run on <strong>your own machine</strong>, not in this
+            container — a privacy-preserving, offline fallback for the swarm. They
+            only enter the fanout when their server is actually listening, and they
+            are the local degraded tier when the cloud is off or unavailable.
+        </p>
+        <p class="meta" style="margin-top:8px">
+            <strong>{{ reachable_count }}</strong> of {{ total_count }} local
+            servers reachable right now.
+            <a href="/local-models" class="btn btn-sm btn-outline" style="margin-left:8px">↻ Refresh status</a>
+        </p>
+    </div>
+</div>
+
+{% for p in providers %}
+<div class="card">
+    <div class="card-header">
+        <h3>🖥️ {{ p.label }}</h3>
+        <span class="badge">
+            <span class="conn-dot {{ 'conn-on' if p.reachable else 'conn-off' }}"></span>
+            {{ 'Server reachable' if p.reachable else 'Server offline' }}
+        </span>
+    </div>
+    <div class="card-body">
+        {% if p.blurb %}<p class="form-hint">{{ p.blurb }}</p>{% endif %}
+
+        <div class="detail-grid" style="margin-top:8px">
+            <div class="detail-row"><span class="detail-label">Endpoint</span>
+                <span class="detail-value mono">{{ p.base_url }}</span></div>
+            <div class="detail-row"><span class="detail-label">Default model</span>
+                <span class="detail-value mono">{{ p.default_model }}</span>
+                {% if p.model_env %}<span class="meta">(override via {{ p.model_env }})</span>{% endif %}
+            </div>
+            <div class="detail-row"><span class="detail-label">Loaded models</span>
+                <span class="detail-value">
+                    {% if not p.reachable %}
+                        <span class="meta">— start the server to list models</span>
+                    {% elif p.list_error %}
+                        <span class="meta">Server is up but model listing failed: {{ p.list_error }}</span>
+                    {% elif p.loaded_models %}
+                        {% for m in p.loaded_models %}<span class="chip mono">{{ m }}</span>{% endfor %}
+                    {% else %}
+                        <span class="meta">Server is up but no models are loaded yet — pull one below.</span>
+                    {% endif %}
+                </span></div>
+        </div>
+
+        {% if p.guidance %}
+        <h4 style="margin-top:18px">Guided setup</h4>
+        <p class="form-hint">
+            Run these on the machine that will host {{ p.label }}.
+            {% if p.guidance.install_url %}
+            Full install guide:
+            <a href="{{ p.guidance.install_url }}" target="_blank" rel="noopener">{{ p.guidance.install_url }}</a>.
+            {% endif %}
+            {% if p.guidance.models_url %}
+            Browse models:
+            <a href="{{ p.guidance.models_url }}" target="_blank" rel="noopener">{{ p.guidance.models_url }}</a>.
+            {% endif %}
+        </p>
+
+        {% if p.guidance.install_cmd %}
+        <div class="form-group">
+            <label>1 · Install</label>
+            <div class="copy-row">
+                <code class="copy-cmd">{{ p.guidance.install_cmd }}</code>
+                <button type="button" class="btn btn-sm btn-outline" onclick="copyCmd(this)">Copy</button>
+            </div>
+            {% if p.guidance.install_note %}<p class="form-hint">{{ p.guidance.install_note }}</p>{% endif %}
+        </div>
+        {% endif %}
+
+        {% if p.guidance.serve_cmd %}
+        <div class="form-group">
+            <label>2 · Start the server</label>
+            <div class="copy-row">
+                <code class="copy-cmd">{{ p.guidance.serve_cmd }}</code>
+                <button type="button" class="btn btn-sm btn-outline" onclick="copyCmd(this)">Copy</button>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if p.guidance.pull_cmd %}
+        <div class="form-group">
+            <label>3 · Pull the default model</label>
+            <div class="copy-row">
+                <code class="copy-cmd">{{ p.guidance.pull_cmd }}</code>
+                <button type="button" class="btn btn-sm btn-outline" onclick="copyCmd(this)">Copy</button>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<div class="card"><div class="card-body">
+    <p class="empty-state">No local providers are enabled in config/providers.toml.</p>
+</div></div>
+{% endfor %}
+
+<!-- ===================== LOCAL MODEL REGISTRY ===================== -->
+<div class="card">
+    <div class="card-header">
+        <h3>📒 Local Model Registry</h3>
+        <a href="/local-models" class="btn btn-sm btn-outline">↻ Refresh</a>
+    </div>
+    <div class="card-body">
+        <p class="form-hint">
+            Per-install manifest of models available on this machine, read from
+            <span class="mono">{{ registry_path }}</span>.
+            It is optional — when absent, the local providers fall back to the
+            default model declared in config/providers.toml.
+        </p>
+        {% if not registry_exists %}
+        <div class="flash flash-warning" style="margin-top:12px">
+            No registry file found at that path. Create it (or point
+            <span class="mono">LOCAL_MODEL_REGISTRY_PATH</span> at one) to pin
+            which installed models each provider should prefer.
+        </div>
+        {% elif registry %}
+        <table class="table" style="margin-top:12px">
+            <thead><tr><th>Model ID</th><th>Provider</th><th>Details</th></tr></thead>
+            <tbody>
+            {% for m in registry %}
+                <tr>
+                    <td class="mono">{{ m.model_id }}</td>
+                    <td><span class="category-badge">{{ m.provider or '—' }}</span></td>
+                    <td class="meta">
+                        {% for k, v in m.items() if k not in ('model_id', 'provider') %}
+                        <span class="chip">{{ k }}={{ v }}</span>
+                        {% endfor %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty-state">Registry file found but it lists no models.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function copyCmd(btn) {
+        var row = btn.closest('.copy-row');
+        var code = row ? row.querySelector('.copy-cmd') : null;
+        if (!code) return;
+        var text = code.innerText;
+        var done = function () {
+            var prev = btn.innerText;
+            btn.innerText = 'Copied';
+            setTimeout(function () { btn.innerText = prev; }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(function () {});
+        } else {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); done(); } catch (e) {}
+            document.body.removeChild(ta);
+        }
+    }
+</script>
+{% endblock %}

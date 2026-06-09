@@ -105,6 +105,9 @@ export const getMemory = (params?: { q?: string; layer?: string }) => {
 }
 export const getSystem = () => request<SystemData>('/system')
 
+// Local AI Models
+export const getLocalModels = () => request<LocalModelsData>('/local-models')
+
 // Capabilities
 export const getCapabilities = () => request<CapabilitiesData>('/capabilities')
 export const toggleCapability = (capability: string, enabled: boolean) =>
@@ -224,6 +227,20 @@ export interface ProvenanceRecord { id: number; claim_text: string; origin_role:
 export interface MemoryData { layers: MemoryLayer[]; layer_types: string[]; q: string; layer: string; total: number }
 export interface MemoryLayer { id: number; layer_type: string; topic: string; summary: string; content: string; created_at: string }
 export interface SystemData { results: Record<string, unknown>; error: string | null }
+export interface LocalModelGuidance {
+  install_url: string | null; models_url: string | null; install_note: string | null;
+  install_cmd: string; serve_cmd: string; pull_cmd: string;
+}
+export interface LocalProvider {
+  key: string; label: string; blurb: string; base_url: string; reachable: boolean;
+  default_model: string; loaded_models: string[] | null; list_error: string | null;
+  registry_models: Record<string, unknown>[]; guidance: LocalModelGuidance | null;
+  model_env: string; concurrency: number;
+}
+export interface LocalModelsData {
+  providers: LocalProvider[]; reachable_count: number; total_count: number;
+  registry: Record<string, unknown>[]; registry_path: string; registry_exists: boolean;
+}
 export interface CapabilitiesData { browser_enabled: boolean; ssh_enabled: boolean; email_enabled: boolean; browser_backends: unknown[]; ssh: SshStatus; email: EmailStatus; browser_domains: string[]; ssh_commands: string[]; audit: CapabilityAudit[] }
 export interface SshStatus { configured: boolean; host: string; user: string; port: number; auth: string; host_verified: boolean }
 export interface EmailStatus { configured: boolean; host: string; user: string; port: number; mailbox: string; ssl: boolean }

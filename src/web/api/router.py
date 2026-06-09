@@ -784,6 +784,31 @@ async def api_system(_=Depends(require_auth)):
 
 
 # ---------------------------------------------------------------------------
+# Local AI Models (sovereign / offline inference)
+# ---------------------------------------------------------------------------
+
+@router.get("/local-models")
+async def api_local_models(_=Depends(require_auth)):
+    from src.web.routes_local_models import _is_local, _provider_status
+    from src.providers.config import llm_provider_specs
+    from src.providers.local_registry import load_local_models, registry_path
+
+    specs = [s for s in llm_provider_specs() if _is_local(s)]
+    providers = [await _provider_status(s) for s in specs]
+    reachable_count = sum(1 for p in providers if p["reachable"])
+    registry = load_local_models()
+    p = registry_path()
+    return {
+        "providers": providers,
+        "reachable_count": reachable_count,
+        "total_count": len(providers),
+        "registry": registry,
+        "registry_path": str(p),
+        "registry_exists": p.exists(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Capabilities
 # ---------------------------------------------------------------------------
 

@@ -14,6 +14,7 @@ import { Governance } from '@/pages/Governance'
 import { Provenance } from '@/pages/Provenance'
 import { Memory } from '@/pages/Memory'
 import { System } from '@/pages/System'
+import { LocalModels } from '@/pages/LocalModels'
 import { Subscriptions } from '@/pages/Subscriptions'
 import { ErrorPage } from '@/pages/ErrorPage'
 import { Spinner } from '@/components/ui'
@@ -55,6 +56,7 @@ function AppRoutes() {
               <Route path="/provenance" element={<Provenance />} />
               <Route path="/memory" element={<Memory />} />
               <Route path="/system" element={<System />} />
+              <Route path="/local-models" element={<LocalModels />} />
               <Route path="/subscriptions" element={<Subscriptions />} />
               <Route path="*" element={<ErrorPage code={404} message="Page not found" />} />
             </Routes>
