@@ -8,6 +8,65 @@
 
 <div class="card">
     <div class="card-header">
+        <h3>🧪 Epistemic Label Trend</h3>
+        <span class="meta">last {{ epistemic_trend.run_count }} run{{ 's' if epistemic_trend.run_count != 1 else '' }}</span>
+    </div>
+    <div class="card-body">
+        <div class="ep-summary-grid">
+            <div class="ep-stat">
+                <div class="ep-stat-value" style="color:var(--ep-verified);">{{ epistemic_trend.verified_ratio }}%</div>
+                <div class="ep-stat-label">Verified (global)</div>
+            </div>
+            <div class="ep-stat">
+                <div class="ep-stat-value" style="color:var(--ep-unknown);">{{ epistemic_trend.unknown_ratio }}%</div>
+                <div class="ep-stat-label">Unknown (global)</div>
+            </div>
+            <div class="ep-stat">
+                <div class="ep-stat-value">{{ epistemic_trend.grand_total }}</div>
+                <div class="ep-stat-label">Total claims indexed</div>
+            </div>
+            <div class="ep-stat">
+                <div class="ep-stat-value">
+                    {% if epistemic_trend.unknown_ratio > epistemic_trend.verified_ratio %}
+                        <span style="color:var(--ep-unknown);">⚠ Unverified drift</span>
+                    {% elif epistemic_trend.grand_total %}
+                        <span style="color:var(--ep-verified);">✓ Verified-led</span>
+                    {% else %}
+                        <span class="meta">—</span>
+                    {% endif %}
+                </div>
+                <div class="ep-stat-label">Verified vs. unknown</div>
+            </div>
+        </div>
+
+        <div class="ep-legend">
+            {% for label in epistemic_labels %}
+            <span class="ep-key"><span class="ep-swatch {{ label }}"></span>{{ label }}</span>
+            {% endfor %}
+        </div>
+
+        {% if epistemic_trend.points %}
+        <div class="ep-barchart">
+            {% for pt in epistemic_trend.points %}
+            <div class="ep-bar {% if pt.total == 0 %}is-empty{% endif %}"
+                 title="{{ pt.created_at.strftime('%Y-%m-%d %H:%M') if pt.created_at else '' }} — {% for label in epistemic_labels %}{{ label }}: {{ pt.counts[label] }}{{ '  ' if not loop.last }}{% endfor %}">
+                {% for label in epistemic_labels %}
+                {% if pt.pct[label] > 0 %}
+                <div class="ep-bar-seg {{ label }}" style="height:{{ pt.pct[label] }}%;"></div>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+        <p class="meta" style="font-size:0.72rem;margin-top:0.5rem;">Each bar is one run (oldest → newest), showing the share of each epistemic label in that run's claim ledger.</p>
+        {% else %}
+        <div class="empty-state">No indexed runs yet. Epistemic trends appear once the swarm completes tasks and records claim ledgers.</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
         <h3>🌐 Jurisdiction Routing</h3>
         {% if cloud_shift_active %}
             <span class="status-badge sev-low">cloud_shift: ON</span>

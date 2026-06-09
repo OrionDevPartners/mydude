@@ -1185,6 +1185,105 @@ select {
     text-transform: uppercase;
 }
 
+/* ── Epistemic label trend charts ────────────────────────────── */
+:root {
+    --ep-verified: #2ecc71;
+    --ep-derived: #4a90d9;
+    --ep-hypothesis: #f39c12;
+    --ep-unknown: #e74c3c;
+}
+
+.ep-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+.ep-stat {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem 0.9rem;
+}
+.ep-stat .ep-stat-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.1;
+}
+.ep-stat .ep-stat-label {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin-top: 2px;
+}
+
+.ep-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin: 0.5rem 0 0.9rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+.ep-legend .ep-key {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+.ep-swatch {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
+}
+.ep-swatch.verified { background: var(--ep-verified); }
+.ep-swatch.derived { background: var(--ep-derived); }
+.ep-swatch.hypothesis { background: var(--ep-hypothesis); }
+.ep-swatch.unknown { background: var(--ep-unknown); }
+
+/* Stacked vertical bar chart (one bar per run, chronological) */
+.ep-barchart {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    height: 160px;
+    padding-top: 0.5rem;
+    overflow-x: auto;
+}
+.ep-bar {
+    flex: 1 0 14px;
+    min-width: 14px;
+    max-width: 40px;
+    display: flex;
+    flex-direction: column-reverse;
+    height: 100%;
+    border-radius: 4px 4px 0 0;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.04);
+}
+.ep-bar.is-empty { opacity: 0.4; }
+.ep-bar-seg { width: 100%; }
+.ep-bar-seg.verified { background: var(--ep-verified); }
+.ep-bar-seg.derived { background: var(--ep-derived); }
+.ep-bar-seg.hypothesis { background: var(--ep-hypothesis); }
+.ep-bar-seg.unknown { background: var(--ep-unknown); }
+
+/* Per-row horizontal mini bar (run search) */
+.ep-minibar {
+    display: flex;
+    width: 90px;
+    height: 8px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.06);
+}
+.ep-minibar-seg { height: 100%; }
+.ep-minibar-seg.verified { background: var(--ep-verified); }
+.ep-minibar-seg.derived { background: var(--ep-derived); }
+.ep-minibar-seg.hypothesis { background: var(--ep-hypothesis); }
+.ep-minibar-seg.unknown { background: var(--ep-unknown); }
+
 /* Fallback for browsers without backdrop-filter: use more opaque
    surfaces so translucent glass panels stay readable. */
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {

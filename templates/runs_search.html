@@ -73,12 +73,17 @@
                 {% else %}<span class="meta">0</span>{% endif %}
             </td>
             <td style="font-size:0.75rem;">
-                {% if r.epistemic %}
-                <span title="verified">✓{{ r.epistemic.get('verified', 0) }}</span>
-                <span title="hypothesis" style="margin-left:4px;">H{{ r.epistemic.get('hypothesis', 0) }}</span>
-                {% if r.epistemic.get('unknown', 0) %}
-                <span title="unknown" style="color:var(--accent-red);margin-left:4px;">?{{ r.epistemic.get('unknown', 0) }}</span>
-                {% endif %}
+                {% if r.epistemic_total %}
+                <div class="ep-minibar" title="verified: {{ r.epistemic.verified }}  derived: {{ r.epistemic.derived }}  hypothesis: {{ r.epistemic.hypothesis }}  unknown: {{ r.epistemic.unknown }}">
+                    {% for label in ['verified', 'derived', 'hypothesis', 'unknown'] %}
+                    {% if r.epistemic_pct[label] > 0 %}
+                    <div class="ep-minibar-seg {{ label }}" style="width:{{ r.epistemic_pct[label] }}%;"></div>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+                <span class="meta" style="font-size:0.68rem;">
+                    ✓{{ r.epistemic.verified }}{% if r.epistemic.unknown %} · <span style="color:var(--ep-unknown);">?{{ r.epistemic.unknown }}</span>{% endif %}
+                </span>
                 {% else %}<span class="meta">—</span>{% endif %}
             </td>
             <td>

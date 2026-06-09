@@ -21,6 +21,78 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 from src.web.templating import templates
 
+EPISTEMIC_LABELS = ("verified", "derived", "hypothesis", "unknown")
+
+
+def _parse_epistemic(raw):
+    """Parse an epistemic_summary_json blob into a {label: count} dict."""
+    ep = {}
+    try:
+        data = json.loads(raw or "{}")
+        if isinstance(data, dict):
+            ep = data
+    except Exception:
+        ep = {}
+    out = {}
+    for label in EPISTEMIC_LABELS:
+        try:
+            out[label] = int(ep.get(label, 0) or 0)
+        except (TypeError, ValueError):
+            out[label] = 0
+    return out
+
+
+def _epistemic_trend(db, limit=30):
+    """Build epistemic-label trend + global totals across indexed swarm runs.
+
+    Returns a dict with:
+      - points: chronological list of {created_at, total, counts{label:n}, pct{label:n}}
+      - totals: global sum per label across ALL indexed runs
+      - grand_total: sum of all label counts
+      - verified_ratio / unknown_ratio: global share of verified vs. unknown
+      - run_count: number of runs in the trend window
+    """
+    recent = (
+        db.query(SwarmRunIndex)
+        .order_by(SwarmRunIndex.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    points = []
+    for r in reversed(recent):
+        counts = _parse_epistemic(r.epistemic_summary_json)
+        total = sum(counts.values())
+        pct = {
+            label: (round(counts[label] / total * 100, 1) if total else 0)
+            for label in EPISTEMIC_LABELS
+        }
+        points.append({
+            "run_id": r.run_id,
+            "created_at": r.created_at,
+            "counts": counts,
+            "total": total,
+            "pct": pct,
+            "aborted": r.aborted,
+        })
+
+    totals = {label: 0 for label in EPISTEMIC_LABELS}
+    for r in db.query(SwarmRunIndex.epistemic_summary_json).all():
+        counts = _parse_epistemic(r[0])
+        for label in EPISTEMIC_LABELS:
+            totals[label] += counts[label]
+    grand_total = sum(totals.values())
+    verified_ratio = round(totals["verified"] / grand_total * 100, 1) if grand_total else 0
+    unknown_ratio = round(totals["unknown"] / grand_total * 100, 1) if grand_total else 0
+
+    return {
+        "points": points,
+        "totals": totals,
+        "grand_total": grand_total,
+        "verified_ratio": verified_ratio,
+        "unknown_ratio": unknown_ratio,
+        "run_count": len(points),
+    }
+
 
 @router.get("/governance", response_class=HTMLResponse)
 async def governance(request: Request, _=Depends(require_auth)):
@@ -96,6 +168,8 @@ async def governance(request: Request, _=Depends(require_auth)):
             .limit(20)
             .all()
         )
+
+        epistemic_trend = _epistemic_trend(db, limit=30)
     finally:
         db.close()
 
@@ -136,6 +210,8 @@ async def governance(request: Request, _=Depends(require_auth)):
         "open_proposals": open_proposals,
         "proposal_tallies": proposal_tallies,
         "enactments": enactments,
+        "epistemic_trend": epistemic_trend,
+        "epistemic_labels": EPISTEMIC_LABELS,
         "flash": request.query_params.get("flash"),
     })
 
@@ -279,11 +355,12 @@ async def runs_search(request: Request, _=Depends(require_auth)):
         )
         runs_data = []
         for r in runs:
-            ep = {}
-            try:
-                ep = json.loads(r.epistemic_summary_json or "{}")
-            except Exception:
-                pass
+            ep = _parse_epistemic(r.epistemic_summary_json)
+            ep_total = sum(ep.values())
+            ep_pct = {
+                label: (round(ep[label] / ep_total * 100, 1) if ep_total else 0)
+                for label in EPISTEMIC_LABELS
+            }
             runs_data.append({
                 "id": r.id,
                 "run_id": r.run_id,
@@ -291,6 +368,8 @@ async def runs_search(request: Request, _=Depends(require_auth)):
                 "domain": r.domain or "general",
                 "synthesis": r.synthesis or "",
                 "epistemic": ep,
+                "epistemic_total": ep_total,
+                "epistemic_pct": ep_pct,
                 "dissent_count": r.dissent_count or 0,
                 "aborted": r.aborted,
                 "avg_cs": r.avg_cs,
