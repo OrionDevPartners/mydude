@@ -348,6 +348,54 @@ class Integrations:
         item = params.get("item", "unknown")
         return f"[STUB] 1Password scoped read for item={item} (no raw secret returned)."
 
+    async def bot_spawn(self, params: Dict[str, Any]) -> str:
+        """Governed bot spawn. Called only by broker after contract+policy validation."""
+        import json
+        from src.fleet.spawner import _do_spawn
+        source = params.get("source")
+        result = await _do_spawn(params)
+        status = "ok" if result.get("ok") else "error"
+        audit_capability(
+            "bot_spawn",
+            target=params.get("name"),
+            status=status,
+            detail=(result.get("error") if not result.get("ok") else f"bot_id={result.get('bot_id')}"),
+            source=source,
+        )
+        return json.dumps(result)
+
+    async def fleet_provision_plan(self, params: Dict[str, Any]) -> str:
+        """Governed provisioning plan. Called only by broker after contract+policy validation."""
+        import json
+        from src.fleet.provisioner import _do_create_job
+        source = params.get("source")
+        result = await _do_create_job(params)
+        status = "ok" if result.get("ok") else "error"
+        audit_capability(
+            "fleet_provision_plan",
+            target=params.get("resource_type"),
+            status=status,
+            detail=(result.get("error") if not result.get("ok") else f"job_id={result.get('job_id')}"),
+            source=source,
+        )
+        return json.dumps(result)
+
+    async def fleet_provision_approve(self, params: Dict[str, Any]) -> str:
+        """Governed provisioning apply. Called only by broker after contract+policy validation."""
+        import json
+        from src.fleet.provisioner import _do_apply_job
+        source = params.get("source")
+        result = await _do_apply_job(params)
+        status = "ok" if result.get("ok") else "error"
+        audit_capability(
+            "fleet_provision_approve",
+            target=str(params.get("job_id")),
+            status=status,
+            detail=(result.get("error") if not result.get("ok") else f"resource={result.get('resource_id')}"),
+            source=source,
+        )
+        return json.dumps(result)
+
 
 async def _run_cmd(cmd: List[str]) -> str:
     def run():

@@ -26,8 +26,11 @@ from src.web.auth import (
 from src.web.branding import PRODUCT
 from src.web.ratelimit import client_ip
 
+from src.fleet.api_routes import router as fleet_router
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+router.include_router(fleet_router)
 
 import secrets
 

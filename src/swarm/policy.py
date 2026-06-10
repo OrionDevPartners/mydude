@@ -223,7 +223,87 @@ class PolicyEngine:
         if capability == "gmail_fetch_code":
             return self._evaluate_gmail(params)
 
+        if capability == "bot_spawn":
+            return self._evaluate_bot_spawn(params)
+
+        if capability == "fleet_provision_plan":
+            return self._evaluate_fleet_provision(params)
+
+        if capability == "fleet_provision_approve":
+            return self._evaluate_fleet_provision_approve(params)
+
         return PolicyDecision(True, "Allowed by policy.")
+
+    def _evaluate_bot_spawn(self, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for bot spawning.
+
+        Enabled by default so the fleet is usable out of the box; operators can
+        hard-disable autonomous spawning via ENABLE_BOT_SPAWN=false.
+        A non-zero spawn_cap is enforced separately in the spawner.
+        """
+        if not _env_flag("ENABLE_BOT_SPAWN", default=True):
+            return PolicyDecision(
+                False,
+                "Bot spawning is disabled. Set ENABLE_BOT_SPAWN=true to enable it.",
+            )
+        return PolicyDecision(True, "Allowed by policy.")
+
+    def _evaluate_fleet_provision(self, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for the fleet_provision_plan capability (dry-run plan phase).
+
+        Off by default for VM/ML — cloud resource creation has real cost/blast-radius.
+        Operators opt in with ALLOW_FLEET_PROVISIONING=true.
+        git_repo is allowed without the flag (no cloud cost, no persistent compute).
+        The resource_type is recorded in the decision reason for auditability.
+        """
+        rtype = params.get("resource_type", "unknown")
+        gated = {"vm", "ml_service"}
+        if rtype in gated and not _env_flag("ALLOW_FLEET_PROVISIONING"):
+            return PolicyDecision(
+                False,
+                f"Provisioning plan for '{rtype}' resources is blocked by policy. "
+                "Set ALLOW_FLEET_PROVISIONING=true to enable real cloud provisioning.",
+            )
+        return PolicyDecision(True, f"Provisioning plan for '{rtype}' allowed by policy.")
+
+    def _evaluate_fleet_provision_approve(self, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for the fleet_provision_approve capability (actual resource creation).
+
+        The approve phase only receives a job_id; we load the associated resource
+        from the DB to determine the resource type, then apply the same gate as
+        the plan phase.  This ensures the policy is re-enforced at apply time even
+        if ALLOW_FLEET_PROVISIONING was toggled off after the plan was created.
+        """
+        job_id = params.get("job_id")
+        if not job_id:
+            return PolicyDecision(False, "fleet_provision_approve requires a job_id.")
+
+        rtype = "unknown"
+        try:
+            from src.database import SessionLocal
+            from src.models import ProvisioningJob, ProvisionedResource
+            db = SessionLocal()
+            try:
+                job = db.query(ProvisioningJob).filter(ProvisioningJob.id == job_id).first()
+                if job and job.resource_id:
+                    res = db.query(ProvisionedResource).filter(
+                        ProvisionedResource.id == job.resource_id
+                    ).first()
+                    if res:
+                        rtype = res.resource_type
+            finally:
+                db.close()
+        except Exception:
+            pass
+
+        gated = {"vm", "ml_service"}
+        if rtype in gated and not _env_flag("ALLOW_FLEET_PROVISIONING"):
+            return PolicyDecision(
+                False,
+                f"Approving provisioning of '{rtype}' resources is blocked by policy. "
+                "Set ALLOW_FLEET_PROVISIONING=true to enable real cloud provisioning.",
+            )
+        return PolicyDecision(True, f"Provisioning approve for '{rtype}' (job {job_id}) allowed by policy.")
 
     def _evaluate_email(self, params: Dict[str, Any]) -> PolicyDecision:
         """Gate for the read-only email-receipt scan.

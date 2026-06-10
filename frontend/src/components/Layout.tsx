@@ -5,7 +5,7 @@ import { logout } from '@/lib/api'
 import {
   LayoutDashboard, History, Key, Globe, Plug, Zap,
   ShieldCheck, GitBranch, Brain, Activity, CreditCard,
-  Cpu, CircleDollarSign, Heart, UserSquare, LogOut, Menu, X
+  Cpu, CircleDollarSign, Heart, UserSquare, LogOut, Menu, X, Bot
 } from 'lucide-react'
 
 interface NavItem { label: string; to: string; icon: ReactNode; section?: string }
@@ -26,6 +26,7 @@ const NAV: NavItem[] = [
   { label: 'Coach', to: '/coach', icon: <Heart size={16} /> },
   { label: 'Avatar', to: '/avatar', icon: <UserSquare size={16} /> },
   { label: 'Local AI Models', to: '/local-models', icon: <Cpu size={16} /> },
+  { label: 'Bot Fleet', to: '/fleet', icon: <Bot size={16} /> },
 ]
 
 function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {

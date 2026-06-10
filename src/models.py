@@ -2,6 +2,7 @@ from datetime import datetime
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Text, Boolean, DateTime, Float, JSON,
     UniqueConstraint,
+    ForeignKey
 )
 from src.database import Base
 
@@ -458,6 +459,27 @@ class FinanceProject(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+# Bot Fleet & Provisioning Engine
+# ---------------------------------------------------------------------------
+
+class Team(Base):
+    """A named group of bots that collaborate through the swarm orchestrator.
+
+    spawn_cap — operator-set ceiling on auto-spawned bots per team (never unbounded).
+    status    — defined | running | stopped | error
+    """
+    __tablename__ = "bot_teams"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), nullable=False)
+    description = Column(Text, nullable=True)
+    spawn_cap = Column(Integer, default=5)
+    status = Column(String(30), default="defined", index=True)
+    memory_namespace = Column(String(120), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class FinanceBudget(Base):
     """A budget line for a project. ``category`` None means the project-wide total."""
     __tablename__ = "finance_budgets"
@@ -473,6 +495,36 @@ class FinanceBudget(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class Bot(Base):
+    """A persistent autonomous agent with its own identity, goal, and capability set.
+
+    identity_schema — JSON: name, role, personality traits, communication style
+    prompt_cards    — JSON list of prompt fragments injected into the swarm persona
+    protocols       — JSON list of free-text operator rules ("always ask Bob before ...")
+    allowed_caps    — JSON list of capability names this bot may request via broker
+    lifecycle       — defined | provisioning | running | stopped | failed
+    team_id         — FK to bot_teams; null for solo bots
+    spawned_by_id   — FK to bot.id; set when a running bot requested this spawn
+    """
+    __tablename__ = "bots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), nullable=False)
+    description = Column(Text, nullable=True)
+    team_id = Column(Integer, ForeignKey("bot_teams.id"), nullable=True, index=True)
+    spawned_by_id = Column(Integer, ForeignKey("bots.id"), nullable=True, index=True)
+    identity_schema = Column(JSON, nullable=True)
+    prompt_cards = Column(JSON, nullable=True)
+    goal = Column(Text, nullable=True)
+    protocols = Column(JSON, nullable=True)
+    allowed_caps = Column(JSON, nullable=True)
+    lifecycle = Column(String(30), default="defined", index=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_task_run_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class FinanceVendor(Base):
     """A vendor/merchant seen in transactions or QuickBooks entities."""
     __tablename__ = "finance_vendors"
@@ -484,6 +536,35 @@ class FinanceVendor(Base):
     name = Column(String(255), nullable=False)
     normalized_name = Column(String(255), nullable=True, index=True)
     default_project_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProvisionedResource(Base):
+    """A cloud resource (VM, Git repo, ML service) created for a bot or team.
+
+    resource_type — vm | git_repo | ml_service | other
+    provider      — aws | gcp | azure | github | mlflow | sagemaker | stub
+    status        — planned | pending_approval | provisioning | active | failed | destroyed
+    resource_id   — provider-assigned ID/ARN/URL once provisioned
+    plan_output   — captured plan text (terraform plan / SDK dry-run) for operator review
+    apply_output  — captured apply/create output after operator approval
+    """
+    __tablename__ = "provisioned_resources"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True, index=True)
+    team_id = Column(Integer, ForeignKey("bot_teams.id"), nullable=True, index=True)
+    resource_type = Column(String(60), nullable=False)
+    provider = Column(String(60), nullable=False, default="stub")
+    name = Column(String(200), nullable=True)
+    resource_id = Column(String(500), nullable=True)
+    status = Column(String(40), default="planned", index=True)
+    plan_output = Column(Text, nullable=True)
+    apply_output = Column(Text, nullable=True)
+    config_json = Column(JSON, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    provisioned_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -753,3 +834,28 @@ class AvatarAuditLog(Base):
     detail = Column(Text, nullable=True)
     source = Column(String(40), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ProvisioningJob(Base):
+    """Audit record for a provisioning run: plan → approve → apply.
+
+    Captures every phase transition so the full governance trail is recoverable.
+    status — planning | awaiting_approval | applying | done | failed
+    """
+    __tablename__ = "provisioning_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True, index=True)
+    team_id = Column(Integer, ForeignKey("bot_teams.id"), nullable=True, index=True)
+    resource_id = Column(Integer, ForeignKey("provisioned_resources.id"), nullable=True, index=True)
+    status = Column(String(40), default="planning", index=True)
+    requested_config = Column(JSON, nullable=True)
+    plan_summary = Column(Text, nullable=True)
+    apply_summary = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    planned_at = Column(DateTime, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    applied_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+

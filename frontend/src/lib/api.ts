@@ -306,9 +306,10 @@ export const getCoachSignals = (params?: { signal_type?: string; limit?: number 
 export const ingestCoachText = (data: { text: string; prefer?: string; project_id?: string; event_ref?: string }) =>
   request<{ ok: boolean; signal: MoodSignal }>('/coach/ingest', {
     method: 'POST',
-    body: formBody(data),
+    body: formBody(data as unknown as Record<string, string>),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
+
 export const computeCoachBehavior = () =>
   request<{ ok: boolean; written: unknown[]; skipped: { signal: string; reason: string }[] }>('/coach/behavior/compute', { method: 'POST' })
 export const askCoach = (question: string) =>
@@ -370,13 +371,40 @@ export const previewAvatarVoice = (text: string, voice_id: string) =>
 export const createAvatarProfile = (data: Record<string, string | boolean>) =>
   request<{ ok: boolean; profile: AvatarProfile }>('/avatar/profiles', {
     method: 'POST',
+    body: formBody(data as Record<string, string>),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+
+// Fleet
+export const getFleetStatus = () => request<FleetStatus>('/fleet/status')
+export const listBots = () => request<{ bots: FleetBot[] }>('/fleet/bots')
+export const createBot = (data: Record<string, string | undefined>) =>
+  request<{ ok: boolean; bot: FleetBot }>('/fleet/bots', {
+    method: 'POST',
+    body: formBody(data as Record<string, string>),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const startBot = (id: number, goal?: string) =>
+  request<{ ok: boolean; msg: string; bot_id: number }>(`/fleet/bots/${id}/start`, {
+    method: 'POST',
+    body: formBody({ goal: goal || '' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const stopBot = (id: number) =>
+  request<{ ok: boolean; msg: string }>(`/fleet/bots/${id}/stop`, { method: 'POST' })
+export const deleteBot = (id: number) =>
+  request<{ ok: boolean; msg: string }>(`/fleet/bots/${id}/delete`, { method: 'POST' })
+export const listTeams = () => request<{ teams: FleetTeam[] }>('/fleet/teams')
+export const createTeam = (data: Record<string, string>) =>
+  request<{ ok: boolean; team: FleetTeam }>('/fleet/teams', {
+    method: 'POST',
     body: formBody(data),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 export const updateAvatarProfile = (id: number, data: Record<string, string | boolean>) =>
   request<{ ok: boolean; profile: AvatarProfile }>(`/avatar/profiles/${id}`, {
     method: 'PATCH',
-    body: formBody(data),
+    body: formBody(data as Record<string, string>),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 export const deleteAvatarProfile = (id: number) =>
@@ -398,6 +426,31 @@ export const recordAvatarConsent = (id: number, granted: boolean, detail?: strin
   })
 export const endAvatarSession = (id: number) =>
   request<{ ok: boolean; session: AvatarSession }>(`/avatar/session/${id}/end`, { method: 'POST' })
+
+export const startTeam = (id: number) =>
+  request<{ ok: boolean; msg: string; team_id: number }>(`/fleet/teams/${id}/start`, { method: 'POST' })
+export const stopTeam = (id: number) =>
+  request<{ ok: boolean; msg: string }>(`/fleet/teams/${id}/stop`, { method: 'POST' })
+export const deleteTeam = (id: number) =>
+  request<{ ok: boolean; msg: string }>(`/fleet/teams/${id}/delete`, { method: 'POST' })
+export const scaleTeam = (id: number, targetCount: number, goalTemplate?: string) =>
+  request<{ ok: boolean; msg: string; spawned: number; errors: string[]; current_count: number }>(
+    `/fleet/teams/${id}/scale`,
+    {
+      method: 'POST',
+      body: formBody({ target_count: String(targetCount), goal_template: goalTemplate || '' }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    }
+  )
+export const listProvisioning = () => request<{ jobs: ProvisioningJob[]; resources: ProvisionedResource[] }>('/fleet/provision')
+export const planProvision = (data: { resource_type: string; config: string; bot_id?: string; team_id?: string }) =>
+  request<{ ok: boolean; job_id: number; resource_id: number; plan_output: string; status: string }>('/fleet/provision/plan', {
+    method: 'POST',
+    body: formBody(data as Record<string, string>),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const approveProvision = (jobId: number) =>
+  request<{ ok: boolean; job_id: number; resource_id: string; output: string; status: string }>(`/fleet/provision/${jobId}/approve`, { method: 'POST' })
 
 // ---- Types ----
 export interface Task {
@@ -458,7 +511,6 @@ export interface Subscription { id: number; name: string; domain: string; login_
 export interface SubAuditEntry { subscription: string; action: string; status: string; detail: string; created_at: string }
 export interface SubActionResult { kind: string; ok: boolean | null; message: string; screenshot?: string | null; pending?: boolean; sub_id: number }
 export interface DiscoverResult { kind: string; ok: boolean; message: string }
-
 // Finance
 export interface FinanceProviderStatus { provider: string; connected: boolean; source: string | null; detail: string }
 export interface FinanceProviders { quickbooks: FinanceProviderStatus; plaid: FinanceProviderStatus }
@@ -562,4 +614,32 @@ export interface AvatarData {
 }
 export interface AvatarSessionStartResult {
   ok: boolean; session: AvatarSession; disclosure: string | null; consent_prompt: string | null;
+}
+
+// Fleet
+export interface FleetBot {
+  id: number; name: string; description: string | null; team_id: number | null; spawned_by_id: number | null;
+  identity_schema: Record<string, string>; prompt_cards: string[]; goal: string | null; protocols: string[];
+  allowed_caps: string[]; lifecycle: string; last_run_at: string | null; last_task_run_id: number | null;
+  created_at: string; updated_at: string;
+}
+export interface FleetTeam {
+  id: number; name: string; description: string | null; spawn_cap: number; status: string;
+  memory_namespace: string | null; member_count: number; created_at: string; updated_at: string;
+}
+export interface ProvisioningJob {
+  id: number; bot_id: number | null; team_id: number | null; resource_id: number | null; status: string;
+  requested_config: Record<string, unknown>; plan_summary: string | null; apply_summary: string | null;
+  error: string | null; planned_at: string | null; approved_at: string | null; applied_at: string | null;
+  created_at: string;
+}
+export interface ProvisionedResource {
+  id: number; bot_id: number | null; team_id: number | null; resource_type: string; provider: string;
+  name: string | null; resource_id: string | null; status: string; plan_output: string | null;
+  apply_output: string | null; config_json: Record<string, unknown>; approved_at: string | null;
+  provisioned_at: string | null; created_at: string;
+}
+export interface FleetStatus {
+  total_bots: number; total_teams: number; total_resources: number; jobs_awaiting_approval: number;
+  bot_lifecycle: Record<string, number>; team_status: Record<string, number>; resource_status: Record<string, number>;
 }

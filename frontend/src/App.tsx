@@ -19,6 +19,7 @@ import { Subscriptions } from '@/pages/Subscriptions'
 import { Finance } from '@/pages/Finance'
 import { Coach } from '@/pages/Coach'
 import { Avatar } from '@/pages/Avatar'
+import { Fleet } from '@/pages/Fleet'
 import { ErrorPage } from '@/pages/ErrorPage'
 import { Spinner } from '@/components/ui'
 
@@ -64,6 +65,7 @@ function AppRoutes() {
               <Route path="/finance" element={<Finance />} />
               <Route path="/coach" element={<Coach />} />
               <Route path="/avatar" element={<Avatar />} />
+              <Route path="/fleet" element={<Fleet />} />
               <Route path="*" element={<ErrorPage code={404} message="Page not found" />} />
             </Routes>
           </Layout>

@@ -17,6 +17,7 @@ _AUDITED_CAPABILITIES = {
     "browser_open", "browser_login", "browser_cancel",
     "ssh_run", "ssh_read_history", "ssh_fetch_code",
     "imap_read_receipts", "gmail_fetch_code",
+    "bot_spawn", "fleet_provision_plan", "fleet_provision_approve",
 }
 
 
@@ -149,6 +150,18 @@ class CapabilityBroker:
 
         if capability == "gmail_fetch_code":
             out = await self.integrations.gmail_fetch_code(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "bot_spawn":
+            out = await self.integrations.bot_spawn(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "fleet_provision_plan":
+            out = await self.integrations.fleet_provision_plan(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "fleet_provision_approve":
+            out = await self.integrations.fleet_provision_approve(params)
             return BrokerResult(True, decision, out)
 
         return BrokerResult(True, decision, f"Capability executed (stub): {capability} {params}")
