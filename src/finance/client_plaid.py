@@ -70,7 +70,7 @@ class PlaidClient:
         # Plaid recommends not sending cursor on the very first request.
         first = True
         while True:
-            body = {"count": _PAGE}
+            body = {"access_token": self._access_token, "count": _PAGE}
             if next_cursor:
                 body["cursor"] = next_cursor
             elif not first:
