@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, BigInteger, String, Text, Boolean, DateTime, Float, JSON
+    Column, Integer, BigInteger, String, Text, Boolean, DateTime, Float, JSON,
+    UniqueConstraint,
 )
 from src.database import Base
 
@@ -428,4 +429,149 @@ class SwarmRunIndex(Base):
     avg_hr = Column(Float, nullable=True)
     meta_claims_count = Column(Integer, default=0)
     task_run_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Finance / accountant sub-stack (QuickBooks + Plaid)
+#
+# Postgres is the system of record for raw financial data. Only relation-level
+# claims (vendor -> project edges, aggregates) are written to the shared memory
+# substrate — never full per-transaction ledger lines — because the memory cloud
+# adapter may egress content to an external service. Read-only by default; every
+# write to QuickBooks goes through FinanceWriteRequest (two-phase approval) and is
+# audited in FinanceAuditLog.
+# ---------------------------------------------------------------------------
+
+
+class FinanceProject(Base):
+    """A project or LLC that transactions/vendors are attributed to (e.g. "NSB-1194")."""
+    __tablename__ = "finance_projects"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(60), unique=True, nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    llc = Column(String(200), nullable=True)
+    description = Column(Text, nullable=True)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class FinanceBudget(Base):
+    """A budget line for a project. ``category`` None means the project-wide total."""
+    __tablename__ = "finance_budgets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, nullable=False, index=True)
+    category = Column(String(120), nullable=True)
+    period = Column(String(20), default="total")  # total | monthly
+    amount = Column(Float, nullable=False, default=0.0)
+    currency = Column(String(10), default="USD")
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class FinanceVendor(Base):
+    """A vendor/merchant seen in transactions or QuickBooks entities."""
+    __tablename__ = "finance_vendors"
+    __table_args__ = (UniqueConstraint("source", "external_id", name="uq_vendor_source_extid"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(20), nullable=False, default="manual")  # plaid | quickbooks | manual
+    external_id = Column(String(120), nullable=True)
+    name = Column(String(255), nullable=False)
+    normalized_name = Column(String(255), nullable=True, index=True)
+    default_project_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class FinanceTransaction(Base):
+    """A bank/card transaction (Plaid) or QuickBooks line, the raw system of record."""
+    __tablename__ = "finance_transactions"
+    __table_args__ = (UniqueConstraint("source", "external_id", name="uq_txn_source_extid"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(20), nullable=False, default="plaid")  # plaid | quickbooks
+    external_id = Column(String(120), nullable=False)
+    account = Column(String(120), nullable=True)
+    txn_date = Column(DateTime, nullable=True, index=True)
+    amount = Column(Float, nullable=False, default=0.0)
+    currency = Column(String(10), default="USD")
+    name = Column(String(255), nullable=True)        # merchant / payee
+    memo = Column(Text, nullable=True)
+    category_raw = Column(String(255), nullable=True)
+    pending = Column(Boolean, default=False)
+    pending_external_id = Column(String(120), nullable=True, index=True)
+    vendor_id = Column(Integer, nullable=True, index=True)
+    project_id = Column(Integer, nullable=True, index=True)
+    # attributed | unattributed | manual
+    attribution_status = Column(String(20), default="unattributed", index=True)
+    attribution_confidence = Column(Float, default=0.0)
+    attribution_method = Column(String(40), nullable=True)
+    raw_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class VendorProjectRule(Base):
+    """An explicit rule mapping a vendor name match to a project (deterministic attribution)."""
+    __tablename__ = "vendor_project_rules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    match_text = Column(String(255), nullable=False, index=True)  # normalized substring
+    project_id = Column(Integer, nullable=False, index=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceSyncRun(Base):
+    """Audit row for each ingest run (on demand or scheduled). Read-only ingest."""
+    __tablename__ = "finance_sync_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(30), nullable=False)  # plaid | quickbooks | all
+    trigger = Column(String(20), default="manual")  # manual | scheduled
+    status = Column(String(20), default="running")  # running | ok | error | skipped
+    transactions_ingested = Column(Integer, default=0)
+    entities_ingested = Column(Integer, default=0)
+    removed_count = Column(Integer, default=0)
+    attributed_count = Column(Integer, default=0)
+    error = Column(Text, nullable=True)
+    detail = Column(Text, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceWriteRequest(Base):
+    """A two-phase, approval-gated write to QuickBooks. Created in ``pending_confirm``;
+    only ``confirm`` (after explicit operator approval) executes it. QuickBooks
+    remains the system of record."""
+    __tablename__ = "finance_write_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(String(40), nullable=False)  # categorize | create_bill | create_invoice
+    target_external_id = Column(String(120), nullable=True)
+    payload_json = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    # pending_confirm | executed | failed | rejected
+    status = Column(String(20), default="pending_confirm", index=True)
+    result_detail = Column(Text, nullable=True)
+    requested_at = Column(DateTime, default=datetime.utcnow)
+    confirmed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceAuditLog(Base):
+    """Audit trail for finance actions: sync, attribution, and gated writes."""
+    __tablename__ = "finance_audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    action = Column(String(60), nullable=False)
+    status = Column(String(20), nullable=False, default="ok")
+    detail = Column(Text, nullable=True)
+    source = Column(String(40), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

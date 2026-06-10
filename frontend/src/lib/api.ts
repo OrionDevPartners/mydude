@@ -216,6 +216,68 @@ export const cancelConfirm = (id: number, confirm: string) =>
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 
+// Finance
+export const getFinance = () => request<FinanceData>('/finance')
+export const getFinanceTransactions = (params?: { status?: string; project_id?: number | string; limit?: number }) => {
+  const p = new URLSearchParams()
+  if (params?.status) p.set('status', params.status)
+  if (params?.project_id) p.set('project_id', String(params.project_id))
+  if (params?.limit) p.set('limit', String(params.limit))
+  return request<{ transactions: FinanceTxn[] }>(`/finance/transactions?${p}`)
+}
+export const syncFinance = () =>
+  request<FinanceSyncReport>('/finance/sync', { method: 'POST' })
+export const setFinanceAutosync = (enabled: boolean) =>
+  request<{ ok: boolean; autosync_enabled: boolean }>('/finance/autosync', {
+    method: 'POST',
+    body: formBody({ enabled: enabled ? '1' : '0' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const createFinanceProject = (data: Record<string, string>) =>
+  request<{ ok: boolean; id: number; code: string }>('/finance/projects', {
+    method: 'POST',
+    body: formBody(data),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const addFinanceBudget = (projectId: number, data: Record<string, string>) =>
+  request<{ ok: boolean; id: number }>(`/finance/projects/${projectId}/budget`, {
+    method: 'POST',
+    body: formBody(data),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const attributeTransaction = (txnId: number, projectId: number | string) =>
+  request<{ ok: boolean; project_id: number | null }>(`/finance/transactions/${txnId}/attribute`, {
+    method: 'POST',
+    body: formBody({ project_id: projectId }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const createFinanceRule = (data: Record<string, string>) =>
+  request<{ ok: boolean; id: number }>('/finance/rules', {
+    method: 'POST',
+    body: formBody(data),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const setVendorDefaultProject = (vendorId: number, projectId: number | string) =>
+  request<{ ok: boolean; default_project_id: number | null }>(`/finance/vendors/${vendorId}/default-project`, {
+    method: 'POST',
+    body: formBody({ project_id: projectId }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const requestFinanceWrite = (data: Record<string, string>) =>
+  request<{ ok: boolean; write: FinanceWrite }>('/finance/writes/request', {
+    method: 'POST',
+    body: formBody(data),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const confirmFinanceWrite = (id: number, confirm: string) =>
+  request<{ ok: boolean; write?: FinanceWrite; message?: string }>(`/finance/writes/${id}/confirm`, {
+    method: 'POST',
+    body: formBody({ confirm }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const rejectFinanceWrite = (id: number) =>
+  request<{ ok: boolean; write: FinanceWrite }>(`/finance/writes/${id}/reject`, { method: 'POST' })
+
 // ---- Types ----
 export interface Task {
   id: number
@@ -275,3 +337,42 @@ export interface Subscription { id: number; name: string; domain: string; login_
 export interface SubAuditEntry { subscription: string; action: string; status: string; detail: string; created_at: string }
 export interface SubActionResult { kind: string; ok: boolean | null; message: string; screenshot?: string | null; pending?: boolean; sub_id: number }
 export interface DiscoverResult { kind: string; ok: boolean; message: string }
+
+// Finance
+export interface FinanceProviderStatus { provider: string; connected: boolean; source: string | null; detail: string }
+export interface FinanceProviders { quickbooks: FinanceProviderStatus; plaid: FinanceProviderStatus }
+export interface FinanceBudgetRow {
+  project_id: number; code: string; name: string; llc: string | null;
+  budget_total: number; actual_total: number; variance: number; pct_used: number | null;
+  txn_count: number; largest_txn: number; flags: string[];
+}
+export interface FinanceBudgetData { projects: FinanceBudgetRow[]; unattributed: { count: number; total: number } }
+export interface FinanceProjectLite { id: number; code: string; name: string; llc: string | null; active: boolean }
+export interface FinanceRule { id: number; match_text: string; project_id: number; note: string | null }
+export interface FinanceVendorLite { id: number; name: string; source: string; default_project_id: number | null }
+export interface FinanceRun {
+  id: number; source: string; trigger: string; status: string;
+  transactions_ingested: number; entities_ingested: number; removed_count: number;
+  attributed_count: number; error: string | null; started_at: string | null; finished_at: string | null;
+}
+export interface FinanceAuditEntry { id: number; action: string; status: string; detail: string | null; created_at: string | null }
+export interface FinanceWrite {
+  id: number; kind: string; target_external_id: string | null; summary: string | null;
+  status: string; result_detail: string | null; requested_at: string | null; confirmed_at: string | null;
+}
+export interface FinanceTxn {
+  id: number; source: string; external_id: string; date: string | null; amount: number;
+  currency: string; name: string | null; memo: string | null; category_raw: string | null;
+  pending: boolean; vendor: string | null; vendor_id: number | null;
+  project_code: string | null; project_id: number | null;
+  attribution_status: string; attribution_confidence: number; attribution_method: string | null;
+}
+export interface FinanceData {
+  providers: FinanceProviders; budget: FinanceBudgetData; projects: FinanceProjectLite[];
+  rules: FinanceRule[]; vendors: FinanceVendorLite[]; recent_runs: FinanceRun[];
+  audit: FinanceAuditEntry[]; writes: FinanceWrite[]; txn_count: number; autosync_enabled: boolean;
+}
+export interface FinanceSyncReport {
+  ok: boolean; trigger: string; error: string | null;
+  plaid: Record<string, unknown>; quickbooks: Record<string, unknown>;
+}

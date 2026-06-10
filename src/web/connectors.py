@@ -57,18 +57,19 @@ def get_connection_status(connector_names):
     return result
 
 
-def get_access_token(connector_name):
-    """Return a fresh OAuth access token for ``connector_name`` via the proxy.
+def get_connection_settings(connector_name):
+    """Return the fresh ``settings`` dict for ``connector_name`` via the proxy.
 
-    Returns the token string, or None if the connector is not connected / the
-    proxy is unavailable. The token is fetched fresh on every call and is NEVER
-    cached here — tokens expire and the proxy refreshes them. The caller must
-    not log or persist the returned token.
+    Includes secrets (access tokens, client ids, etc.) plus any provider-specific
+    fields the connector stores (e.g. QuickBooks ``realmId``). Fetched fresh on
+    every call and NEVER cached — tokens expire and the proxy refreshes them. The
+    caller must not log or persist the returned values. Returns ``{}`` when the
+    connector is not connected or the proxy is unavailable.
     """
     hostname = os.environ.get("REPLIT_CONNECTORS_HOSTNAME")
     token = _auth_token()
     if not hostname or not token or not connector_name:
-        return None
+        return {}
     try:
         query = urllib.parse.urlencode({
             "include_secrets": "true",
@@ -84,12 +85,25 @@ def get_access_token(connector_name):
         items = payload.get("items") or payload.get("connections") or []
         for item in items:
             settings = item.get("settings") or {}
-            access_token = (
-                settings.get("access_token")
-                or ((settings.get("oauth") or {}).get("credentials") or {}).get("access_token")
-            )
-            if access_token:
-                return access_token
+            if settings:
+                return settings
     except Exception as e:
-        logger.warning("Connector token query failed: %s", e)
-    return None
+        logger.warning("Connector settings query failed: %s", e)
+    return {}
+
+
+def get_access_token(connector_name):
+    """Return a fresh OAuth access token for ``connector_name`` via the proxy.
+
+    Returns the token string, or None if the connector is not connected / the
+    proxy is unavailable. The token is fetched fresh on every call and is NEVER
+    cached here — tokens expire and the proxy refreshes them. The caller must
+    not log or persist the returned token.
+    """
+    settings = get_connection_settings(connector_name)
+    if not settings:
+        return None
+    return (
+        settings.get("access_token")
+        or ((settings.get("oauth") or {}).get("credentials") or {}).get("access_token")
+    )

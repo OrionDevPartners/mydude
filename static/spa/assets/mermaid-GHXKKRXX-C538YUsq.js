@@ -1,1 +1,0 @@
-import{i as e}from"./index-B7onr3Vy.js";export{e as Mermaid};

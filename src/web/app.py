@@ -150,3 +150,12 @@ async def startup():
 
     from src.browser.handshake import run_browser_handshake
     run_browser_handshake()
+
+    try:
+        from src.finance.scheduler import get_scheduler
+        import os as _os
+        interval = int(_os.environ.get("FINANCE_SYNC_INTERVAL", "3600") or "3600")
+        await get_scheduler().start(interval=interval)
+        logger.info("Finance scheduler started (opt-in via ENABLE_FINANCE_AUTOSYNC)")
+    except Exception as e:
+        logger.warning("Finance scheduler failed to start: %s", e)

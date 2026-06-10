@@ -282,6 +282,39 @@ SERVICE_CATALOG = [
             "Copy the Internal Integration Secret and paste it below",
         ],
     },
+    # ---- Finance / Accounting ----
+    {
+        "slug": "quickbooks",
+        "name": "QuickBooks Online",
+        "category": "Finance",
+        "env_var": "QUICKBOOKS_ACCESS_TOKEN",
+        "key_prefix": "",
+        "signup_url": "https://quickbooks.intuit.com/",
+        "key_url": "https://developer.intuit.com/app/developer/myapps",
+        "connector": "quickbooks",
+        "steps": [
+            "Sign in to the Intuit Developer portal",
+            "Open your app and the OAuth Playground (or your token flow)",
+            "Generate an access token for your company (realm)",
+            "Paste the access token below, then add QUICKBOOKS_REALM_ID as a second key",
+        ],
+    },
+    {
+        "slug": "plaid",
+        "name": "Plaid",
+        "category": "Finance",
+        "env_var": "PLAID_ACCESS_TOKEN",
+        "key_prefix": "access-",
+        "signup_url": "https://dashboard.plaid.com/signup",
+        "key_url": "https://dashboard.plaid.com/team/keys",
+        "connector": "plaid",
+        "steps": [
+            "Sign up at dashboard.plaid.com",
+            "Open Team Settings -> Keys to find your client_id and secret",
+            "Link an Item and exchange its public token for an access token",
+            "Paste the access token below, then add PLAID_CLIENT_ID and PLAID_SECRET",
+        ],
+    },
     # ---- Google (OAuth connectors) ----
     {
         "slug": "google-mail",

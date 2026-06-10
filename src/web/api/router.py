@@ -4,6 +4,7 @@ Every route mirrors an existing Jinja2 route but returns structured JSON instead
 of HTML. Authentication uses the same cookie-session mechanism so the browser's
 existing session_token cookie is honoured.
 """
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
@@ -1230,3 +1231,335 @@ async def api_cancel_confirm(sub_id: int, confirm: str = Form(""), _=Depends(req
     res = await manager.confirm_cancel(sub_id)
     return {"kind": "cancel_confirm", "ok": res.get("ok"), "message": res.get("message"),
             "screenshot": res.get("screenshot"), "sub_id": sub_id}
+
+
+# ---------------------------------------------------------------------------
+# Finance (QuickBooks + Plaid)
+# ---------------------------------------------------------------------------
+
+def _finance_txn(t, vendors, projects):
+    v = vendors.get(t.vendor_id)
+    p = projects.get(t.project_id)
+    return {
+        "id": t.id,
+        "source": t.source,
+        "external_id": t.external_id,
+        "date": _dt(t.txn_date),
+        "amount": t.amount,
+        "currency": t.currency,
+        "name": t.name,
+        "memo": t.memo,
+        "category_raw": t.category_raw,
+        "pending": t.pending,
+        "vendor": v.name if v else None,
+        "vendor_id": t.vendor_id,
+        "project_code": p.code if p else None,
+        "project_id": t.project_id,
+        "attribution_status": t.attribution_status,
+        "attribution_confidence": t.attribution_confidence,
+        "attribution_method": t.attribution_method,
+    }
+
+
+def _finance_run(r):
+    return {
+        "id": r.id, "source": r.source, "trigger": r.trigger, "status": r.status,
+        "transactions_ingested": r.transactions_ingested,
+        "entities_ingested": r.entities_ingested,
+        "removed_count": r.removed_count, "attributed_count": r.attributed_count,
+        "error": r.error, "started_at": _dt(r.started_at), "finished_at": _dt(r.finished_at),
+    }
+
+
+@router.get("/finance")
+async def api_finance(_=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.models import (
+        FinanceProject, FinanceVendor, VendorProjectRule, FinanceSyncRun,
+        FinanceAuditLog, FinanceTransaction,
+    )
+    from src.finance.providers import provider_status
+    from src.finance.budget import budget_vs_actuals
+    from src.finance.writeback import list_writes
+    from src.web.settings_store import get_setting
+
+    db = SessionLocal()
+    try:
+        projects = db.query(FinanceProject).order_by(FinanceProject.code).all()
+        rules = db.query(VendorProjectRule).all()
+        vendors = db.query(FinanceVendor).order_by(FinanceVendor.name).limit(500).all()
+        runs = db.query(FinanceSyncRun).order_by(FinanceSyncRun.id.desc()).limit(10).all()
+        audit = db.query(FinanceAuditLog).order_by(FinanceAuditLog.id.desc()).limit(25).all()
+        txn_count = db.query(FinanceTransaction).count()
+        budget = budget_vs_actuals(db)
+        writes = list_writes(db)
+        return {
+            "providers": provider_status(),
+            "budget": budget,
+            "projects": [{"id": p.id, "code": p.code, "name": p.name, "llc": p.llc,
+                          "active": p.active} for p in projects],
+            "rules": [{"id": r.id, "match_text": r.match_text, "project_id": r.project_id,
+                       "note": r.note} for r in rules],
+            "vendors": [{"id": v.id, "name": v.name, "source": v.source,
+                         "default_project_id": v.default_project_id} for v in vendors],
+            "recent_runs": [_finance_run(r) for r in runs],
+            "audit": [{"id": a.id, "action": a.action, "status": a.status,
+                       "detail": a.detail, "created_at": _dt(a.created_at)} for a in audit],
+            "writes": writes,
+            "txn_count": txn_count,
+            "autosync_enabled": (get_setting("ENABLE_FINANCE_AUTOSYNC", "0") or "0") == "1",
+        }
+    finally:
+        db.close()
+
+
+@router.get("/finance/transactions")
+async def api_finance_transactions(
+    status: str = "", project_id: str = "", limit: str = "100",
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.models import FinanceTransaction, FinanceVendor, FinanceProject
+    try:
+        lim = max(1, min(int(limit or 100), 500))
+    except ValueError:
+        lim = 100
+    db = SessionLocal()
+    try:
+        q = db.query(FinanceTransaction)
+        if status.strip():
+            q = q.filter(FinanceTransaction.attribution_status == status.strip())
+        if project_id.strip().isdigit():
+            q = q.filter(FinanceTransaction.project_id == int(project_id.strip()))
+        rows = q.order_by(FinanceTransaction.txn_date.desc().nullslast(),
+                          FinanceTransaction.id.desc()).limit(lim).all()
+        vendors = {v.id: v for v in db.query(FinanceVendor).all()}
+        projects = {p.id: p for p in db.query(FinanceProject).all()}
+        return {"transactions": [_finance_txn(t, vendors, projects) for t in rows]}
+    finally:
+        db.close()
+
+
+@router.post("/finance/sync")
+async def api_finance_sync(_=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.finance.sync import sync_all
+    db = SessionLocal()
+    try:
+        report = await asyncio.to_thread(sync_all, db, "manual")
+    finally:
+        db.close()
+    if not report.get("ok"):
+        raise HTTPException(status_code=400, detail=report.get("error") or "Sync failed.")
+    return report
+
+
+@router.post("/finance/autosync")
+async def api_finance_autosync(enabled: str = Form("false"), _=Depends(require_auth)):
+    from src.web.settings_store import set_setting
+    val = "1" if enabled.strip().lower() in ("1", "true", "yes", "on") else "0"
+    set_setting("ENABLE_FINANCE_AUTOSYNC", val)
+    return {"ok": True, "autosync_enabled": val == "1"}
+
+
+@router.post("/finance/projects")
+async def api_finance_create_project(
+    code: str = Form(""), name: str = Form(""), llc: str = Form(""),
+    description: str = Form(""), _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.models import FinanceProject
+    code = code.strip()
+    name = name.strip()
+    if not code or not name:
+        raise HTTPException(status_code=400, detail="Project code and name are required.")
+    db = SessionLocal()
+    try:
+        if db.query(FinanceProject).filter(FinanceProject.code == code).first():
+            raise HTTPException(status_code=400, detail="A project with that code already exists.")
+        p = FinanceProject(code=code, name=name, llc=llc.strip() or None,
+                           description=description.strip() or None)
+        db.add(p)
+        db.commit()
+        db.refresh(p)
+        return {"ok": True, "id": p.id, "code": p.code}
+    finally:
+        db.close()
+
+
+@router.post("/finance/projects/{project_id}/budget")
+async def api_finance_add_budget(
+    project_id: int, amount: str = Form(""), category: str = Form(""),
+    period: str = Form("total"), notes: str = Form(""), _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.models import FinanceProject, FinanceBudget
+    try:
+        amt = float(amount)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="A numeric budget amount is required.")
+    db = SessionLocal()
+    try:
+        if not db.query(FinanceProject).filter(FinanceProject.id == project_id).first():
+            raise HTTPException(status_code=404, detail="Project not found.")
+        b = FinanceBudget(project_id=project_id, amount=amt,
+                          category=category.strip() or None,
+                          period=(period.strip() or "total"), notes=notes.strip() or None)
+        db.add(b)
+        db.commit()
+        return {"ok": True, "id": b.id}
+    finally:
+        db.close()
+
+
+@router.post("/finance/transactions/{txn_id}/attribute")
+async def api_finance_attribute(
+    txn_id: int, project_id: str = Form(""), _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.models import FinanceTransaction, FinanceProject, FinanceAuditLog
+    db = SessionLocal()
+    try:
+        t = db.query(FinanceTransaction).filter(FinanceTransaction.id == txn_id).first()
+        if t is None:
+            raise HTTPException(status_code=404, detail="Transaction not found.")
+        if project_id.strip().isdigit():
+            pid = int(project_id.strip())
+            if not db.query(FinanceProject).filter(FinanceProject.id == pid).first():
+                raise HTTPException(status_code=404, detail="Project not found.")
+            t.project_id = pid
+            t.attribution_status = "attributed"
+            t.attribution_method = "manual"
+            t.attribution_confidence = 1.0
+        else:
+            t.project_id = None
+            t.attribution_status = "unattributed"
+            t.attribution_method = "manual"
+            t.attribution_confidence = 0.0
+        db.add(FinanceAuditLog(action="manual_attribution", status="ok", source="finance",
+                               detail="Transaction #%d -> project %s" % (txn_id, t.project_id)))
+        db.commit()
+        return {"ok": True, "project_id": t.project_id}
+    finally:
+        db.close()
+
+
+@router.post("/finance/rules")
+async def api_finance_create_rule(
+    match_text: str = Form(""), project_id: str = Form(""), note: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.models import VendorProjectRule, FinanceProject
+    match_text = match_text.strip()
+    if not match_text or not project_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Match text and a project are required.")
+    pid = int(project_id.strip())
+    db = SessionLocal()
+    try:
+        if not db.query(FinanceProject).filter(FinanceProject.id == pid).first():
+            raise HTTPException(status_code=404, detail="Project not found.")
+        rule = VendorProjectRule(match_text=match_text, project_id=pid, note=note.strip() or None)
+        db.add(rule)
+        db.commit()
+        return {"ok": True, "id": rule.id}
+    finally:
+        db.close()
+
+
+@router.post("/finance/vendors/{vendor_id}/default-project")
+async def api_finance_vendor_default(
+    vendor_id: int, project_id: str = Form(""), _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.models import FinanceVendor, FinanceProject
+    db = SessionLocal()
+    try:
+        v = db.query(FinanceVendor).filter(FinanceVendor.id == vendor_id).first()
+        if v is None:
+            raise HTTPException(status_code=404, detail="Vendor not found.")
+        if project_id.strip().isdigit():
+            pid = int(project_id.strip())
+            if not db.query(FinanceProject).filter(FinanceProject.id == pid).first():
+                raise HTTPException(status_code=404, detail="Project not found.")
+            v.default_project_id = pid
+        else:
+            v.default_project_id = None
+        db.commit()
+        return {"ok": True, "default_project_id": v.default_project_id}
+    finally:
+        db.close()
+
+
+@router.get("/finance/writes")
+async def api_finance_writes(_=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.finance.writeback import list_writes
+    db = SessionLocal()
+    try:
+        return {"writes": list_writes(db)}
+    finally:
+        db.close()
+
+
+@router.post("/finance/writes/request")
+async def api_finance_write_request(
+    kind: str = Form(""), target_external_id: str = Form(""),
+    payload: str = Form(""), summary: str = Form(""), _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.finance.writeback import request_write
+    try:
+        payload_obj = json.loads(payload) if payload.strip() else {}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Payload must be valid JSON.")
+    db = SessionLocal()
+    try:
+        try:
+            res = request_write(db, kind.strip(), target_external_id.strip() or None,
+                                payload_obj, summary.strip() or None)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "write": res}
+    finally:
+        db.close()
+
+
+@router.post("/finance/writes/{request_id}/confirm")
+async def api_finance_write_confirm(
+    request_id: int, confirm: str = Form(""), _=Depends(require_auth),
+):
+    if confirm.strip().upper() != "CONFIRM":
+        return {"ok": False, "message": "Confirmation text did not match — type CONFIRM to execute."}
+    from src.database import SessionLocal
+    from src.finance.writeback import confirm_write
+    db = SessionLocal()
+    try:
+        try:
+            res = await asyncio.to_thread(confirm_write, db, request_id)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"ok": True, "write": res}
+    finally:
+        db.close()
+
+
+@router.post("/finance/writes/{request_id}/reject")
+async def api_finance_write_reject(request_id: int, _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.finance.writeback import reject_write
+    db = SessionLocal()
+    try:
+        try:
+            res = reject_write(db, request_id)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"ok": True, "write": res}
+    finally:
+        db.close()
