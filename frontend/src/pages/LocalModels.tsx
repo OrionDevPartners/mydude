@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { getLocalModels, LocalProvider } from '@/lib/api'
+import { getLocalModels, addLocalModel, removeLocalModel, LocalProvider } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Badge, Empty } from '@/components/ui'
-import { Cpu, ExternalLink, RefreshCw, CheckCircle, XCircle, Copy, Check, Database } from 'lucide-react'
+import { Cpu, ExternalLink, RefreshCw, CheckCircle, XCircle, Copy, Check, Database, Plus, Trash2 } from 'lucide-react'
 
 export function LocalModels() {
   const { data, loading, error, refetch } = useApi(getLocalModels, [])
@@ -40,7 +40,13 @@ export function LocalModels() {
         ? <Empty message="No local providers configured." icon={<Cpu size={28} />} />
         : data.providers.map(p => <ProviderCard key={p.key} p={p} />)}
 
-      <RegistryPanel registry={data.registry} path={data.registry_path} exists={data.registry_exists} />
+      <RegistryPanel
+        registry={data.registry}
+        path={data.registry_path}
+        exists={data.registry_exists}
+        providerKeys={data.providers.map(p => p.key)}
+        onChange={refetch}
+      />
     </div>
   )
 }
@@ -142,33 +148,88 @@ function ProviderCard({ p }: { p: LocalProvider }) {
   )
 }
 
-function RegistryPanel({ registry, path, exists }: { registry: Record<string, unknown>[]; path: string; exists: boolean }) {
+function RegistryPanel({ registry, path, exists, providerKeys, onChange }: {
+  registry: Record<string, unknown>[]; path: string; exists: boolean;
+  providerKeys: string[]; onChange: () => void
+}) {
+  const [modelId, setModelId] = useState('')
+  const [provider, setProvider] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<string | null>(null)
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault()
+    setErr(null); setMsg(null)
+    const id = modelId.trim(), pv = provider.trim()
+    if (!id || !pv) { setErr('Model ID and provider are both required.'); return }
+    setBusy(true)
+    try {
+      await addLocalModel(id, pv)
+      setMsg(`Added ${id} (${pv}) to the registry.`)
+      setModelId(''); setProvider('')
+      onChange()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not add the model.')
+    } finally { setBusy(false) }
+  }
+
+  async function remove(id: string, pv: string) {
+    setErr(null); setMsg(null)
+    const tag = `${id}\u0000${pv}`
+    setRemoving(tag)
+    try {
+      await removeLocalModel(id, pv)
+      setMsg(`Removed ${id} from the registry.`)
+      onChange()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not remove the model.')
+    } finally { setRemoving(null) }
+  }
+
   return (
     <Card style={{ padding: '18px 20px', marginTop: 6 }}>
       <p style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
         <Database size={16} /> Local model registry
       </p>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14, fontFamily: 'monospace' }}>
-        {path} {exists ? '' : '(not found)'}
+        {path} {exists ? '' : '(will be created on first add)'}
       </p>
+
+      {err && <Alert type="error">{err}</Alert>}
+      {msg && <Alert type="success">{msg}</Alert>}
+
       {registry.length === 0
-        ? <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
-            No models registered. Local providers fall back to their default model. Create the registry file
-            above to pin specific installed models.
+        ? <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 14 }}>
+            No models registered. Local providers fall back to their default model. Add one below to pin a
+            specific installed model.
           </p>
         : (
-          <div className="glass-card" style={{ overflow: 'hidden' }}>
+          <div className="glass-card" style={{ overflow: 'hidden', marginBottom: 16 }}>
             <table className="data-table">
-              <thead><tr><th>Model ID</th><th>Provider</th><th>Details</th></tr></thead>
+              <thead><tr><th>Model ID</th><th>Provider</th><th>Details</th><th></th></tr></thead>
               <tbody>
                 {registry.map((m, i) => {
-                  const { model_id, provider, ...rest } = m as Record<string, unknown>
+                  const { model_id, provider: pv, ...rest } = m as Record<string, unknown>
+                  const idStr = String(model_id ?? ''), pvStr = String(pv ?? '')
+                  const tag = `${idStr}\u0000${pvStr}`
                   return (
                     <tr key={i}>
-                      <td style={{ fontFamily: 'monospace', fontSize: 12.5 }}>{String(model_id ?? '—')}</td>
-                      <td><span className="badge badge-gray">{String(provider ?? '—')}</span></td>
+                      <td style={{ fontFamily: 'monospace', fontSize: 12.5 }}>{idStr || '—'}</td>
+                      <td><span className="badge badge-gray">{pvStr || '—'}</span></td>
                       <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
                         {Object.entries(rest).map(([k, v]) => `${k}: ${String(v)}`).join('  ·  ') || '—'}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          disabled={removing === tag}
+                          onClick={() => remove(idStr, pvStr)}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                        >
+                          <Trash2 size={13} /> {removing === tag ? 'Removing…' : 'Remove'}
+                        </button>
                       </td>
                     </tr>
                   )
@@ -177,8 +238,47 @@ function RegistryPanel({ registry, path, exists }: { registry: Record<string, un
             </table>
           </div>
         )}
+
+      <p className="form-label" style={{ marginBottom: 8 }}>Add a model</p>
+      <form onSubmit={add} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ flex: '1 1 220px' }}>
+          <label style={fieldLabel}>Model ID</label>
+          <input
+            className="input"
+            placeholder="llama3.1:8b"
+            value={modelId}
+            onChange={e => setModelId(e.target.value)}
+            style={{ width: '100%' }}
+          />
+        </div>
+        <div style={{ flex: '1 1 160px' }}>
+          <label style={fieldLabel}>Provider</label>
+          <input
+            className="input"
+            placeholder="ollama"
+            list="local-provider-options"
+            value={provider}
+            onChange={e => setProvider(e.target.value)}
+            style={{ width: '100%' }}
+          />
+          <datalist id="local-provider-options">
+            {providerKeys.map(k => <option key={k} value={k} />)}
+          </datalist>
+        </div>
+        <button type="submit" className="btn btn-primary btn-sm" disabled={busy} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <Plus size={14} /> {busy ? 'Adding…' : 'Add to registry'}
+        </button>
+      </form>
+      <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 8 }}>
+        The model ID must match what the local server exposes (e.g. <code>llama3.1:8b</code> for Ollama). The
+        loader picks up changes on the next refresh.
+      </p>
     </Card>
   )
+}
+
+const fieldLabel: React.CSSProperties = {
+  display: 'block', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4,
 }
 
 function Meta({ label, value, mono }: { label: string; value: string; mono?: boolean }) {

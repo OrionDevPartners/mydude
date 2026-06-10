@@ -107,6 +107,18 @@ export const getSystem = () => request<SystemData>('/system')
 
 // Local AI Models
 export const getLocalModels = () => request<LocalModelsData>('/local-models')
+export const addLocalModel = (model_id: string, provider: string) =>
+  request<{ ok: boolean; entry: { model_id: string; provider: string } }>('/local-models/registry/add', {
+    method: 'POST',
+    body: formBody({ model_id, provider }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const removeLocalModel = (model_id: string, provider: string) =>
+  request<{ ok: boolean }>('/local-models/registry/remove', {
+    method: 'POST',
+    body: formBody({ model_id, provider }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
 
 // Capabilities
 export const getCapabilities = () => request<CapabilitiesData>('/capabilities')

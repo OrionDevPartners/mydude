@@ -123,13 +123,16 @@
         </p>
         {% if not registry_exists %}
         <div class="flash flash-warning" style="margin-top:12px">
-            No registry file found at that path. Create it (or point
-            <span class="mono">LOCAL_MODEL_REGISTRY_PATH</span> at one) to pin
-            which installed models each provider should prefer.
+            No registry file found at that path yet — adding a model below will
+            create it (and <span class="mono">~/.mydude/local/</span>). You can
+            also point <span class="mono">LOCAL_MODEL_REGISTRY_PATH</span> at an
+            existing file.
         </div>
-        {% elif registry %}
+        {% endif %}
+
+        {% if registry %}
         <table class="table" style="margin-top:12px">
-            <thead><tr><th>Model ID</th><th>Provider</th><th>Details</th></tr></thead>
+            <thead><tr><th>Model ID</th><th>Provider</th><th>Details</th><th></th></tr></thead>
             <tbody>
             {% for m in registry %}
                 <tr>
@@ -140,13 +143,46 @@
                         <span class="chip">{{ k }}={{ v }}</span>
                         {% endfor %}
                     </td>
+                    <td style="text-align:right">
+                        <form method="post" action="/local-models/registry/remove"
+                              onsubmit="return confirm('Remove {{ m.model_id }} from the registry?');"
+                              style="display:inline">
+                            <input type="hidden" name="model_id" value="{{ m.model_id }}">
+                            <input type="hidden" name="provider" value="{{ m.provider or '' }}">
+                            <button type="submit" class="btn btn-sm btn-outline">Remove</button>
+                        </form>
+                    </td>
                 </tr>
             {% endfor %}
             </tbody>
         </table>
-        {% else %}
-        <p class="empty-state">Registry file found but it lists no models.</p>
+        {% elif registry_exists %}
+        <p class="empty-state">Registry file found but it lists no models — add one below.</p>
         {% endif %}
+
+        <h4 style="margin-top:18px">Add a model</h4>
+        <p class="form-hint">
+            Pin an installed model so its provider prefers it. The
+            <span class="mono">model_id</span> must match what the local server
+            exposes (e.g. <span class="mono">llama3.1:8b</span> for Ollama).
+        </p>
+        <form method="post" action="/local-models/registry/add" class="form-inline" style="margin-top:8px">
+            <div class="form-group">
+                <label>Model ID</label>
+                <input type="text" name="model_id" placeholder="llama3.1:8b" required>
+            </div>
+            <div class="form-group">
+                <label>Provider</label>
+                <input type="text" name="provider" list="provider-options"
+                       placeholder="ollama" required>
+                <datalist id="provider-options">
+                    {% for k in provider_keys %}<option value="{{ k }}">{% endfor %}
+                </datalist>
+            </div>
+            <div class="form-group">
+                <button type="submit" class="btn btn-primary">Add to registry</button>
+            </div>
+        </form>
     </div>
 </div>
 {% endblock %}

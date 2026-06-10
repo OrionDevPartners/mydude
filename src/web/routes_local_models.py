@@ -17,15 +17,17 @@ provides — is the one-click-grade glue around them:
 """
 import logging
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.providers.adapters import _LocalOpenAICompatAdapter, _server_listening
 from src.providers.config import llm_provider_specs
 from src.providers.local_registry import (
+    add_model,
     load_local_models,
     local_models_for_provider,
     registry_path,
+    remove_model,
 )
 from src.providers.registry import build_adapter
 from src.web.auth import require_auth
@@ -33,6 +35,14 @@ from src.web.templating import templates
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _redirect(msg: str = "", err: str = ""):
+    from urllib.parse import quote
+
+    if err:
+        return RedirectResponse(url="/local-models?err=" + quote(err, safe=""), status_code=303)
+    return RedirectResponse(url="/local-models?msg=" + quote(msg, safe=""), status_code=303)
 
 # Friendly display names + install guidance keyed by the provider key in env_1.
 # Commands intentionally avoid hardcoding model names — those are injected from
@@ -153,6 +163,39 @@ async def local_models_page(request: Request, _=Depends(require_auth)):
         "registry": registry,
         "registry_path": str(p),
         "registry_exists": p.exists(),
+        "provider_keys": [pr["key"] for pr in providers],
         "msg": request.query_params.get("msg"),
         "err": request.query_params.get("err"),
     })
+
+
+@router.post("/local-models/registry/add")
+async def registry_add(
+    model_id: str = Form(""),
+    provider: str = Form(""),
+    _=Depends(require_auth),
+):
+    try:
+        entry = add_model(model_id, provider)
+    except ValueError as e:
+        return _redirect(err=str(e))
+    except Exception as e:
+        logger.error("Failed to add model to registry: %s", e)
+        return _redirect(err="Could not write to the registry: %s" % e)
+    return _redirect(msg="Added %s (%s) to the registry." % (entry["model_id"], entry["provider"]))
+
+
+@router.post("/local-models/registry/remove")
+async def registry_remove(
+    model_id: str = Form(""),
+    provider: str = Form(""),
+    _=Depends(require_auth),
+):
+    try:
+        remove_model(model_id, provider)
+    except ValueError as e:
+        return _redirect(err=str(e))
+    except Exception as e:
+        logger.error("Failed to remove model from registry: %s", e)
+        return _redirect(err="Could not write to the registry: %s" % e)
+    return _redirect(msg="Removed %s from the registry." % (model_id or "entry"))

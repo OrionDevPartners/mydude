@@ -94,6 +94,175 @@ def local_models_for_provider(provider: str) -> List[dict]:
     return [m for m in load_local_models() if m.get("provider") == provider]
 
 
+# --------------------------------------------------------------------------- #
+# Writers — let operators edit the registry from the dashboard.
+#
+# These deliberately fail loudly (raise) rather than degrading silently the way
+# the readers do: a corrupt or unwritable registry is an operator-facing error
+# we want surfaced, not swallowed. The write itself is atomic (write to a temp
+# file then ``os.replace``) so a failure can never leave a half-written,
+# corrupt YAML behind.
+# --------------------------------------------------------------------------- #
+
+MAX_MODEL_ID_LEN = 256
+MAX_PROVIDER_LEN = 64
+
+
+def _require_yaml():
+    try:
+        import yaml  # type: ignore
+
+        return yaml
+    except Exception as e:  # pragma: no cover - pyyaml is a project dependency
+        raise RuntimeError(
+            "pyyaml is not available; cannot edit the local model registry."
+        ) from e
+
+
+def _raw_and_list(create: bool = False):
+    """Return ``(data, models_list)`` where ``models_list`` is a *live* reference
+    into ``data`` that can be mutated in place.
+
+    Mirrors the shapes :func:`_extract_models` understands so edits preserve the
+    file's existing structure. When the file/key is missing and ``create`` is
+    True, a canonical ``{"models": []}`` container is materialised. When
+    ``create`` is False and there is nothing to edit, returns ``(None, None)``.
+    Raises ``ValueError`` on an unrecognisable (non-list, non-mapping) shape.
+    """
+    yaml = _require_yaml()
+    p = registry_path()
+
+    if not p.exists():
+        if create:
+            data: dict = {"models": []}
+            return data, data["models"]
+        return None, None
+
+    with open(p, "r") as f:
+        data = yaml.safe_load(f)
+
+    if data is None:
+        if create:
+            data = {"models": []}
+            return data, data["models"]
+        return None, None
+
+    if isinstance(data, list):
+        # The document itself is the list of models.
+        return data, data
+
+    if isinstance(data, dict):
+        if isinstance(data.get("models"), list):
+            return data, data["models"]
+        mr = data.get("model_registry")
+        if isinstance(mr, dict) and isinstance(mr.get("format"), list):
+            return data, mr["format"]
+        for v in data.values():
+            if isinstance(v, list) and any(
+                isinstance(m, dict) and m.get("model_id") for m in v
+            ):
+                return data, v
+        if create:
+            data["models"] = []
+            return data, data["models"]
+        return data, []
+
+    raise ValueError(
+        "Unrecognised registry format at %s; refusing to edit it." % p
+    )
+
+
+def _write_registry(data) -> None:
+    """Atomically serialise ``data`` back to the registry path.
+
+    Creates the parent directory if missing. Serialises to a sibling temp file
+    first and only ``os.replace``s it into place once the dump fully succeeds,
+    so a serialisation error can never corrupt the existing registry.
+    """
+    yaml = _require_yaml()
+    p = registry_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    try:
+        with open(tmp, "w") as f:
+            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        raise
+
+
+def add_model(model_id: str, provider: str) -> dict:
+    """Add a ``{model_id, provider}`` entry to the registry and persist it.
+
+    Creates the registry file (and ``~/.mydude/local/``) when missing. Raises
+    ``ValueError`` for blank/oversized input or a duplicate entry. Returns the
+    entry that was added.
+    """
+    model_id = (model_id or "").strip()
+    provider = (provider or "").strip()
+    if not model_id:
+        raise ValueError("Model ID is required.")
+    if not provider:
+        raise ValueError("Provider is required.")
+    if len(model_id) > MAX_MODEL_ID_LEN:
+        raise ValueError("Model ID is too long (max %d characters)." % MAX_MODEL_ID_LEN)
+    if len(provider) > MAX_PROVIDER_LEN:
+        raise ValueError("Provider is too long (max %d characters)." % MAX_PROVIDER_LEN)
+
+    data, models = _raw_and_list(create=True)
+    for m in models:
+        if (
+            isinstance(m, dict)
+            and m.get("model_id") == model_id
+            and m.get("provider") == provider
+        ):
+            raise ValueError(
+                "%s is already registered for %s." % (model_id, provider)
+            )
+
+    entry = {"model_id": model_id, "provider": provider}
+    models.append(entry)
+    _write_registry(data)
+    logger.info("Added local model %s (%s) to registry %s", model_id, provider, registry_path())
+    return entry
+
+
+def remove_model(model_id: str, provider: str) -> None:
+    """Remove the entry matching ``model_id`` + ``provider`` and persist.
+
+    Raises ``ValueError`` when there is no registry to edit or no matching
+    entry is found, so the UI can report it rather than silently no-op.
+    """
+    model_id = (model_id or "").strip()
+    provider = (provider or "").strip()
+
+    data, models = _raw_and_list(create=False)
+    if data is None or not models:
+        raise ValueError("No matching model entry to remove.")
+
+    kept = [
+        m
+        for m in models
+        if not (
+            isinstance(m, dict)
+            and m.get("model_id") == model_id
+            and m.get("provider") == provider
+        )
+    ]
+    if len(kept) == len(models):
+        raise ValueError("No matching model entry to remove.")
+
+    # Mutate the list in place so the surrounding container shape is preserved.
+    models[:] = kept
+    _write_registry(data)
+    logger.info("Removed local model %s (%s) from registry %s", model_id, provider, registry_path())
+
+
 def default_model_for_provider(provider: str, fallback: str = "") -> Optional[str]:
     """First registered model id for ``provider``, else ``fallback``.
 

@@ -5,3 +5,4 @@
 - [Jurisdiction routing wiring](jurisdiction-routing.md) — how exec_locus pins + cloud_shift kill switch filter the live provider swarm and record fallback tiers.
 - [Local LLM provider availability](local-provider-availability.md) — Ollama/MLX stay enabled but gate availability on a TCP probe; cloud_shift/EXEC_LOCUS_PIN route to local.
 - [Semantic memory substrate](semantic-memory-substrate.md) — vendored Cognee/Mem0 wiring, route conflict pattern, and temporal contradiction gate fix.
+- [SPA vs Jinja](spa-vs-jinja.md) — live UI is the React SPA + /api router; Jinja templates/routes are legacy; dashboard features need api.ts + page + SPA rebuild.

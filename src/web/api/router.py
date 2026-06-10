@@ -808,6 +808,42 @@ async def api_local_models(_=Depends(require_auth)):
     }
 
 
+@router.post("/local-models/registry/add")
+async def api_local_models_registry_add(
+    model_id: str = Form(""),
+    provider: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.providers.local_registry import add_model
+
+    try:
+        entry = add_model(model_id, provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("Failed to add model to registry: %s", e)
+        raise HTTPException(500, "Could not write to the registry.")
+    return {"ok": True, "entry": entry}
+
+
+@router.post("/local-models/registry/remove")
+async def api_local_models_registry_remove(
+    model_id: str = Form(""),
+    provider: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.providers.local_registry import remove_model
+
+    try:
+        remove_model(model_id, provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("Failed to remove model from registry: %s", e)
+        raise HTTPException(500, "Could not write to the registry.")
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # Capabilities
 # ---------------------------------------------------------------------------
