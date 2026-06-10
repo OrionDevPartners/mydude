@@ -18,6 +18,7 @@ import { LocalModels } from '@/pages/LocalModels'
 import { Subscriptions } from '@/pages/Subscriptions'
 import { Finance } from '@/pages/Finance'
 import { Coach } from '@/pages/Coach'
+import { Avatar } from '@/pages/Avatar'
 import { ErrorPage } from '@/pages/ErrorPage'
 import { Spinner } from '@/components/ui'
 
@@ -62,6 +63,7 @@ function AppRoutes() {
               <Route path="/subscriptions" element={<Subscriptions />} />
               <Route path="/finance" element={<Finance />} />
               <Route path="/coach" element={<Coach />} />
+              <Route path="/avatar" element={<Avatar />} />
               <Route path="*" element={<ErrorPage code={404} message="Page not found" />} />
             </Routes>
           </Layout>

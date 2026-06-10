@@ -662,3 +662,94 @@ class CoachAuditLog(Base):
     detail = Column(Text, nullable=True)
     source = Column(String(40), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Avatar / persona / voice sub-stack (Humanistic avatar layer — Azure-tier)
+#
+# Gives a bot a presentation identity (persona + voice + avatar provider). Voice
+# (ElevenLabs TTS) is Replit-native. Realistic real-time avatar VIDEO runs on the
+# EXTERNAL GPU stack (HeyGen Streaming / Azure-hosted NVIDIA ACE) — the container
+# only NEGOTIATES the session over HTTPS and hands the browser WebRTC connection
+# info; it never hosts GPU rendering or relays media. Every live session enforces
+# AI-use disclosure + recording consent before it can go active, with a voice-only
+# fallback when the avatar backend is unavailable.
+# ---------------------------------------------------------------------------
+
+
+class AvatarProfile(Base):
+    """A bot's presentation identity: persona text + voice + avatar provider.
+
+    Deliberately fleet-generic (``name``/``persona``/``active``/``bot_id``) so the
+    Bot Fleet sub-stack can link a bot to its profile via ``bot_id`` and extend this
+    table additively (auto-migration only adds columns). Avatar/voice specifics live
+    in the ``*_provider`` / ``*_id`` / ``avatar_config_json`` columns. Provider names
+    are stored here but credentials NEVER are — those are sourced at runtime via the
+    connector proxy / vault.
+    """
+    __tablename__ = "avatar_profiles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), unique=True, nullable=False, index=True)
+    persona = Column(Text, nullable=True)
+    # Optional link to a future fleet bot (Bot Fleet sub-stack). Nullable so the
+    # avatar layer stands alone until the fleet exists.
+    bot_id = Column(Integer, nullable=True, index=True)
+    voice_provider = Column(String(40), nullable=True, default="elevenlabs")
+    voice_id = Column(String(120), nullable=True)
+    # heygen | azure | nvidia-ace | custom — the external GPU avatar backend.
+    avatar_provider = Column(String(40), nullable=True)
+    avatar_config_json = Column(Text, nullable=True)  # provider-specific (avatar_id, quality, ...)
+    # AI-use disclosure + recording consent are mandatory by default for call flows.
+    disclosure_required = Column(Boolean, default=True)
+    consent_required = Column(Boolean, default=True)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AvatarSession(Base):
+    """A live (or attempted) interaction session for an AvatarProfile.
+
+    Two-phase like the secretary gate: a session starts in ``pending_consent`` and
+    cannot reach ``active`` until disclosure has been shown and recording consent is
+    granted. Bridge negotiation happens only AFTER consent commits; if the avatar
+    backend is unavailable the session degrades honestly to ``voice_only`` (or
+    ``needs_provider`` when nothing is configured) — connection info is never faked.
+
+    ``connection_json`` holds the ephemeral provider WebRTC/LiveKit session info the
+    browser needs. It can contain short-lived session tokens, so it is cleared on
+    end and is NEVER written to the audit log.
+    """
+    __tablename__ = "avatar_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    avatar_profile_id = Column(Integer, nullable=False, index=True)
+    # avatar_video | voice_only
+    mode = Column(String(20), nullable=True)
+    # pending_consent | active | voice_only | needs_provider | denied | blocked | ended
+    status = Column(String(20), nullable=False, default="pending_consent", index=True)
+    provider = Column(String(40), nullable=True)
+    disclosure_shown = Column(Boolean, default=False)
+    # pending | granted | denied
+    consent_status = Column(String(20), nullable=False, default="pending")
+    consent_detail = Column(Text, nullable=True)
+    connection_json = Column(Text, nullable=True)  # ephemeral; never audited; cleared on end
+    result_detail = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AvatarAuditLog(Base):
+    """Audit trail for avatar actions: profile CRUD, session lifecycle, consent,
+    disclosure, bridge negotiation, and voice-only degradation. Never stores keys
+    or connection tokens."""
+    __tablename__ = "avatar_audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    action = Column(String(60), nullable=False)
+    status = Column(String(20), nullable=False, default="ok")
+    detail = Column(Text, nullable=True)
+    source = Column(String(40), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

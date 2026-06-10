@@ -1,6 +1,7 @@
 - [Capability governance gates](capability-gates.md) — how MyDude's browser/SSH capabilities must enforce allow-lists; pitfalls that bypass them.
 - [Two-phase cancel gate](two-phase-cancel-gate.md) — irreversible-action confirm gate must be decoupled from best-effort review login, or it goes invisible/untestable.
 - [Local Playwright in this container](playwright-local-env.md) — local Chromium can't launch (missing system libs); Browserbase is the prod path.
+- [Token-bearing outbound HTTPS](token-bearing-outbound-https.md) — operator URLs that carry a secret must enforce https:// in code (fail-loud), not just in docs.
 - [Connector token in Python](connector-token-python.md) — no Python snippet exists; fetch OAuth token from the connector proxy with include_secrets=true.
 - [Jurisdiction routing wiring](jurisdiction-routing.md) — how exec_locus pins + cloud_shift kill switch filter the live provider swarm and record fallback tiers.
 - [Local LLM provider availability](local-provider-availability.md) — Ollama/MLX stay enabled but gate availability on a TCP probe; cloud_shift/EXEC_LOCUS_PIN route to local.

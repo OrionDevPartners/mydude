@@ -8,6 +8,7 @@ integration / OAuth connector (``connector`` set to the connector slug).
 
 CATEGORIES = [
     "AI / LLM",
+    "Voice & Avatar",
     "Payments",
     "Developer",
     "Communications",
@@ -622,6 +623,59 @@ SERVICE_CATALOG = [
         "steps": [
             "Use only if you are not using a private key",
             "Paste your macOS login password below",
+        ],
+    },
+    # ---- Voice & Avatar ----
+    {
+        "slug": "elevenlabs",
+        "name": "ElevenLabs (Voice)",
+        "category": "Voice & Avatar",
+        "env_var": "ELEVENLABS_API_KEY",
+        "key_prefix": "",
+        "signup_url": "https://elevenlabs.io/",
+        "key_url": "https://elevenlabs.io/app/settings/api-keys",
+        "connector": None,
+        "steps": [
+            "Create an account at elevenlabs.io",
+            "Open your profile -> API Keys (Settings)",
+            "Create a new API key",
+            "Copy the key and paste it below (powers the bot's spoken voice)",
+        ],
+    },
+    {
+        "slug": "heygen",
+        "name": "HeyGen (Streaming Avatar)",
+        "category": "Voice & Avatar",
+        "env_var": "HEYGEN_API_KEY",
+        "key_prefix": "",
+        "signup_url": "https://www.heygen.com/",
+        "key_url": "https://app.heygen.com/settings?nav=API",
+        "connector": None,
+        "steps": [
+            "Create an account at heygen.com",
+            "Open Settings -> API",
+            "Generate an API key",
+            "Copy the key and paste it below (powers real-time avatar video)",
+            "Note: avatar video streams browser-direct over WebRTC; rendering runs "
+            "on HeyGen's GPU stack, not in this container",
+        ],
+    },
+    {
+        "slug": "avatar-bridge",
+        "name": "External Avatar Bridge (Azure/GPU)",
+        "category": "Voice & Avatar",
+        "env_var": "AVATAR_BRIDGE_URL",
+        "key_prefix": "",
+        "signup_url": "",
+        "key_url": "",
+        "connector": None,
+        "steps": [
+            "Deploy the GPU avatar service (e.g. NVIDIA ACE / Audio2Face) on your "
+            "Azure stack",
+            "Set AVATAR_BRIDGE_URL to its session-negotiation endpoint",
+            "Optionally set AVATAR_BRIDGE_TOKEN for bearer auth",
+            "The app negotiates sessions over HTTPS; the browser connects to the GPU "
+            "stack directly via WebRTC",
         ],
     },
 ]

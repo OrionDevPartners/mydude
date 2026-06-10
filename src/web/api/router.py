@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from src.web.auth import (
@@ -1823,5 +1823,288 @@ async def api_coach_purge(
     db = SessionLocal()
     try:
         return {"ok": True, **purge_signals(db, ids=id_list)}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Avatar / persona / voice (Humanistic avatar layer — Azure-tier)
+#
+# Voice (ElevenLabs TTS) is Replit-native. Realistic real-time avatar video runs
+# on the EXTERNAL GPU stack; here we only negotiate the session over HTTPS and hand
+# the browser WebRTC connection info. Every live session enforces AI-use disclosure
+# + recording consent before going active, with a voice-only fallback.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/avatar")
+async def api_avatar(_=Depends(require_auth)):
+    """Aggregator: provider status, profiles, recent sessions, disclosure, audit."""
+    from src.database import SessionLocal
+    from src.models import AvatarAuditLog
+    from src.avatar.voice import voice_status
+    from src.avatar.bridge import avatar_status
+    from src.avatar.profiles import list_profiles
+    from src.avatar.sessions import list_sessions
+    from src.avatar.compliance import disclosure_text, consent_prompt
+    db = SessionLocal()
+    try:
+        audit = (db.query(AvatarAuditLog)
+                 .order_by(AvatarAuditLog.id.desc()).limit(25).all())
+        return {
+            "voice": voice_status(),
+            "avatar": avatar_status(),
+            "profiles": list_profiles(db, limit=100),
+            "sessions": list_sessions(db, limit=50),
+            "disclosure": disclosure_text(),
+            "consent_prompt": consent_prompt(),
+            "audit": [
+                {"action": a.action, "status": a.status, "detail": a.detail,
+                 "created_at": a.created_at.isoformat() if a.created_at else None}
+                for a in audit
+            ],
+        }
+    finally:
+        db.close()
+
+
+@router.get("/avatar/voices")
+async def api_avatar_voices(_=Depends(require_auth)):
+    from src.avatar.voice import list_voices
+    from src.avatar.providers import (
+        AvatarNotConfigured, AvatarAuthError, AvatarProviderError,
+    )
+    try:
+        voices = await asyncio.to_thread(list_voices)
+    except AvatarNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except AvatarAuthError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except AvatarProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"voices": voices}
+
+
+@router.post("/avatar/voice/preview")
+async def api_avatar_voice_preview(
+    text: str = Form(""), voice_id: str = Form(""), _=Depends(require_auth),
+):
+    """Synthesize a short voice sample and return raw audio/mpeg (no base64)."""
+    from src.avatar.voice import synthesize
+    from src.avatar.providers import (
+        AvatarNotConfigured, AvatarAuthError, AvatarProviderError,
+    )
+    text = (text or "").strip()
+    voice_id = (voice_id or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required to synthesize a preview.")
+    if len(text) > 500:
+        raise HTTPException(status_code=400, detail="Preview text is too long (max 500 characters).")
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="A voice is required.")
+    try:
+        audio, content_type = await asyncio.to_thread(synthesize, text, voice_id)
+    except AvatarNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except AvatarAuthError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except AvatarProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return Response(content=audio, media_type=content_type,
+                    headers={"Cache-Control": "no-store"})
+
+
+@router.get("/avatar/profiles")
+async def api_avatar_profiles(_=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.avatar.profiles import list_profiles
+    db = SessionLocal()
+    try:
+        return {"profiles": list_profiles(db, limit=100)}
+    finally:
+        db.close()
+
+
+def _parse_avatar_config(raw):
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="avatar_config must be valid JSON.")
+
+
+@router.post("/avatar/profiles")
+async def api_avatar_profile_create(
+    name: str = Form(""), persona: str = Form(""),
+    voice_provider: str = Form("elevenlabs"), voice_id: str = Form(""),
+    avatar_provider: str = Form(""), avatar_config: str = Form(""),
+    disclosure_required: bool = Form(True), consent_required: bool = Form(True),
+    bot_id: str = Form(""), _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.avatar.profiles import create_profile
+    config_obj = _parse_avatar_config(avatar_config)
+    bot_id_val = int(bot_id) if bot_id.strip().isdigit() else None
+    db = SessionLocal()
+    try:
+        try:
+            res = create_profile(
+                db, name.strip(), persona=persona.strip() or None,
+                voice_provider=voice_provider.strip() or None,
+                voice_id=voice_id.strip() or None,
+                avatar_provider=avatar_provider.strip() or None,
+                avatar_config=config_obj,
+                disclosure_required=disclosure_required,
+                consent_required=consent_required, bot_id=bot_id_val)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "profile": res}
+    finally:
+        db.close()
+
+
+@router.patch("/avatar/profiles/{profile_id}")
+async def api_avatar_profile_update(
+    profile_id: int, name: str = Form(None), persona: str = Form(None),
+    voice_provider: str = Form(None), voice_id: str = Form(None),
+    avatar_provider: str = Form(None), avatar_config: str = Form(None),
+    disclosure_required: bool = Form(None), consent_required: bool = Form(None),
+    active: bool = Form(None), bot_id: str = Form(None), _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.avatar.profiles import update_profile
+    fields = {}
+    if name is not None:
+        fields["name"] = name
+    if persona is not None:
+        fields["persona"] = persona
+    if voice_provider is not None:
+        fields["voice_provider"] = voice_provider.strip() or None
+    if voice_id is not None:
+        fields["voice_id"] = voice_id.strip() or None
+    if avatar_provider is not None:
+        fields["avatar_provider"] = avatar_provider.strip() or None
+    if avatar_config is not None:
+        fields["avatar_config"] = _parse_avatar_config(avatar_config)
+    if disclosure_required is not None:
+        fields["disclosure_required"] = disclosure_required
+    if consent_required is not None:
+        fields["consent_required"] = consent_required
+    if active is not None:
+        fields["active"] = active
+    if bot_id is not None:
+        fields["bot_id"] = int(bot_id) if bot_id.strip().isdigit() else None
+    db = SessionLocal()
+    try:
+        try:
+            res = update_profile(db, profile_id, **fields)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "profile": res}
+    finally:
+        db.close()
+
+
+@router.delete("/avatar/profiles/{profile_id}")
+async def api_avatar_profile_delete(profile_id: int, _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.avatar.profiles import delete_profile
+    db = SessionLocal()
+    try:
+        try:
+            res = delete_profile(db, profile_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"ok": True, **res}
+    finally:
+        db.close()
+
+
+@router.get("/avatar/sessions")
+async def api_avatar_sessions(status: str = "", _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.avatar.sessions import list_sessions
+    db = SessionLocal()
+    try:
+        return {"sessions": list_sessions(db, limit=100, status=status.strip() or None)}
+    finally:
+        db.close()
+
+
+@router.post("/avatar/session/start")
+async def api_avatar_session_start(profile_id: int = Form(...), _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.avatar.sessions import start_session
+    from src.avatar.providers import (
+        AvatarNotConfigured, AvatarAuthError, AvatarProviderError,
+    )
+    from src.avatar.compliance import DisclosureRequired, ConsentRequired
+    db = SessionLocal()
+    try:
+        try:
+            res = await asyncio.to_thread(start_session, db, profile_id)
+        except AvatarNotConfigured as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (DisclosureRequired, ConsentRequired) as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except AvatarAuthError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except AvatarProviderError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, **res}
+    finally:
+        db.close()
+
+
+@router.post("/avatar/session/{session_id}/consent")
+async def api_avatar_session_consent(
+    session_id: int, granted: bool = Form(...), detail: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.avatar.sessions import record_consent
+    from src.avatar.providers import (
+        AvatarNotConfigured, AvatarAuthError, AvatarProviderError,
+    )
+    from src.avatar.compliance import DisclosureRequired, ConsentRequired
+    db = SessionLocal()
+    try:
+        try:
+            res = await asyncio.to_thread(record_consent, db, session_id, granted,
+                                          detail.strip() or None)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except (DisclosureRequired, ConsentRequired) as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except AvatarNotConfigured as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except AvatarAuthError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except AvatarProviderError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"ok": True, "session": res}
+    finally:
+        db.close()
+
+
+@router.post("/avatar/session/{session_id}/end")
+async def api_avatar_session_end(session_id: int, _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.avatar.sessions import end_session
+    db = SessionLocal()
+    try:
+        try:
+            res = end_session(db, session_id)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"ok": True, "session": res}
     finally:
         db.close()

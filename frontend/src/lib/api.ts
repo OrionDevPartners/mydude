@@ -34,6 +34,23 @@ function formBody(data: Record<string, string | number | boolean | undefined | n
   return p
 }
 
+// Fetch a binary endpoint (e.g. synthesized audio). On error the backend still
+// returns a JSON {detail}; surface it as an ApiError. On success, return an
+// object URL the caller is responsible for revoking.
+async function requestBlob(path: string, options?: RequestInit): Promise<string> {
+  const res = await fetch(`${BASE}${path}`, {
+    credentials: 'include',
+    ...options,
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try { detail = (await res.json()).detail || detail } catch {}
+    throw new ApiError(res.status, detail)
+  }
+  const blob = await res.blob()
+  return URL.createObjectURL(blob)
+}
+
 // Auth
 export const getBranding = () => request<{ name: string; short_name: string; tagline: string }>('/branding')
 export const getMe = () => request<{ authenticated: boolean }>('/me')
@@ -341,6 +358,47 @@ export const purgeCoach = (confirm: string, ids?: string) =>
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 
+// Avatar (humanistic avatar layer — persona/voice + external GPU avatar bridge)
+export const getAvatar = () => request<AvatarData>('/avatar')
+export const getAvatarVoices = () => request<{ voices: AvatarVoice[] }>('/avatar/voices')
+export const previewAvatarVoice = (text: string, voice_id: string) =>
+  requestBlob('/avatar/voice/preview', {
+    method: 'POST',
+    body: formBody({ text, voice_id }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const createAvatarProfile = (data: Record<string, string | boolean>) =>
+  request<{ ok: boolean; profile: AvatarProfile }>('/avatar/profiles', {
+    method: 'POST',
+    body: formBody(data),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const updateAvatarProfile = (id: number, data: Record<string, string | boolean>) =>
+  request<{ ok: boolean; profile: AvatarProfile }>(`/avatar/profiles/${id}`, {
+    method: 'PATCH',
+    body: formBody(data),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const deleteAvatarProfile = (id: number) =>
+  request<{ ok: boolean; id: number }>(`/avatar/profiles/${id}`, { method: 'DELETE' })
+export const getAvatarSessions = (status?: string) =>
+  request<{ sessions: AvatarSession[] }>(
+    `/avatar/sessions${status ? `?status=${encodeURIComponent(status)}` : ''}`)
+export const startAvatarSession = (profile_id: number) =>
+  request<AvatarSessionStartResult>('/avatar/session/start', {
+    method: 'POST',
+    body: formBody({ profile_id }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const recordAvatarConsent = (id: number, granted: boolean, detail?: string) =>
+  request<{ ok: boolean; session: AvatarSession }>(`/avatar/session/${id}/consent`, {
+    method: 'POST',
+    body: formBody({ granted, detail: detail || '' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const endAvatarSession = (id: number) =>
+  request<{ ok: boolean; session: AvatarSession }>(`/avatar/session/${id}/end`, { method: 'POST' })
+
 // ---- Types ----
 export interface Task {
   id: number
@@ -475,4 +533,33 @@ export interface CoachData {
   recent_signals: MoodSignal[]; insights: CoachInsight[];
   actions: SecretaryAction[]; pending_actions: SecretaryAction[];
   audit: CoachAuditEntry[]; autoreflect_enabled: boolean; strict_private: boolean;
+}
+
+// Avatar
+export interface AvatarVoiceStatus { provider: string; connected: boolean; source: string | null; detail: string }
+export interface AvatarBackend { configured: boolean; source: string | null; detail: string }
+export interface AvatarStatus { configured: boolean; providers: Record<string, AvatarBackend>; detail: string }
+export interface AvatarVoice { voice_id: string; name: string | null; category: string | null; preview_url: string | null }
+export interface AvatarProfile {
+  id: number; name: string; persona: string | null; bot_id: number | null;
+  voice_provider: string | null; voice_id: string | null;
+  avatar_provider: string | null; avatar_config: Record<string, unknown> | null;
+  disclosure_required: boolean; consent_required: boolean; active: boolean;
+  created_at: string | null; updated_at: string | null;
+}
+export interface AvatarSession {
+  id: number; avatar_profile_id: number; mode: string | null; status: string;
+  provider: string | null; disclosure_shown: boolean; consent_status: string;
+  consent_detail: string | null; result_detail: string | null;
+  started_at: string | null; ended_at: string | null; created_at: string | null;
+  connection?: Record<string, unknown> | null;
+}
+export interface AvatarAuditEntry { action: string; status: string; detail: string | null; created_at: string | null }
+export interface AvatarData {
+  voice: AvatarVoiceStatus; avatar: AvatarStatus; profiles: AvatarProfile[];
+  sessions: AvatarSession[]; disclosure: string; consent_prompt: string;
+  audit: AvatarAuditEntry[];
+}
+export interface AvatarSessionStartResult {
+  ok: boolean; session: AvatarSession; disclosure: string | null; consent_prompt: string | null;
 }
