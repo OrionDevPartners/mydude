@@ -826,6 +826,38 @@ async def api_local_models_registry_add(
     return {"ok": True, "entry": entry}
 
 
+@router.post("/local-models/registry/update")
+async def api_local_models_registry_update(
+    model_id: str = Form(""),
+    provider: str = Form(""),
+    new_model_id: str = Form(""),
+    new_provider: str = Form(""),
+    details: str = Form(""),
+    _=Depends(require_auth),
+):
+    import json
+    from src.providers.local_registry import update_model
+
+    extra: dict = {}
+    if details.strip():
+        try:
+            parsed = json.loads(details)
+        except ValueError:
+            raise HTTPException(400, "Details must be valid JSON.")
+        if not isinstance(parsed, dict):
+            raise HTTPException(400, "Details must be a JSON object of key/value pairs.")
+        extra = parsed
+
+    try:
+        entry = update_model(model_id, provider, new_model_id, new_provider, extra)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("Failed to update model in registry: %s", e)
+        raise HTTPException(500, "Could not write to the registry.")
+    return {"ok": True, "entry": entry}
+
+
 @router.post("/local-models/registry/remove")
 async def api_local_models_registry_remove(
     model_id: str = Form(""),

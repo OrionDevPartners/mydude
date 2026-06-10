@@ -106,6 +106,9 @@ def local_models_for_provider(provider: str) -> List[dict]:
 
 MAX_MODEL_ID_LEN = 256
 MAX_PROVIDER_LEN = 64
+MAX_META_KEYS = 32
+MAX_META_KEY_LEN = 64
+MAX_META_VALUE_LEN = 1024
 
 
 def _require_yaml():
@@ -229,6 +232,126 @@ def add_model(model_id: str, provider: str) -> dict:
     models.append(entry)
     _write_registry(data)
     logger.info("Added local model %s (%s) to registry %s", model_id, provider, registry_path())
+    return entry
+
+
+def _clean_metadata(details) -> dict:
+    """Validate and normalise optional custom metadata for a registry entry.
+
+    Accepts a mapping of extra key/value pairs (e.g. ``notes``,
+    ``context_length``). Blank keys are dropped; the reserved ``model_id`` and
+    ``provider`` keys are ignored here (they are set via dedicated fields).
+    Raises ``ValueError`` on a non-mapping, oversized keys/values, non-scalar
+    values, or too many entries. String values are stripped.
+    """
+    if details is None:
+        return {}
+    if not isinstance(details, dict):
+        raise ValueError("Metadata must be a mapping of key/value pairs.")
+    cleaned: dict = {}
+    for k, v in details.items():
+        key = str(k).strip()
+        if not key:
+            continue
+        if key in ("model_id", "provider"):
+            continue
+        if len(key) > MAX_META_KEY_LEN:
+            raise ValueError(
+                "Metadata key %r is too long (max %d characters)." % (key, MAX_META_KEY_LEN)
+            )
+        if isinstance(v, (dict, list)):
+            raise ValueError("Metadata value for %r must be a single value." % key)
+        if isinstance(v, str):
+            val = v.strip()
+            if len(val) > MAX_META_VALUE_LEN:
+                raise ValueError(
+                    "Metadata value for %r is too long (max %d characters)."
+                    % (key, MAX_META_VALUE_LEN)
+                )
+        else:
+            val = v
+        cleaned[key] = val
+    if len(cleaned) > MAX_META_KEYS:
+        raise ValueError("Too many metadata entries (max %d)." % MAX_META_KEYS)
+    return cleaned
+
+
+def update_model(
+    model_id: str,
+    provider: str,
+    new_model_id: str = "",
+    new_provider: str = "",
+    details=None,
+) -> dict:
+    """Edit the entry matching ``model_id`` + ``provider`` in place and persist.
+
+    Locates the existing entry by its current ``model_id``/``provider``, then
+    replaces it with ``{new_model_id, new_provider, **details}``. Blank
+    ``new_*`` values fall back to the originals, so callers can change only the
+    metadata. Custom metadata fully replaces the entry's existing extra keys
+    (the caller sends the desired final set), letting operators add or drop
+    fields. Raises ``ValueError`` for blank/oversized input, a missing target
+    entry, or a collision with a *different* existing entry. Returns the entry
+    that was written.
+    """
+    model_id = (model_id or "").strip()
+    provider = (provider or "").strip()
+    new_model_id = (new_model_id or "").strip() or model_id
+    new_provider = (new_provider or "").strip() or provider
+
+    if not new_model_id:
+        raise ValueError("Model ID is required.")
+    if not new_provider:
+        raise ValueError("Provider is required.")
+    if len(new_model_id) > MAX_MODEL_ID_LEN:
+        raise ValueError("Model ID is too long (max %d characters)." % MAX_MODEL_ID_LEN)
+    if len(new_provider) > MAX_PROVIDER_LEN:
+        raise ValueError("Provider is too long (max %d characters)." % MAX_PROVIDER_LEN)
+
+    meta = _clean_metadata(details)
+
+    data, models = _raw_and_list(create=False)
+    if data is None or not models:
+        raise ValueError("No matching model entry to edit.")
+
+    target_idx = None
+    for i, m in enumerate(models):
+        if (
+            isinstance(m, dict)
+            and m.get("model_id") == model_id
+            and m.get("provider") == provider
+        ):
+            target_idx = i
+            break
+    if target_idx is None:
+        raise ValueError("No matching model entry to edit.")
+
+    # Guard against colliding with a *different* existing entry.
+    for i, m in enumerate(models):
+        if i == target_idx:
+            continue
+        if (
+            isinstance(m, dict)
+            and m.get("model_id") == new_model_id
+            and m.get("provider") == new_provider
+        ):
+            raise ValueError(
+                "%s is already registered for %s." % (new_model_id, new_provider)
+            )
+
+    entry = {"model_id": new_model_id, "provider": new_provider}
+    entry.update(meta)
+    # Replace in place so the surrounding container shape is preserved.
+    models[target_idx] = entry
+    _write_registry(data)
+    logger.info(
+        "Updated local model %s (%s) -> %s (%s) in registry %s",
+        model_id,
+        provider,
+        new_model_id,
+        new_provider,
+        registry_path(),
+    )
     return entry
 
 

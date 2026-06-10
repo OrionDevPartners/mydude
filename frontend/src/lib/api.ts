@@ -113,6 +113,18 @@ export const addLocalModel = (model_id: string, provider: string) =>
     body: formBody({ model_id, provider }),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
+export const updateLocalModel = (
+  model_id: string,
+  provider: string,
+  new_model_id: string,
+  new_provider: string,
+  details: Record<string, string>,
+) =>
+  request<{ ok: boolean; entry: Record<string, unknown> }>('/local-models/registry/update', {
+    method: 'POST',
+    body: formBody({ model_id, provider, new_model_id, new_provider, details: JSON.stringify(details) }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
 export const removeLocalModel = (model_id: string, provider: string) =>
   request<{ ok: boolean }>('/local-models/registry/remove', {
     method: 'POST',

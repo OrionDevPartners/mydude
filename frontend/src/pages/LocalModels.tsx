@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { getLocalModels, addLocalModel, removeLocalModel, LocalProvider } from '@/lib/api'
+import { getLocalModels, addLocalModel, updateLocalModel, removeLocalModel, LocalProvider } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Badge, Empty } from '@/components/ui'
-import { Cpu, ExternalLink, RefreshCw, CheckCircle, XCircle, Copy, Check, Database, Plus, Trash2 } from 'lucide-react'
+import { Cpu, ExternalLink, RefreshCw, CheckCircle, XCircle, Copy, Check, Database, Plus, Trash2, Pencil, X } from 'lucide-react'
 
 export function LocalModels() {
   const { data, loading, error, refetch } = useApi(getLocalModels, [])
@@ -157,7 +157,6 @@ function RegistryPanel({ registry, path, exists, providerKeys, onChange }: {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
-  const [removing, setRemoving] = useState<string | null>(null)
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
@@ -173,19 +172,6 @@ function RegistryPanel({ registry, path, exists, providerKeys, onChange }: {
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Could not add the model.')
     } finally { setBusy(false) }
-  }
-
-  async function remove(id: string, pv: string) {
-    setErr(null); setMsg(null)
-    const tag = `${id}\u0000${pv}`
-    setRemoving(tag)
-    try {
-      await removeLocalModel(id, pv)
-      setMsg(`Removed ${id} from the registry.`)
-      onChange()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Could not remove the model.')
-    } finally { setRemoving(null) }
   }
 
   return (
@@ -210,30 +196,16 @@ function RegistryPanel({ registry, path, exists, providerKeys, onChange }: {
             <table className="data-table">
               <thead><tr><th>Model ID</th><th>Provider</th><th>Details</th><th></th></tr></thead>
               <tbody>
-                {registry.map((m, i) => {
-                  const { model_id, provider: pv, ...rest } = m as Record<string, unknown>
-                  const idStr = String(model_id ?? ''), pvStr = String(pv ?? '')
-                  const tag = `${idStr}\u0000${pvStr}`
-                  return (
-                    <tr key={i}>
-                      <td style={{ fontFamily: 'monospace', fontSize: 12.5 }}>{idStr || '—'}</td>
-                      <td><span className="badge badge-gray">{pvStr || '—'}</span></td>
-                      <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
-                        {Object.entries(rest).map(([k, v]) => `${k}: ${String(v)}`).join('  ·  ') || '—'}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          disabled={removing === tag}
-                          onClick={() => remove(idStr, pvStr)}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
-                        >
-                          <Trash2 size={13} /> {removing === tag ? 'Removing…' : 'Remove'}
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })}
+                {registry.map((m, i) => (
+                  <RegistryRow
+                    key={i}
+                    entry={m as Record<string, unknown>}
+                    providerKeys={providerKeys}
+                    onChange={onChange}
+                    onError={t => { setErr(t); setMsg(null) }}
+                    onSuccess={t => { setMsg(t); setErr(null) }}
+                  />
+                ))}
               </tbody>
             </table>
           </div>
@@ -274,6 +246,166 @@ function RegistryPanel({ registry, path, exists, providerKeys, onChange }: {
         loader picks up changes on the next refresh.
       </p>
     </Card>
+  )
+}
+
+type MetaRow = { key: string; value: string }
+
+function RegistryRow({ entry, providerKeys, onChange, onError, onSuccess }: {
+  entry: Record<string, unknown>
+  providerKeys: string[]
+  onChange: () => void
+  onError: (t: string) => void
+  onSuccess: (t: string) => void
+}) {
+  const { model_id, provider: pv, ...rest } = entry
+  const idStr = String(model_id ?? '')
+  const pvStr = String(pv ?? '')
+  const initialMeta = (): MetaRow[] =>
+    Object.entries(rest).map(([k, v]) => ({ key: k, value: String(v) }))
+
+  const [editing, setEditing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const [editId, setEditId] = useState(idStr)
+  const [editProvider, setEditProvider] = useState(pvStr)
+  const [meta, setMeta] = useState<MetaRow[]>(initialMeta)
+
+  function startEdit() {
+    setEditId(idStr)
+    setEditProvider(pvStr)
+    setMeta(initialMeta())
+    setEditing(true)
+  }
+
+  async function save() {
+    const id = editId.trim(), p = editProvider.trim()
+    if (!id || !p) { onError('Model ID and provider are both required.'); return }
+    const details: Record<string, string> = {}
+    for (const { key, value } of meta) {
+      const k = key.trim()
+      if (!k || k === 'model_id' || k === 'provider') continue
+      details[k] = value
+    }
+    setBusy(true)
+    try {
+      await updateLocalModel(idStr, pvStr, id, p, details)
+      onSuccess(`Updated ${id} (${p}).`)
+      setEditing(false)
+      onChange()
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Could not update the model.')
+    } finally { setBusy(false) }
+  }
+
+  async function remove() {
+    setRemoving(true)
+    try {
+      await removeLocalModel(idStr, pvStr)
+      onSuccess(`Removed ${idStr} from the registry.`)
+      onChange()
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Could not remove the model.')
+    } finally { setRemoving(false) }
+  }
+
+  if (editing) {
+    return (
+      <tr>
+        <td colSpan={4} style={{ padding: 14 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 220px' }}>
+                <label style={fieldLabel}>Model ID</label>
+                <input className="input" value={editId} onChange={e => setEditId(e.target.value)} style={{ width: '100%' }} />
+              </div>
+              <div style={{ flex: '1 1 160px' }}>
+                <label style={fieldLabel}>Provider</label>
+                <input className="input" list="local-provider-options" value={editProvider} onChange={e => setEditProvider(e.target.value)} style={{ width: '100%' }} />
+              </div>
+            </div>
+            <div>
+              <label style={fieldLabel}>Custom metadata (optional)</label>
+              {meta.length === 0 && (
+                <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 6 }}>
+                  No metadata — add fields like <code>context_length</code> or <code>notes</code>.
+                </p>
+              )}
+              {meta.map((row, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                  <input
+                    className="input"
+                    placeholder="key (e.g. context_length)"
+                    value={row.key}
+                    onChange={e => setMeta(m => m.map((r, j) => j === i ? { ...r, key: e.target.value } : r))}
+                    style={{ flex: '1 1 160px' }}
+                  />
+                  <input
+                    className="input"
+                    placeholder="value"
+                    value={row.value}
+                    onChange={e => setMeta(m => m.map((r, j) => j === i ? { ...r, value: e.target.value } : r))}
+                    style={{ flex: '1 1 200px' }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setMeta(m => m.filter((_, j) => j !== i))}
+                    title="Remove field"
+                    style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setMeta(m => [...m, { key: '', value: '' }])}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+              >
+                <Plus size={13} /> Add field
+              </button>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={save} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Check size={14} /> {busy ? 'Saving…' : 'Save changes'}
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditing(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </td>
+      </tr>
+    )
+  }
+
+  return (
+    <tr>
+      <td style={{ fontFamily: 'monospace', fontSize: 12.5 }}>{idStr || '—'}</td>
+      <td><span className="badge badge-gray">{pvStr || '—'}</span></td>
+      <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+        {Object.entries(rest).map(([k, v]) => `${k}: ${String(v)}`).join('  ·  ') || '—'}
+      </td>
+      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={startEdit}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+        >
+          <Pencil size={13} /> Edit
+        </button>
+        <button
+          className="btn btn-secondary btn-sm"
+          disabled={removing}
+          onClick={remove}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 6 }}
+        >
+          <Trash2 size={13} /> {removing ? 'Removing…' : 'Remove'}
+        </button>
+      </td>
+    </tr>
   )
 }
 
