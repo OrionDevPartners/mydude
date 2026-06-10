@@ -643,3 +643,39 @@ export interface FleetStatus {
   total_bots: number; total_teams: number; total_resources: number; jobs_awaiting_approval: number;
   bot_lifecycle: Record<string, number>; team_status: Record<string, number>; resource_status: Record<string, number>;
 }
+
+// Prompt Engine (self-evolving prompts)
+export interface PromptProgramSummary {
+  id: number; name: string; signature_name: string; description: string | null;
+  current_version_id: number | null; live_version_no: number | null;
+  version_count: number; usable_trace_count: number; updated_at: string | null;
+}
+export interface PromptVersionRow {
+  id: number; version_no: number; status: string; ever_live: boolean;
+  optimizer: string | null; score: number | null; base_score: number | null;
+  delta: number | null; instructions: string; provenance: Record<string, unknown>;
+  created_at: string | null; promoted_at: string | null;
+}
+export interface PromptRunRow {
+  id: number; program_id: number; status: string; optimizer: string | null;
+  trainset_size: number | null; best_score: number | null; base_score: number | null;
+  error: string | null; candidate_version_ids: number[];
+  started_by: string | null; started_at: string | null; ended_at: string | null;
+}
+export interface PromptProgramDetail {
+  program: PromptProgramSummary; versions: PromptVersionRow[]; runs: PromptRunRow[];
+}
+
+export const listPrompts = () =>
+  request<{ programs: PromptProgramSummary[]; min_traces: number }>('/prompts')
+export const getPromptDetail = (name: string) =>
+  request<PromptProgramDetail>(`/prompts/${encodeURIComponent(name)}`)
+export const optimizePrompt = (name: string) =>
+  request<{ ok: boolean; run_id: number }>(`/prompts/${encodeURIComponent(name)}/optimize`, { method: 'POST' })
+export const getPromptRun = (runId: number) =>
+  request<PromptRunRow>(`/prompts/runs/${runId}`)
+export const promptVersionPromote = (versionId: number) =>
+  request<{ ok: boolean; proposal_id: string; proposal_db_id: number | null; message: string }>(
+    `/prompts/versions/${versionId}/promote`, { method: 'POST' })
+export const promptVersionRollback = (versionId: number) =>
+  request<{ ok: boolean }>(`/prompts/versions/${versionId}/rollback`, { method: 'POST' })

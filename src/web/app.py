@@ -125,6 +125,15 @@ async def startup():
         logger.error("Database init failed: %s", e)
 
     try:
+        from src.promptopt import store as prompt_store
+        from src.promptopt import service as prompt_service
+        prompt_store.seed_default_programs()
+        recovered = prompt_service.recover_orphans()
+        logger.info("Prompt engine seeded; %d orphaned run(s) recovered", recovered)
+    except Exception as e:
+        logger.warning("Prompt engine init failed: %s", e)
+
+    try:
         from src.web.routes_keys import sync_keys_to_env
         sync_keys_to_env()
         logger.info("API keys synced to environment")

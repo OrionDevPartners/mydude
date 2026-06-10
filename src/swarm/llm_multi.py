@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import random
 import time
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
+
+logger = logging.getLogger(__name__)
 
 from src.providers.config import llm_provider_specs
 from src.providers.registry import build_adapter
@@ -257,6 +260,16 @@ class MultiProviderLLM:
             f"User request:\n{user}\n\n"
             f"Providers' outputs:\n{debate}"
         )
+
+        # Primary path: the governed, versioned, governance-approved judge program
+        # (DSPy). Fails loud internally (records a 'failed' trace + raises) when no
+        # provider is available or the output can't be parsed; we then preserve the
+        # historical degraded behavior below so call_team's contract survives.
+        try:
+            from src.promptopt.runtime import run_judge
+            return await run_judge(user, debate, critical_warning, self.budget_tokens)
+        except Exception as e:
+            logger.warning("Governed judge unavailable; using degraded synthesis: %s", e)
 
         for adapter in self._available_adapters():
             try:

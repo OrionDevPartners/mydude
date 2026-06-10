@@ -392,6 +392,33 @@ class GovernanceEngine:
         },
     ]
 
+    def _promote_prompt_version(self, db: Any, prop: Any, action_raw: str) -> List[str]:
+        """Promote an evolved prompt version to live within the enactment's txn.
+
+        Triggered by a ``promote_prompt_version:<version_id>`` proposed_action.
+        Delegates the validated live/archive flip to the prompt store using the
+        SAME db session the enactment commits, so promotion and the
+        GovernanceEnactment audit row are atomic. Returns audit tokens.
+        """
+        try:
+            raw_id = action_raw.split("promote_prompt_version:", 1)[1].strip()
+            version_id = int(raw_id)
+        except Exception:
+            logger.warning("Malformed promote_prompt_version action: %r", action_raw)
+            return ["prompt_promotion=invalid_action"]
+        try:
+            from src.promptopt import store as prompt_store
+            ok, detail = prompt_store.promote_version_in_session(db, version_id, prop.id)
+            if ok:
+                logger.info("Prompt version promoted via governance: %s (proposal=%s)",
+                            detail, prop.proposal_id)
+                return ["promote_prompt_version=%s" % detail]
+            logger.warning("Prompt promotion rejected: %s", detail)
+            return ["promote_prompt_version=rejected:%s" % detail]
+        except Exception as e:
+            logger.warning("Prompt promotion failed for version %s: %s", version_id, e)
+            return ["promote_prompt_version=error:%s" % e]
+
     def _apply_enacted_action(self, db: Any, prop: Any) -> List[str]:
         """Parse proposed_action and write bounded setting changes to AppSetting.
 
@@ -401,6 +428,10 @@ class GovernanceEngine:
 
         Returns a list of "key=value" strings describing what was changed.
         """
+        action_raw = (prop.proposed_action or "").strip()
+        if action_raw.startswith("promote_prompt_version:"):
+            return self._promote_prompt_version(db, prop, action_raw)
+
         try:
             from src.models import AppSetting
             applied: List[str] = []

@@ -434,6 +434,111 @@ class SwarmRunIndex(Base):
 
 
 # ---------------------------------------------------------------------------
+# Self-evolving prompt engine (DSPy + MIPROv2/GEPA), governance-gated.
+#
+# A PromptProgram is a named, optimizable behavior whose live instructions are
+# served at runtime through a DSPy Signature/Module (see src/promptopt/). Every
+# governed run writes a PromptTrace the optimizers consume. Optimizers produce
+# candidate PromptVersions; a candidate only goes LIVE through the existing
+# GovernanceProposal/Vote/Enactment gate (no auto-promotion). Rollback is a
+# direct, audited operator action restricted to previously-live versions.
+# ---------------------------------------------------------------------------
+
+
+class PromptProgram(Base):
+    """A governed, optimizable behavior whose instructions can evolve.
+
+    ``current_version_id`` points at the LIVE PromptVersion served at runtime.
+    The program set is seeded idempotently at startup from the code's current
+    hardcoded prompts (version 1, live).
+    """
+    __tablename__ = "prompt_programs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), unique=True, nullable=False, index=True)
+    signature_name = Column(String(120), nullable=False)
+    description = Column(Text, nullable=True)
+    current_version_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PromptVersion(Base):
+    """An immutable instructions+demos snapshot for a PromptProgram.
+
+    status:     candidate (proposed by an optimizer) | live (currently served)
+                | archived (was live, superseded) | rejected.
+    ever_live:  True once the version has been served — the ONLY valid rollback
+                targets, so a rollback can never point at an unapproved candidate.
+    governance_proposal_id: the enacted proposal that promoted this version
+                (provenance + permanent audit linkage).
+    """
+    __tablename__ = "prompt_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    program_id = Column(Integer, nullable=False, index=True)
+    version_no = Column(Integer, nullable=False)
+    instructions = Column(Text, nullable=False)
+    demos_json = Column(Text, nullable=True)
+    provenance_json = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="candidate", index=True)
+    ever_live = Column(Boolean, default=False)
+    score = Column(Float, nullable=True)
+    governance_proposal_id = Column(Integer, nullable=True)
+    optimization_run_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    promoted_at = Column(DateTime, nullable=True)
+
+
+class PromptTrace(Base):
+    """A structured execution trace of a governed program run.
+
+    Consumed by the optimizers as trainset rows. Captures inputs, the produced
+    output, the composite score, and structured feedback (missing format
+    sections, compliance violations). status='failed' rows record degraded runs
+    loudly without being fed back into optimization as good examples.
+    """
+    __tablename__ = "prompt_traces"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    program_id = Column(Integer, nullable=False, index=True)
+    version_id = Column(Integer, nullable=True, index=True)
+    inputs_json = Column(Text, nullable=True)
+    output = Column(Text, nullable=True)
+    score = Column(Float, nullable=True)
+    compliance_score = Column(Integer, nullable=True)
+    hallucination_risk = Column(Float, nullable=True)
+    feedback_json = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="ok", index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PromptOptimizationRun(Base):
+    """An optimizer execution (MIPROv2 baseline, then GEPA reflective).
+
+    Polled by the dashboard. status: running | completed | failed. On a fail-loud
+    error (e.g. no provider available, optimizer exception) status='failed' and
+    ``error`` carries the message — never a silent fallback. ``candidates_json``
+    holds produced candidate version ids + measured scores.
+    """
+    __tablename__ = "prompt_optimization_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    program_id = Column(Integer, nullable=False, index=True)
+    optimizer = Column(String(40), nullable=False, default="mipro+gepa")
+    status = Column(String(20), nullable=False, default="running", index=True)
+    trainset_size = Column(Integer, default=0)
+    base_score = Column(Float, nullable=True)
+    best_score = Column(Float, nullable=True)
+    candidates_json = Column(Text, nullable=True)
+    log = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    started_by = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
 # Finance / accountant sub-stack (QuickBooks + Plaid)
 #
 # Postgres is the system of record for raw financial data. Only relation-level

@@ -20,6 +20,7 @@ import { Finance } from '@/pages/Finance'
 import { Coach } from '@/pages/Coach'
 import { Avatar } from '@/pages/Avatar'
 import { Fleet } from '@/pages/Fleet'
+import { PromptEngine } from '@/pages/PromptEngine'
 import { ErrorPage } from '@/pages/ErrorPage'
 import { Spinner } from '@/components/ui'
 
@@ -66,6 +67,7 @@ function AppRoutes() {
               <Route path="/coach" element={<Coach />} />
               <Route path="/avatar" element={<Avatar />} />
               <Route path="/fleet" element={<Fleet />} />
+              <Route path="/prompt-engine" element={<PromptEngine />} />
               <Route path="*" element={<ErrorPage code={404} message="Page not found" />} />
             </Routes>
           </Layout>
