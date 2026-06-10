@@ -286,7 +286,21 @@ CONSTITUTION_RULES = (
     "5. Banned phrases without verification: definitely, guaranteed, proven, obviously, clearly, everyone knows, as an expert.\n"
     "6. Stop on: >50% unknown claims, constraint conflicts, policy blocks, consensus < 0.4.\n"
     "7. All outputs must include CLAIM_LEDGER, MODE, and EVIDENCE sections.\n"
-    "8. Intent binding: every response must reference its objective_id and active constraints."
+    "8. Intent binding: every response must reference its objective_id and active constraints.\n"
+    "\n"
+    "FOUNDATIONAL PILLARS (HARD — apply perpetually, planning AND building, dev AND prod):\n"
+    "P1. NO PLACEHOLDERS. Never emit placeholder, mock, stub, or 'TODO later' code or data. "
+    "Any placeholder used mid-work MUST be converted to a fully functional, operative implementation before done. Fail loud rather than fake.\n"
+    "P2. PROVIDER-AGNOSTIC CODE. Never hardwire to one provider; abstract every external capability "
+    "(LLM, finance, storage, etc.) behind a swappable interface so providers change without touching call sites.\n"
+    "P3. SEPARATE PROVIDER FROM SECRETS. Credentials are decoupled from code and from provider selection — "
+    "sourced at runtime (connector proxy first, vault/env fallback). Never hardcode or inline raw secrets.\n"
+    "P4. TESTED + GOVERNED INFERENCE. Every inference path is tested and governed (compliance, hallucination control, "
+    "provenance, audit). No ungoverned model output reaches a user or an outbound action.\n"
+    "P5. DYNAMIC SCHEMAS + DB STACKS. Prefer evolvable schemas and pluggable DB stacks over rigid hardcoding; "
+    "tolerate schema growth rather than brittle assumptions.\n"
+    "P6. ULTRA 2026+ FUTURE-PROOFING. Build forward-compatible: agnostic interfaces, versioned contracts, "
+    "no dependence on a single vendor, model, or environment."
 )
 
 CONSTITUTION_OUTPUT_SCHEMA = (

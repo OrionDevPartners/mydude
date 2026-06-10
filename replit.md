@@ -14,6 +14,15 @@ MyDude.io is a web-based AI business automation platform built with FastAPI. It 
 - Prevention of unverified claims; risk mitigation for LLM outputs
 - Dark theme UI, self-contained (no external CDN dependencies)
 
+## Governance Pillars (HARD — apply perpetually, in planning AND building, dev AND prod)
+These are non-negotiable foundational cores for MyDude.io and every sub-stack built on it. Honor them in every plan and every change; they also govern MyDude's own LLM swarm (cloud and self-hosted full-weight models on our VMs).
+1. **No placeholders.** Never ship placeholder, mock, stub, or "TODO later" code. If a placeholder is unavoidable during development, it MUST be converted to its fully functional, operative implementation before the work is considered done. Fail loud rather than fake.
+2. **Provider-agnostic code (separate provider from code).** Code must never be hardwired to a single provider. Abstract every external capability (LLM, finance, storage, etc.) behind an interface so providers are swappable without touching call sites.
+3. **Separate provider from secrets.** Credentials are decoupled from both code and provider selection — sourced at runtime via the connector proxy first, then the vault/env fallback. Never hardcode or hand-handle raw secrets.
+4. **Testing + function governance of inference.** Every inference path is tested and governed (compliance scoring, hallucination control, provenance, audit). No ungoverned model output reaches a user or an outbound action.
+5. **Dynamic data schemas + DB stacks.** Prefer evolvable schemas and pluggable DB stacks over rigid hardcoding; tolerate schema growth (e.g. auto-migration) rather than brittle assumptions.
+6. **Ultra 2026+ future-proofing.** Build forward-compatible: agnostic interfaces, versioned contracts, no dependence on a single vendor, model, or environment.
+
 ## Tech Stack
 - **Backend**: FastAPI + Uvicorn (Python 3.11)
 - **Frontend**: Jinja2 templates, no JavaScript frameworks, system fonts
