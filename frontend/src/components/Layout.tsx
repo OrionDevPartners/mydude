@@ -5,7 +5,7 @@ import { logout } from '@/lib/api'
 import {
   LayoutDashboard, History, Key, Globe, Plug, Zap,
   ShieldCheck, GitBranch, Brain, Activity, CreditCard,
-  Cpu, CircleDollarSign, LogOut, Menu, X
+  Cpu, CircleDollarSign, Heart, LogOut, Menu, X
 } from 'lucide-react'
 
 interface NavItem { label: string; to: string; icon: ReactNode; section?: string }
@@ -23,6 +23,7 @@ const NAV: NavItem[] = [
   { label: 'System Health', to: '/system', icon: <Activity size={16} /> },
   { label: 'Subscriptions', to: '/subscriptions', icon: <CreditCard size={16} />, section: 'TOOLS' },
   { label: 'Finance', to: '/finance', icon: <CircleDollarSign size={16} /> },
+  { label: 'Coach', to: '/coach', icon: <Heart size={16} /> },
   { label: 'Local AI Models', to: '/local-models', icon: <Cpu size={16} /> },
 ]
 

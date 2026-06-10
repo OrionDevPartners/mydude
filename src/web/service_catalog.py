@@ -39,6 +39,23 @@ SERVICE_CATALOG = [
         ],
     },
     {
+        "slug": "hume",
+        "name": "Hume AI (Emotion)",
+        "category": "AI / LLM",
+        "env_var": "HUME_API_KEY",
+        "key_prefix": "",
+        "signup_url": "https://platform.hume.ai/",
+        "key_url": "https://platform.hume.ai/settings/keys",
+        "connector": None,
+        "steps": [
+            "Create an account at platform.hume.ai",
+            "Open Settings -> API Keys",
+            "Create a new API key",
+            "Copy the key and paste it below (powers mood / emotion capture)",
+            "Note: Hume's Expression Measurement API sunsets 2026-06-14",
+        ],
+    },
+    {
         "slug": "anthropic",
         "name": "Anthropic (Claude)",
         "category": "AI / LLM",

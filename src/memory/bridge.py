@@ -152,6 +152,12 @@ class MemoryBridge:
         }
 
         for entry in local_entries:
+            # Private-Mode: never egress entries explicitly marked private. This
+            # is the bridge-side guarantee that local-only emotional/personal
+            # nodes are not pushed to the cloud store on any sync run.
+            if (entry.metadata or {}).get("private"):
+                report.skipped += 1
+                continue
             if entry.confidence < min_confidence:
                 report.skipped += 1
                 continue

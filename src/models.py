@@ -575,3 +575,90 @@ class FinanceAuditLog(Base):
     detail = Column(Text, nullable=True)
     source = Column(String(40), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Coach / Secretary / Mood sub-stack (Personal Assistant + Life Coach)
+# ---------------------------------------------------------------------------
+
+class MoodSignal(Base):
+    """A time-stamped emotion/behavior node — the longitudinal 'digital twin'.
+
+    Postgres is the system of record. Each row optionally links to a LOCAL-ONLY
+    memory node (``memory_id``) so emotional content lives in the local knowledge
+    graph but never egresses to the cloud adapter (Private-Mode)."""
+    __tablename__ = "mood_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # emotion (Hume) | sentiment (LLM) | behavior (calendar/finance)
+    signal_type = Column(String(20), nullable=False, default="emotion", index=True)
+    # hume | llm_sentiment | calendar | finance | manual
+    source = Column(String(40), nullable=False, default="manual")
+    observed_at = Column(DateTime, nullable=True, index=True)
+    valence = Column(Float, nullable=True)   # -1..1 overall pleasantness
+    arousal = Column(Float, nullable=True)   # 0..1 activation / intensity
+    score = Column(Float, nullable=True)     # generic magnitude (e.g. stress level)
+    label = Column(String(80), nullable=True)   # dominant emotion / behavior label
+    summary = Column(Text, nullable=True)       # human-readable note
+    metrics_json = Column(Text, nullable=True)  # full provider payload (top emotions, etc.)
+    project_id = Column(Integer, nullable=True, index=True)  # link to a finance/work project
+    event_ref = Column(String(120), nullable=True)          # calendar event / context ref
+    memory_id = Column(String(80), nullable=True, index=True)  # local-only memory node id (purge)
+    private = Column(Boolean, default=True)   # emotional content never egresses
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CoachInsight(Base):
+    """A surfaced longitudinal pattern (e.g. burnout risk) with grounded citations
+    and a concrete micro-action. Outcome is logged back for closed-loop coaching."""
+    __tablename__ = "coach_insights"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(String(40), nullable=False, default="pattern")  # pattern | risk | reflection
+    title = Column(String(200), nullable=False)
+    detail = Column(Text, nullable=True)
+    severity = Column(String(20), default="info")  # info | watch | elevated | high
+    micro_action = Column(Text, nullable=True)
+    citations_json = Column(Text, nullable=True)   # memory_ids / signal ids grounding the insight
+    confidence = Column(Float, default=0.0)
+    # open | acknowledged | actioned | dismissed
+    status = Column(String(20), default="open", index=True)
+    outcome = Column(Text, nullable=True)
+    source = Column(String(40), default="reflection")  # reflection | manual
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SecretaryRequest(Base):
+    """A two-phase, approval-gated outbound action (email/text/booking). Created in
+    ``pending_confirm``; only ``confirm`` after explicit operator approval dispatches
+    it via the provider-agnostic delivery layer. Fails loud if no provider configured."""
+    __tablename__ = "secretary_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(String(40), nullable=False)     # draft_email | draft_text | propose_booking
+    channel = Column(String(20), nullable=False)  # email | sms | calendar
+    recipient = Column(String(255), nullable=True)
+    subject = Column(String(255), nullable=True)
+    body = Column(Text, nullable=True)
+    payload_json = Column(Text, nullable=True)  # channel-specific (start/end/attendees for booking)
+    summary = Column(Text, nullable=True)
+    # pending_confirm | sent | failed | rejected | needs_provider
+    status = Column(String(20), default="pending_confirm", index=True)
+    provider = Column(String(40), nullable=True)
+    result_detail = Column(Text, nullable=True)
+    requested_at = Column(DateTime, default=datetime.utcnow)
+    confirmed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CoachAuditLog(Base):
+    """Audit trail for coach/secretary actions: ingest, ask, reflect, gated outbound."""
+    __tablename__ = "coach_audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    action = Column(String(60), nullable=False)
+    status = Column(String(20), nullable=False, default="ok")
+    detail = Column(Text, nullable=True)
+    source = Column(String(40), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

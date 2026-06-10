@@ -278,6 +278,69 @@ export const confirmFinanceWrite = (id: number, confirm: string) =>
 export const rejectFinanceWrite = (id: number) =>
   request<{ ok: boolean; write: FinanceWrite }>(`/finance/writes/${id}/reject`, { method: 'POST' })
 
+// Coach (PA / secretary + life-coach + mood)
+export const getCoach = () => request<CoachData>('/coach')
+export const getCoachSignals = (params?: { signal_type?: string; limit?: number }) => {
+  const p = new URLSearchParams()
+  if (params?.signal_type) p.set('signal_type', params.signal_type)
+  if (params?.limit) p.set('limit', String(params.limit))
+  return request<{ signals: MoodSignal[] }>(`/coach/signals?${p}`)
+}
+export const ingestCoachText = (data: { text: string; prefer?: string; project_id?: string; event_ref?: string }) =>
+  request<{ ok: boolean; signal: MoodSignal }>('/coach/ingest', {
+    method: 'POST',
+    body: formBody(data),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const computeCoachBehavior = () =>
+  request<{ ok: boolean; written: unknown[]; skipped: { signal: string; reason: string }[] }>('/coach/behavior/compute', { method: 'POST' })
+export const askCoach = (question: string) =>
+  request<CoachAskResult>('/coach/ask', {
+    method: 'POST',
+    body: formBody({ question }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const reflectCoach = () =>
+  request<{ ok: boolean; status: string; insights: CoachInsight[]; message?: string }>('/coach/reflect', { method: 'POST' })
+export const setCoachAutoreflect = (enabled: boolean) =>
+  request<{ ok: boolean; autoreflect_enabled: boolean }>('/coach/autoreflect', {
+    method: 'POST',
+    body: formBody({ enabled: enabled ? 'true' : 'false' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const setCoachStrictPrivate = (enabled: boolean) =>
+  request<{ ok: boolean; strict_private: boolean }>('/coach/strict-private', {
+    method: 'POST',
+    body: formBody({ enabled: enabled ? 'true' : 'false' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const setInsightOutcome = (id: number, status: string, outcome?: string) =>
+  request<{ ok: boolean; insight: CoachInsight }>(`/coach/insights/${id}/outcome`, {
+    method: 'POST',
+    body: formBody({ status, outcome: outcome || '' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const requestCoachAction = (data: Record<string, string>) =>
+  request<{ ok: boolean; action: SecretaryAction }>('/coach/actions/request', {
+    method: 'POST',
+    body: formBody(data),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const confirmCoachAction = (id: number, confirm: string) =>
+  request<{ ok: boolean; action?: SecretaryAction; message?: string }>(`/coach/actions/${id}/confirm`, {
+    method: 'POST',
+    body: formBody({ confirm }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const rejectCoachAction = (id: number) =>
+  request<{ ok: boolean; action: SecretaryAction }>(`/coach/actions/${id}/reject`, { method: 'POST' })
+export const purgeCoach = (confirm: string, ids?: string) =>
+  request<{ ok: boolean; deleted_signals?: number; forgotten_memories?: number; message?: string }>('/coach/purge', {
+    method: 'POST',
+    body: formBody({ confirm, ids: ids || '' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+
 // ---- Types ----
 export interface Task {
   id: number
@@ -375,4 +438,41 @@ export interface FinanceData {
 export interface FinanceSyncReport {
   ok: boolean; trigger: string; error: string | null;
   plaid: Record<string, unknown>; quickbooks: Record<string, unknown>;
+}
+
+// Coach
+export interface MoodProviderConn { provider: string; connected: boolean; source: string | null; detail: string; sunset?: string }
+export interface MoodProviderStatus { active: string; hume?: MoodProviderConn; [key: string]: unknown }
+export interface DeliveryChannel { channel: string; configured: boolean; provider: string | null; detail: string }
+export interface DeliveryStatus { email: DeliveryChannel; sms: DeliveryChannel; calendar: DeliveryChannel }
+export interface MoodSignal {
+  id: number; signal_type: string; source: string; observed_at: string | null;
+  valence: number | null; arousal: number | null; score: number | null;
+  label: string | null; summary: string | null; metrics: Record<string, unknown> | null;
+  project_id: number | null; event_ref: string | null; memory_id: string | null;
+  private: boolean; created_at: string | null;
+}
+export interface CoachCitation { ref: string; memory_id: string | null; content?: string; category?: string | null; signal_id?: number }
+export interface CoachInsight {
+  id: number; kind: string; title: string; detail: string | null; severity: string;
+  micro_action: string | null; citations: CoachCitation[] | null; confidence: number | null;
+  status: string; outcome: string | null; source: string; created_at: string | null; updated_at: string | null;
+}
+export interface SecretaryAction {
+  id: number; kind: string; channel: string | null; recipient: string | null;
+  subject: string | null; body: string | null; payload: Record<string, unknown> | null;
+  summary: string | null; status: string; provider: string | null;
+  result_detail: string | null; requested_at: string | null; confirmed_at: string | null;
+}
+export interface CoachAuditEntry { id: number; action: string; status: string; source: string | null; detail: string | null; created_at: string | null }
+export interface CoachAskResult {
+  ok: boolean; status: string; answer: string | null; citations: CoachCitation[];
+  message?: string; strict_private?: boolean;
+  compliance_scores?: unknown; hallucination_risks?: unknown;
+}
+export interface CoachData {
+  mood_provider: MoodProviderStatus; delivery: DeliveryStatus;
+  recent_signals: MoodSignal[]; insights: CoachInsight[];
+  actions: SecretaryAction[]; pending_actions: SecretaryAction[];
+  audit: CoachAuditEntry[]; autoreflect_enabled: boolean; strict_private: boolean;
 }

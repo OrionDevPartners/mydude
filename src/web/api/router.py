@@ -1563,3 +1563,265 @@ async def api_finance_write_reject(request_id: int, _=Depends(require_auth)):
         return {"ok": True, "write": res}
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Coach (PA / secretary + empathetic life-coach + mood sub-stack)
+# ---------------------------------------------------------------------------
+
+@router.get("/coach")
+async def api_coach(_=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.models import CoachAuditLog
+    from src.coach.providers import mood_provider_status
+    from src.coach.delivery import delivery_status
+    from src.coach.ingestion import recent_signals
+    from src.coach.reflection import list_insights
+    from src.coach.secretary import list_actions
+    from src.web.settings_store import get_setting
+
+    db = SessionLocal()
+    try:
+        audit = db.query(CoachAuditLog).order_by(CoachAuditLog.id.desc()).limit(25).all()
+        return {
+            "mood_provider": mood_provider_status(),
+            "delivery": delivery_status(),
+            "recent_signals": recent_signals(db, limit=50),
+            "insights": list_insights(db, limit=50),
+            "actions": list_actions(db, limit=50),
+            "pending_actions": list_actions(db, limit=50, status="pending_confirm"),
+            "audit": [{"id": a.id, "action": a.action, "status": a.status,
+                       "source": a.source, "detail": a.detail,
+                       "created_at": _dt(a.created_at)} for a in audit],
+            "autoreflect_enabled": (get_setting("ENABLE_COACH_REFLECTION", "0") or "0") == "1",
+            "strict_private": (get_setting("COACH_STRICT_PRIVATE", "0") or "0") == "1",
+        }
+    finally:
+        db.close()
+
+
+@router.get("/coach/signals")
+async def api_coach_signals(
+    signal_type: str = "", limit: str = "100", _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.coach.ingestion import recent_signals
+    try:
+        lim = max(1, min(int(limit or 100), 500))
+    except ValueError:
+        lim = 100
+    db = SessionLocal()
+    try:
+        return {"signals": recent_signals(db, limit=lim,
+                                          signal_type=signal_type.strip() or None)}
+    finally:
+        db.close()
+
+
+@router.post("/coach/ingest")
+async def api_coach_ingest(
+    text: str = Form(""), prefer: str = Form("auto"),
+    project_id: str = Form(""), event_ref: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.coach.ingestion import ingest_text
+    from src.coach.providers import CoachNotConfigured, CoachProviderError, CoachAuthError
+    from src.coach.llm import CoachLLMUnavailable
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Text is required to capture a signal.")
+    pid = int(project_id.strip()) if project_id.strip().isdigit() else None
+    db = SessionLocal()
+    try:
+        try:
+            sig = await asyncio.to_thread(
+                ingest_text, db, text.strip(), prefer.strip() or "auto", None, pid,
+                event_ref.strip() or None,
+            )
+        except CoachNotConfigured as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except CoachLLMUnavailable as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (CoachAuthError, CoachProviderError) as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "signal": sig}
+    finally:
+        db.close()
+
+
+@router.post("/coach/behavior/compute")
+async def api_coach_behavior(_=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.coach.behavior import compute_signals
+    db = SessionLocal()
+    try:
+        return {"ok": True, **(await asyncio.to_thread(compute_signals, db, True))}
+    finally:
+        db.close()
+
+
+@router.post("/coach/ask")
+async def api_coach_ask(question: str = Form(""), _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.coach.coach import ask
+    from src.coach.llm import CoachLLMUnavailable
+    if not question.strip():
+        raise HTTPException(status_code=400, detail="A question is required.")
+    db = SessionLocal()
+    try:
+        try:
+            res = await asyncio.to_thread(ask, db, question.strip())
+        except CoachLLMUnavailable as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, **res}
+    finally:
+        db.close()
+
+
+@router.post("/coach/reflect")
+async def api_coach_reflect(_=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.coach.reflection import run_reflection
+    from src.coach.llm import CoachLLMUnavailable
+    db = SessionLocal()
+    try:
+        try:
+            res = await asyncio.to_thread(run_reflection, db)
+        except CoachLLMUnavailable as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, **res}
+    finally:
+        db.close()
+
+
+@router.post("/coach/autoreflect")
+async def api_coach_autoreflect(enabled: str = Form("false"), _=Depends(require_auth)):
+    from src.web.settings_store import set_setting
+    val = "1" if enabled.strip().lower() in ("1", "true", "yes", "on") else "0"
+    set_setting("ENABLE_COACH_REFLECTION", val)
+    return {"ok": True, "autoreflect_enabled": val == "1"}
+
+
+@router.post("/coach/strict-private")
+async def api_coach_strict_private(enabled: str = Form("false"), _=Depends(require_auth)):
+    from src.web.settings_store import set_setting
+    val = "1" if enabled.strip().lower() in ("1", "true", "yes", "on") else "0"
+    set_setting("COACH_STRICT_PRIVATE", val)
+    return {"ok": True, "strict_private": val == "1"}
+
+
+@router.post("/coach/insights/{insight_id}/outcome")
+async def api_coach_insight_outcome(
+    insight_id: int, status: str = Form(""), outcome: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.coach.reflection import log_outcome
+    db = SessionLocal()
+    try:
+        try:
+            res = log_outcome(db, insight_id, status.strip(), outcome.strip() or None)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "insight": res}
+    finally:
+        db.close()
+
+
+@router.get("/coach/actions")
+async def api_coach_actions(status: str = "", _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.coach.secretary import list_actions
+    db = SessionLocal()
+    try:
+        return {"actions": list_actions(db, limit=100, status=status.strip() or None)}
+    finally:
+        db.close()
+
+
+@router.post("/coach/actions/request")
+async def api_coach_action_request(
+    kind: str = Form(""), recipient: str = Form(""), subject: str = Form(""),
+    body: str = Form(""), payload: str = Form(""), summary: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.coach.secretary import request_action
+    try:
+        payload_obj = json.loads(payload) if payload.strip() else None
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Payload must be valid JSON.")
+    db = SessionLocal()
+    try:
+        try:
+            res = request_action(db, kind.strip(), recipient.strip() or None,
+                                 subject.strip() or None, body or None, payload_obj,
+                                 summary.strip() or None)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "action": res}
+    finally:
+        db.close()
+
+
+@router.post("/coach/actions/{request_id}/confirm")
+async def api_coach_action_confirm(
+    request_id: int, confirm: str = Form(""), _=Depends(require_auth),
+):
+    if confirm.strip().upper() != "CONFIRM":
+        return {"ok": False, "message": "Confirmation text did not match — type CONFIRM to execute."}
+    from src.database import SessionLocal
+    from src.coach.secretary import confirm_action
+    from src.coach.delivery import DeliveryNotConfigured, DeliveryError
+    db = SessionLocal()
+    try:
+        try:
+            res = await asyncio.to_thread(confirm_action, db, request_id)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except DeliveryNotConfigured as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except DeliveryError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "action": res}
+    finally:
+        db.close()
+
+
+@router.post("/coach/actions/{request_id}/reject")
+async def api_coach_action_reject(request_id: int, _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.coach.secretary import reject_action
+    db = SessionLocal()
+    try:
+        try:
+            res = reject_action(db, request_id)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"ok": True, "action": res}
+    finally:
+        db.close()
+
+
+@router.post("/coach/purge")
+async def api_coach_purge(
+    confirm: str = Form(""), ids: str = Form(""), _=Depends(require_auth),
+):
+    if confirm.strip().upper() != "PURGE":
+        return {"ok": False, "message": "Confirmation text did not match — type PURGE to delete."}
+    from src.database import SessionLocal
+    from src.coach.ingestion import purge_signals
+    id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()] if ids.strip() else None
+    db = SessionLocal()
+    try:
+        return {"ok": True, **purge_signals(db, ids=id_list)}
+    finally:
+        db.close()

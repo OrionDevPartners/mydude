@@ -159,3 +159,12 @@ async def startup():
         logger.info("Finance scheduler started (opt-in via ENABLE_FINANCE_AUTOSYNC)")
     except Exception as e:
         logger.warning("Finance scheduler failed to start: %s", e)
+
+    try:
+        from src.coach.scheduler import get_scheduler as get_coach_scheduler
+        import os as _os
+        coach_interval = int(_os.environ.get("COACH_REFLECT_INTERVAL", "21600") or "21600")
+        await get_coach_scheduler().start(interval=coach_interval)
+        logger.info("Coach scheduler started (opt-in via ENABLE_COACH_REFLECTION)")
+    except Exception as e:
+        logger.warning("Coach scheduler failed to start: %s", e)

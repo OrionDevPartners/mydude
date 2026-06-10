@@ -56,8 +56,17 @@ class MemorySubstrate:
         source: str = "",
         verified: bool = False,
         metadata: Optional[Dict] = None,
+        local_only: bool = False,
     ) -> MemoryEntry:
-        """Persist a claim/fact into long-term memory (local KG + cloud)."""
+        """Persist a claim/fact into long-term memory.
+
+        Private-Mode: when ``local_only=True`` the entry is written ONLY to the
+        local KG and tagged ``metadata['private']=True`` so the cloud adapter is
+        never touched and the sync bridge will never egress it to the cloud store.
+        Use this for sensitive personal/emotional data (the coach's digital twin)."""
+        meta = dict(metadata or {})
+        if local_only:
+            meta["private"] = True
         entry = MemoryEntry(
             memory_id=str(uuid.uuid4()),
             content=content,
@@ -65,23 +74,53 @@ class MemorySubstrate:
             confidence=confidence,
             source=source,
             verified=verified,
-            metadata=metadata or {},
+            metadata=meta,
         )
         with self._lock:
-            # Cloud.add may reassign entry.memory_id to a cloud-assigned id.
-            # By calling cloud first, local.add then uses the final stable id,
-            # keeping both stores keyed by the same memory_id.
-            self._cloud.add(entry)
+            if not local_only:
+                # Cloud.add may reassign entry.memory_id to a cloud-assigned id.
+                # By calling cloud first, local.add then uses the final stable id,
+                # keeping both stores keyed by the same memory_id.
+                self._cloud.add(entry)
             self._local.add(entry)
 
+        scope = "private/local-only" if local_only else "local+cloud"
         event = MemoryEvent(
             event_type=MemoryEventType.PERSIST,
-            detail=f"Persisted [{category}] (conf={confidence:.2f}, verified={verified}): {content[:100]}",
+            detail=f"Persisted [{category}] ({scope}, conf={confidence:.2f}, verified={verified}): {content[:100]}",
             memory_ids=[entry.memory_id],
         )
         self._audit.append(event)
         logger.info(event.to_log_str())
         return entry
+
+    def forget(self, memory_ids: List[str]) -> int:
+        """Delete memory nodes from BOTH stores by id (Private-Mode purge / right
+        to be forgotten). Returns the count successfully removed from the local KG."""
+        deleted = 0
+        with self._lock:
+            for mid in memory_ids:
+                if not mid:
+                    continue
+                local_ok = False
+                try:
+                    local_ok = bool(self._local.delete(mid))
+                except Exception as e:
+                    logger.warning("forget local delete failed for %s: %s", mid, e)
+                try:
+                    self._cloud.delete(mid)
+                except Exception as e:
+                    logger.warning("forget cloud delete failed for %s: %s", mid, e)
+                if local_ok:
+                    deleted += 1
+        event = MemoryEvent(
+            event_type=MemoryEventType.PERSIST,
+            detail=f"Forgot {deleted} memory node(s) (Private-Mode purge)",
+            memory_ids=list(memory_ids)[:5],
+        )
+        self._audit.append(event)
+        logger.info(event.to_log_str())
+        return deleted
 
     def recall(
         self,
