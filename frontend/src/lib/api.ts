@@ -656,11 +656,12 @@ export interface PromptVersionRow {
   delta: number | null; instructions: string; provenance: Record<string, unknown>;
   created_at: string | null; promoted_at: string | null;
 }
+export interface PromptRunCandidate { version_id: number; optimizer: string | null; score: number | null }
 export interface PromptRunRow {
   id: number; program_id: number; status: string; optimizer: string | null;
   trainset_size: number | null; best_score: number | null; base_score: number | null;
-  error: string | null; candidate_version_ids: number[];
-  started_by: string | null; started_at: string | null; ended_at: string | null;
+  error: string | null; candidates: PromptRunCandidate[];
+  started_by: string | null; created_at: string | null; completed_at: string | null;
 }
 export interface PromptProgramDetail {
   program: PromptProgramSummary; versions: PromptVersionRow[]; runs: PromptRunRow[];

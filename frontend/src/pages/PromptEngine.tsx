@@ -129,7 +129,7 @@ function RunRow({ r }: { r: PromptRunRow }) {
       <span style={{ color: 'var(--text-muted)' }}>trainset {r.trainset_size ?? '—'}</span>
       <span style={{ color: 'var(--text-muted)' }}>base {pct(r.base_score)} → best {pct(r.best_score)}</span>
       {r.error && <span style={{ color: '#e74c3c', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.error}>{r.error}</span>}
-      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>{fmtDate(r.started_at)}</span>
+      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>{fmtDate(r.created_at)}</span>
     </div>
   )
 }

@@ -19,6 +19,13 @@ from src.swarm.hallucination import (
 from src.swarm.constitution import CONSTITUTION_RULES, validate_language
 
 
+_JUDGE_DEGRADED_BANNER = (
+    "[DEGRADED / UNVERIFIED SYNTHESIS] The governed judge program could not run; "
+    "this answer was produced from the live, governance-approved prompt via a raw "
+    "provider call and did NOT complete full governance scoring. Treat with caution.\n\n"
+)
+
+
 @dataclass
 class ProviderReply:
     provider: str
@@ -242,39 +249,83 @@ class MultiProviderLLM:
         if has_critical:
             critical_warning = "\nWARNING: Critical hallucination risk detected. Require evidence for all claims. Downgrade unverified assertions.\n"
 
-        judge_prompt = (
-            "You are the MERGER/JUDGE.\n\n"
-            "Goal:\n"
-            "Synthesize the providers' outputs into one best answer with:\n"
-            "- high correctness\n"
-            "- strong security posture\n"
-            "- concrete, actionable steps\n"
-            "- minimal token bloat\n\n"
-            "Each provider's output includes compliance score (CS) and hallucination risk (HR).\n"
-            "WEIGHT providers by compliance score. Higher CS = more trustworthy. Reject claims from providers with CS < 65.\n"
-            "NOVEL HYPOTHESES: Do NOT reject novel ideas or creative theories just because they lack traditional evidence.\n"
-            "If 3+ providers converge on a novel concept, treat it as HIGH CONFIDENCE. Innovation lives in the edges.\n"
-            f"{critical_warning}"
-            "Return ONLY the final consolidated worker-format response:\n"
-            "RESULT:\nARTIFACTS:\nCHECKS:\nRISKS:\nCAPABILITIES:\nCOMPRESSED_HANDOFF:\n\n"
-            f"User request:\n{user}\n\n"
-            f"Providers' outputs:\n{debate}"
-        )
-
-        # Primary path: the governed, versioned, governance-approved judge program
-        # (DSPy). Fails loud internally (records a 'failed' trace + raises) when no
-        # provider is available or the output can't be parsed; we then preserve the
-        # historical degraded behavior below so call_team's contract survives.
+        # Primary path: the governed, versioned, governance-APPROVED judge program
+        # (DSPy). It fails loud internally (records a 'failed' trace + raises) when
+        # no provider is available or the output can't be parsed.
         try:
             from src.promptopt.runtime import run_judge
             return await run_judge(user, debate, critical_warning, self.budget_tokens)
         except Exception as e:
-            logger.warning("Governed judge unavailable; using degraded synthesis: %s", e)
+            logger.warning(
+                "Governed judge program unavailable (%s); attempting a DEGRADED "
+                "synthesis with the LIVE approved prompt.", e,
+            )
 
+        # Degraded path: NEVER a hardcoded/divergent prompt, and NEVER a bypass of an
+        # evolved live version. Re-run the SAME live, governance-approved instructions
+        # via a raw provider call, mark the output degraded/unverified, and record a
+        # 'degraded' trace so the bypass is explicit and audited (governance pillars
+        # 1 & 4: no silent fallback to an unverified prompt; no ungoverned output).
+        degraded = await self._degraded_judge_synthesis(user, debate, critical_warning)
+        if degraded is not None:
+            return degraded
+
+        # Nothing reachable: fail loud in worker format. We refuse to emit the raw,
+        # ungoverned provider debate as if it were a synthesized answer.
+        logger.error(
+            "Judge synthesis unavailable and no provider reachable; refusing to emit "
+            "ungoverned provider output."
+        )
+        return (
+            _JUDGE_DEGRADED_BANNER
+            + "RESULT: Unable to produce a governed synthesis — no LLM provider is reachable.\n"
+            + "ARTIFACTS: none\n"
+            + "CHECKS: governed judge program failed AND the degraded path could not reach any provider\n"
+            + "RISKS: raw provider output withheld to avoid emitting ungoverned content (governance pillar 4)\n"
+            + "CAPABILITIES: restore an LLM provider to resume governed synthesis\n"
+            + "COMPRESSED_HANDOFF: judge unavailable; no provider; output withheld by governance\n"
+        )
+
+    async def _degraded_judge_synthesis(self, user: str, debate: str, risk_directive: str):
+        """Degraded merger/judge synthesis, used ONLY when the governed DSPy program
+        cannot run. It uses the LIVE, governance-approved instructions (never a
+        hardcoded copy, never a bypass of an evolved version) via a raw provider call,
+        marks the result degraded/unverified, scores it with the governance analyzers,
+        and records a 'degraded' trace (excluded from the optimizer trainset). Returns
+        the marked text, or None if no provider is reachable."""
+        try:
+            from src.promptopt.specs import JUDGE_PROGRAM
+            from src.promptopt import store
+            version_id, instructions, _demos = store.get_live_instructions(JUDGE_PROGRAM)
+        except Exception as e:
+            logger.warning("Could not load live judge instructions for degraded synthesis: %s", e)
+            return None
+        if not (instructions or "").strip():
+            return None
+
+        prompt = (
+            instructions + "\n\n"
+            + (risk_directive or "")
+            + "\nUser request:\n" + (user or "")
+            + "\n\nProviders' outputs:\n" + (debate or "")
+        )
         for adapter in self._available_adapters():
             try:
-                return await adapter.generate(system, judge_prompt, self.budget_tokens)
+                text = await adapter.generate("", prompt, self.budget_tokens)
             except Exception:
                 continue
-
-        return debate[:7000]
+            if not (text or "").strip():
+                continue
+            try:
+                from src.promptopt.metric import score_text
+                info = score_text(text)
+                store.record_trace(
+                    JUDGE_PROGRAM, version_id,
+                    {"user_request": user, "provider_outputs": debate, "risk_directive": risk_directive},
+                    text, score_info=info, status="degraded",
+                    feedback={"reason": "governed DSPy judge failed; degraded raw call with live approved prompt"},
+                )
+            except Exception:
+                pass
+            return _JUDGE_DEGRADED_BANNER + text
+        return None

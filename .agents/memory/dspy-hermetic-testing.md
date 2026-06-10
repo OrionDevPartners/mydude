@@ -30,8 +30,16 @@ good response forever — robust against MIPROv2's trial fan-out and GEPA reflec
 **Other gotchas:**
 - MIPROv2 requires the optional `optuna` package or it raises at compile time.
 - Importing `dspy` prints spinner/ANSI escapes that make the bash tool return
-  exit -1. Always redirect dspy-touching python to a file and `cat` it; run the
-  heavy optimizer test via `nohup ... &` + poll (it can exceed the 120s bash cap).
+  exit -1. Always redirect dspy-touching python to a file and `cat` it.
+- Running the heavy test reliably (learned the hard way): start the process AND
+  poll for completion in the SAME bash call — background jobs started in one bash
+  call are killed when the next bash call starts. Log to a path INSIDE the
+  workspace; `/tmp`, `/home/runner`, and `.local/state` get wiped between calls.
+  The standalone runner buffers and prints PASS/FAIL only at the end, so an
+  in-progress poll shows an empty file — that's normal, not a hang. It finishes in
+  ~25-30s, well within the 120s cap when run+polled in one call.
+- `tests/test_promptopt_governance.py` runs standalone (`python tests/...py`,
+  exits non-zero on failure); pytest is NOT installed in this repl.
 - GOOD_TEXT must contain all required section headers so `format_adherence` scores
   the candidate well; otherwise candidates score low and assertions on best-score
   get noisy.
