@@ -1,6 +1,7 @@
 - [Capability governance gates](capability-gates.md) — how MyDude's browser/SSH capabilities must enforce allow-lists; pitfalls that bypass them.
 - [Two-phase cancel gate](two-phase-cancel-gate.md) — irreversible-action confirm gate must be decoupled from best-effort review login, or it goes invisible/untestable.
 - [Local Playwright in this container](playwright-local-env.md) — local Chromium can't launch (missing system libs); Browserbase is the prod path.
+- [uv re-lock blocked by pytorch-cpu sources](uv-relock-pytorch-cpu-sources.md) — `uv lock`/`sync` fails on PyPI-available pkgs; vestigial `[tool.uv.sources]` vs lock; deploy uses `uv sync --frozen`.
 - [Governed degraded-fallback rule](governed-degraded-fallback.md) — fallbacks must use live approved prompt + mark/audit degraded; never a hardcoded copy or raw ungoverned output.
 - [DSPy hermetic optimizer testing](dspy-hermetic-testing.md) — test MIPROv2/GEPA offline with DummyLM(itertools.repeat(superset-dict)); needs optuna; redirect dspy stdout.
 - [Token-bearing outbound HTTPS](token-bearing-outbound-https.md) — operator URLs that carry a secret must enforce https:// in code (fail-loud), not just in docs.

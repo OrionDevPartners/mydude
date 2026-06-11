@@ -92,6 +92,10 @@ static/
 - Circuit breakers and self-healing for provider isolation
 
 ## Recent Changes
+- 2026-06-11: Dependency vulnerability remediation
+  - starlette 0.52.1 → 1.3.0 + fastapi 0.131.0 → 0.136.3: fixes CVE-2026-48710 / GHSA-86qp-5c8j-p5mr / PYSEC-2026-161 ("BadHost" Host-header auth/routing bypass). fastapi was bumped because <0.133.1 pins `starlette<1.0.0`. App's direct starlette surface (StarletteHTTPException handler, SessionMiddleware) verified working under 1.x; `@app.on_event("startup")` still fires.
+  - diskcache 5.6.3 (CVE-2025-69872 / GHSA-w8v5-vhqr-4h9v, unsafe pickle): **ACCEPTED RESIDUAL RISK** — no upstream patch exists (PyPI latest is the vulnerable 5.6.3) and every dspy release hard-requires diskcache>=5.6.0, so it cannot be upgraded or removed. Mitigated at runtime via `dspy.configure_cache(restrict_pickle=True)` in `src/promptopt/lm_bridge.py:harden_dspy_cache()` (idempotent; runs at module import AND app startup), which swaps DSPy's disk cache to a restricted unpickler (`RestrictedDisk`). Re-evaluate / drop the shim when diskcache or dspy ships a patched release.
+  - Build/lock fixes required to re-lock: bounded `requires-python` to ">=3.11,<3.13" (avoids the optuna 3.13/3.14 resolution split); removed vestigial `optuna`/`huggingface-hub` → `pytorch-cpu` mappings from `[tool.uv.sources]` (inconsistent with the lock, which resolves both from PyPI, and nothing actually resolves from that index — it blocked the re-lock).
 - 2026-05-31: Upgraded API key management into a full credential vault
   - API Vault (/keys): any service, categories, search, expiry/rotation reminders, per-key env var, notes, reveal (Cache-Control: no-store), rotation, usage audit log (/keys/audit)
   - Connected Services (/connected): live Replit integration status via the connector proxy at runtime (src/web/connectors.py)

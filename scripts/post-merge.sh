@@ -2,10 +2,10 @@
 set -e
 
 # Install Python dependencies from the existing uv.lock (idempotent, non-interactive).
-# Use --frozen: a plain `uv sync` re-resolves against the unbounded requires-python
-# (">=3.11") and fails on the Python 3.14 split, where a transitive dependency of
-# optuna has no wheel. The committed lock is known-good (the app runs on it), so we
-# install from it directly instead of re-resolving.
+# Use --frozen so we install exactly what is locked instead of re-resolving: the
+# committed lock is the known-good, security-reviewed closure (e.g. starlette/fastapi
+# pinned to the CVE-2026-48710 "BadHost"-patched versions). A plain `uv sync` would
+# re-resolve and could drift the deployed dependency set away from what was reviewed.
 uv sync --frozen
 
 # Experimental, development-only embedded memory stack (agentledger/experimental).

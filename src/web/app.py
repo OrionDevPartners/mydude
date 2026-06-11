@@ -142,6 +142,15 @@ async def startup():
         logger.error("Database init failed: %s", e)
 
     try:
+        from src.promptopt.lm_bridge import harden_dspy_cache
+        harden_dspy_cache()
+    except Exception as e:
+        logger.error(
+            "DSPy disk-cache hardening (CVE-2025-69872 mitigation) could not be "
+            "applied at startup: %s", e
+        )
+
+    try:
         from src.promptopt import store as prompt_store
         from src.promptopt import service as prompt_service
         prompt_store.seed_default_programs()

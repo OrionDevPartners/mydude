@@ -15,15 +15,89 @@ so their lazily-built async clients never straddle two event loops.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from types import SimpleNamespace
 from typing import Any, List, Optional
 
 import dspy
 
+logger = logging.getLogger(__name__)
+
 
 class NoProviderAvailable(RuntimeError):
     """Raised when no LLM provider adapter is available — fail loud, never fake."""
+
+
+# --- diskcache CVE mitigation (CVE-2025-69872 / GHSA-w8v5-vhqr-4h9v) ----------
+# DSPy's on-disk cache is backed by the `diskcache` package, which deserializes
+# entries with unrestricted ``pickle`` and has NO upstream patch (PyPI's latest
+# release is the vulnerable 5.6.3, and every dspy release hard-requires
+# diskcache>=5.6.0, so it cannot be upgraded or removed from the closure).
+# ``dspy.configure_cache(restrict_pickle=True)`` confines disk-cache
+# deserialization to safe types, closing the arbitrary-code-execution path while
+# leaving caching behaviour intact. Idempotent + fail-soft: a hardening failure
+# must never crash inference, but is logged loudly for the audit trail.
+_cache_hardened = False
+_cache_lock = threading.Lock()
+
+
+def harden_dspy_cache() -> bool:
+    """Force DSPy's disk cache to use a restricted unpickler.
+
+    Returns True once the on-disk unsafe-pickle surface is closed — either by
+    installing the restricted unpickler, or, if that fails, by disabling the
+    on-disk cache entirely. Safe to call repeatedly (only the first successful
+    call reconfigures the cache). Fails CLOSED: it never returns with the
+    unrestricted-pickle disk cache live, and raises if it can neither restrict
+    nor disable it (fail loud rather than run a known RCE surface).
+    """
+    global _cache_hardened
+    if _cache_hardened:
+        return True
+    with _cache_lock:
+        if _cache_hardened:
+            return True
+        try:
+            dspy.configure_cache(restrict_pickle=True)
+            _cache_hardened = True
+            logger.info(
+                "DSPy disk cache hardened (restrict_pickle=True) — diskcache "
+                "CVE-2025-69872 unsafe-pickle path neutralized"
+            )
+            return _cache_hardened
+        except Exception as primary_exc:
+            # Fail CLOSED: never leave the unrestricted-pickle disk cache live
+            # (that IS the CVE-2025-69872 RCE surface). Drop the on-disk cache
+            # entirely — the in-memory cache keeps working — and only raise if
+            # even that fails, because silently serving inference over the
+            # vulnerable disk cache would violate the fail-loud governance pillar.
+            logger.error(
+                "Could not apply restrict_pickle to DSPy disk cache (%s); "
+                "disabling the on-disk cache to remove the CVE-2025-69872 "
+                "unsafe-pickle surface", primary_exc
+            )
+            try:
+                dspy.configure_cache(enable_disk_cache=False)
+                _cache_hardened = True
+                logger.warning(
+                    "DSPy on-disk cache DISABLED (fail-closed fallback); "
+                    "CVE-2025-69872 surface removed, in-memory cache still active"
+                )
+                return _cache_hardened
+            except Exception as fallback_exc:
+                logger.critical(
+                    "Could neither restrict nor disable the DSPy disk cache; "
+                    "refusing to run with the unrestricted-pickle CVE-2025-69872 "
+                    "surface live: %s", fallback_exc
+                )
+                raise
+
+
+# Harden as soon as the governed DSPy bridge is imported, so every dspy
+# disk-cache user (server, optimizer threads, tests, CLI) goes through the
+# restricted unpickler regardless of entry path.
+harden_dspy_cache()
 
 
 # --- ONE persistent daemon event loop for sync (optimizer) adapter calls -------

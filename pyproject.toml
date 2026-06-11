@@ -2,12 +2,12 @@
 name = "repl-nix-workspace"
 version = "0.1.0"
 description = "Add your description here"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "anthropic>=0.79.0",
     "cryptography>=46.0.7",
     "dspy>=3.2.1",
-    "fastapi>=0.115.0",
+    "fastapi>=0.134.0",
     "google-generativeai>=0.8.6",
     "idna>=3.15",
     "itsdangerous>=2.2.0",
@@ -23,7 +23,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "requests>=2.33.0",
     "sqlalchemy>=2.0.46",
-    "starlette>=0.47.2",
+    "starlette>=1.0.1",
     "urllib3>=2.7.0",
     "uvicorn>=0.41.0",
 ]
@@ -486,7 +486,6 @@ hjxdl = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 hkkang-utils = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 hordelib = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 hpsv2 = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
-huggingface-hub = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 hummingbird-ml = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 hvae-backbone = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 hya = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
@@ -731,9 +730,6 @@ optimum-intel = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" 
 optimum-neuron = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 optimum-quanto = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 optree = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
-optuna = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
-optuna-dashboard = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
-optuna-integration = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 oracle-ads = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 orbit-ml = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
 otx = [{ index = "pytorch-cpu", marker = "platform_system == 'Linux'" }]
