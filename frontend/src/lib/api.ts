@@ -734,6 +734,15 @@ export const listEvolutionComponents = () =>
   request<{ components: CognitionComponent[] }>('/evolution/components')
 export const getEvolutionComponent = (id: number) =>
   request<ComponentDetail>(`/evolution/components/${id}`)
+export interface EvolutionComponentStatus {
+  id: number; loop_state: string; thread_alive: boolean;
+  cycle_count: number; last_cycle_at: string | null;
+  total_theses: number; promoted_theses: number;
+  active_thesis_id: number | null; active_thesis_status: string | null;
+  active_thesis_iterations: number; latest_cycle_log_id: number | null;
+}
+export const getEvolutionComponentStatus = (id: number) =>
+  request<EvolutionComponentStatus>(`/evolution/components/${id}/status`)
 export const startEvolutionLoop = (id: number) =>
   request<{ ok: boolean; started: boolean; already_running: boolean }>(
     `/evolution/components/${id}/start`, { method: 'POST' })

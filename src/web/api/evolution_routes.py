@@ -71,6 +71,18 @@ async def get_component(component_id: int, _: bool = Depends(require_auth)):
     return detail
 
 
+@router.get("/components/{component_id}/status")
+async def get_component_status(component_id: int, _: bool = Depends(require_auth)):
+    """Lightweight status snapshot for cheap live polling (no full detail)."""
+    from src.promptopt import evolution_store as estore
+    from src.promptopt.evolution import get_loop
+    status = estore.get_component_status(component_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="component %d not found" % component_id)
+    status["thread_alive"] = get_loop().is_running(component_id)
+    return status
+
+
 @router.post("/components/{component_id}/start")
 async def start_loop(component_id: int, _: bool = Depends(require_auth)):
     from src.promptopt import evolution_store as estore

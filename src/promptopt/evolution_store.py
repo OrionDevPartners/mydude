@@ -508,6 +508,60 @@ def list_cycle_logs(component_id: int, limit: int = 30) -> List[Dict[str, Any]]:
         db.close()
 
 
+def get_component_status(component_id: int) -> Optional[Dict[str, Any]]:
+    """Lightweight status snapshot for cheap polling.
+
+    Returns only counters + a change signature for the active thesis / latest
+    cycle log — no JSON payload parsing, no per-iteration row hydration — so the
+    dashboard can poll it every few seconds without the cost of a full detail
+    fetch. Returns None when the component does not exist.
+    """
+    db = SessionLocal()
+    try:
+        c = get_component_by_id(db, component_id)
+        if c is None:
+            return None
+        active = (
+            db.query(CognitionThesis)
+            .filter(
+                CognitionThesis.component_id == c.id,
+                CognitionThesis.status.in_([
+                    "proposed", "testing", "awaiting_consensus", "awaiting_human_approval"
+                ]),
+            )
+            .order_by(CognitionThesis.created_at.desc())
+            .first()
+        )
+        active_thesis_id = active.id if active else None
+        active_thesis_status = active.status if active else None
+        active_thesis_iterations = (
+            db.query(ThesisTrialIteration).filter_by(thesis_id=active.id).count()
+            if active else 0
+        )
+        latest_log = (
+            db.query(EvolutionCycleLog)
+            .filter_by(component_id=c.id)
+            .order_by(EvolutionCycleLog.created_at.desc())
+            .first()
+        )
+        total_theses = db.query(CognitionThesis).filter_by(component_id=c.id).count()
+        promoted = db.query(CognitionThesis).filter_by(component_id=c.id, status="promoted").count()
+        return {
+            "id": c.id,
+            "loop_state": c.loop_state,
+            "cycle_count": c.cycle_count or 0,
+            "last_cycle_at": c.last_cycle_at.isoformat() if c.last_cycle_at else None,
+            "total_theses": total_theses,
+            "promoted_theses": promoted,
+            "active_thesis_id": active_thesis_id,
+            "active_thesis_status": active_thesis_status,
+            "active_thesis_iterations": active_thesis_iterations,
+            "latest_cycle_log_id": latest_log.id if latest_log else None,
+        }
+    finally:
+        db.close()
+
+
 def get_component_detail(component_id: int) -> Optional[Dict[str, Any]]:
     db = SessionLocal()
     try:

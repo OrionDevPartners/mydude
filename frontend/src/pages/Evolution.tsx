@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import {
-  listEvolutionComponents, getEvolutionComponent, startEvolutionLoop, stopEvolutionLoop,
+  listEvolutionComponents, getEvolutionComponent, getEvolutionComponentStatus,
+  startEvolutionLoop, stopEvolutionLoop,
   triggerEvolutionTrial, seedEvolutionThesis,
   CognitionComponent, ComponentDetail, EvolutionThesis, EvolutionCycleLog,
 } from '@/lib/api'
@@ -170,6 +171,55 @@ function ComponentDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const { data, loading, error, refetch } = useApi<ComponentDetail>(() => getEvolutionComponent(id), [id])
   const [notice, setNotice] = useState<{ type: 'success' | 'error' | 'info'; msg: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const sigRef = useRef<string | null>(null)
+
+  const stopPoll = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+  }, [])
+
+  // Keep a change signature of the rendered data so the poller can tell when a
+  // full refetch is actually warranted (avoids hammering the heavy endpoint).
+  useEffect(() => {
+    if (!data) return
+    const c = data.component
+    const active = data.theses.find(t =>
+      ['proposed', 'testing', 'awaiting_consensus', 'awaiting_human_approval'].includes(t.status))
+    sigRef.current = [
+      c.loop_state, c.cycle_count, c.promoted_theses, c.total_theses,
+      active?.id ?? '', active?.status ?? '', active?.iterations.length ?? 0,
+      data.cycle_logs[0]?.id ?? '',
+    ].join('|')
+    setLastUpdated(new Date())
+  }, [data])
+
+  // Poll the lightweight status endpoint every ~3s while the loop is running so
+  // operators watch cycles land live. Only triggers a full refetch on change.
+  const loopState = data?.component.loop_state
+  const threadAlive = data?.component.thread_alive
+  useEffect(() => {
+    const running = loopState === 'running' || threadAlive === true
+    stopPoll()
+    if (!running) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const s = await getEvolutionComponentStatus(id)
+        setLastUpdated(new Date())
+        const sig = [
+          s.loop_state, s.cycle_count, s.promoted_theses, s.total_theses,
+          s.active_thesis_id ?? '', s.active_thesis_status ?? '', s.active_thesis_iterations,
+          s.latest_cycle_log_id ?? '',
+        ].join('|')
+        const stillRunning = s.loop_state === 'running' || s.thread_alive
+        if (sig !== sigRef.current || !stillRunning) {
+          sigRef.current = sig
+          refetch()
+        }
+      } catch { /* transient; keep polling */ }
+    }, 3000)
+    return stopPoll
+  }, [id, loopState, threadAlive, refetch, stopPoll])
 
   const handleStart = useCallback(async () => {
     setBusy(true); setNotice(null)
@@ -204,8 +254,8 @@ function ComponentDetail({ id, onBack }: { id: number; onBack: () => void }) {
     } finally { setBusy(false) }
   }, [id, refetch])
 
-  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={24} /></div>
-  if (error) return <Alert type="error">{error}</Alert>
+  if (loading && !data) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={24} /></div>
+  if (error && !data) return <Alert type="error">{error}</Alert>
   if (!data) return <Empty message="Component not found." />
 
   const c = data.component
@@ -227,7 +277,17 @@ function ComponentDetail({ id, onBack }: { id: number; onBack: () => void }) {
             <Badge color="gray">{c.component_type}</Badge>
             <Badge color={LOOP_COLOR[c.loop_state] || 'gray'}>{c.loop_state}</Badge>
             {c.thread_alive && <Badge color="green">thread alive</Badge>}
+            {isRunning && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: '#2ecc71' }}>
+                <Spinner size={11} /> live
+              </span>
+            )}
           </div>
+          {lastUpdated && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              {isRunning ? 'Auto-refreshing every 3s · ' : ''}last updated {lastUpdated.toLocaleTimeString()}
+            </div>
+          )}
           {c.description && (
             <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>{c.description}</p>
           )}
