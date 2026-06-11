@@ -5,7 +5,7 @@ without importing dspy. The actual ``dspy.Signature`` classes live in
 ``signatures.py`` and reference these specs.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 # The merger/judge synthesis program — the reference behavior migrated off a
 # hardcoded string (was MultiProviderLLM._judge_merge's inline judge_prompt).
@@ -56,6 +56,93 @@ class ProgramSpec:
     required_sections: List[str] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Cognitive-role programs (the swarm's debate-cycle role prompts).
+#
+# The swarm runs per-agent cognitive roles whose guidance was previously a
+# hardcoded prompt string. Each role below is registered as its OWN optimizable
+# program — same governance gate (versioned, approve-to-promote, audited
+# rollback) and same MIPROv2/GEPA flow as the judge. Every role agent emits the
+# worker output format the orchestrator already parses, so the metric's
+# format-adherence term reuses the six worker sections.
+# ---------------------------------------------------------------------------
+
+# Shared signature + IO contract for every role program (one DSPy signature,
+# instructions differ per program — exactly like the judge).
+ROLE_SIGNATURE = "RoleAgent"
+ROLE_INPUT_FIELDS: List[str] = ["goal", "task", "context", "mode"]
+ROLE_OUTPUT_FIELD = "worker_output"
+
+# Appended to each role's seed so the governed output stays parseable by the
+# orchestrator's _parse_worker and scorable by the same format metric.
+ROLE_WORKER_OUTPUT_CONTRACT = (
+    "\n\nOUTPUT CONTRACT (MANDATORY):\n"
+    "Apply your cognitive-role discipline to the scoped TASK, then return the result "
+    "in worker format. Include EVERY one of these section headers exactly: RESULT, "
+    "ARTIFACTS, CHECKS, RISKS, CAPABILITIES, COMPRESSED_HANDOFF.\n"
+    "- RESULT: your role's primary finding for this task (concise; reference evidence).\n"
+    "- ARTIFACTS: concrete outputs — diffs, commands, or per-claim verdicts — or 'none'.\n"
+    "- CHECKS: tests, validations, or audits you ran or propose.\n"
+    "- RISKS: hazards, unverified claims, and unknowns (label VERIFIED/DERIVED/HYPOTHESIS/UNKNOWN).\n"
+    "- CAPABILITIES: broker capability requests (name + JSON params), or 'none'.\n"
+    "- COMPRESSED_HANDOFF: a compact JSON handoff with goal, facts, decisions, risks, next.\n"
+    "Request broker capabilities rather than handling secrets. Never emit raw secrets."
+)
+
+
+def _role_program_name(cognitive_role_value: str) -> str:
+    return "role_" + cognitive_role_value
+
+
+# cognitive-role value -> (prompts.py constant name, short description). Kept as a
+# table so adding another governed role is a single line. The seed text is the
+# existing hardcoded role prompt + the worker output contract (no divergent copy).
+_ROLE_TABLE: Dict[str, Tuple[str, str]] = {
+    "architect": (
+        "ARCHITECT_PROMPT",
+        "Architect role: propose solution structure and the initial evidence-backed "
+        "claim ledger for the wave.",
+    ),
+    "skeptic": (
+        "SKEPTIC_PROMPT",
+        "Skeptic role: adversarially audit assumptions and push downgrades on "
+        "unverified claims.",
+    ),
+    "evidence_validator": (
+        "EVIDENCE_VALIDATOR_PROMPT",
+        "Evidence Validator role: verify pointers and citations, score evidence "
+        "strength, reject unsupported claims.",
+    ),
+    "falsifier": (
+        "FALSIFIER_PROMPT",
+        "Falsifier role: seek counterexamples and logical flaws; surviving claims "
+        "are strengthened.",
+    ),
+}
+
+
+def _build_role_specs() -> Dict[str, ProgramSpec]:
+    # Import here (not at module top) only to read the existing prompt strings.
+    # prompts.py is dspy-free and import-cheap, so app startup stays light.
+    from src.swarm import prompts as _prompts
+    out: Dict[str, ProgramSpec] = {}
+    for cog_value, (const_name, description) in _ROLE_TABLE.items():
+        role_prompt = getattr(_prompts, const_name, "").strip()
+        if not role_prompt:
+            continue
+        name = _role_program_name(cog_value)
+        out[name] = ProgramSpec(
+            name=name,
+            signature_name=ROLE_SIGNATURE,
+            description=description,
+            seed_instructions=role_prompt + ROLE_WORKER_OUTPUT_CONTRACT,
+            input_fields=list(ROLE_INPUT_FIELDS),
+            output_field=ROLE_OUTPUT_FIELD,
+            required_sections=list(REQUIRED_SECTIONS),
+        )
+    return out
+
+
 PROGRAM_SPECS: Dict[str, ProgramSpec] = {
     JUDGE_PROGRAM: ProgramSpec(
         name=JUDGE_PROGRAM,
@@ -70,6 +157,22 @@ PROGRAM_SPECS: Dict[str, ProgramSpec] = {
         required_sections=list(REQUIRED_SECTIONS),
     ),
 }
+PROGRAM_SPECS.update(_build_role_specs())
+
+# Program names of the governed cognitive-role agents (signatures.py maps each to
+# the shared RoleAgent signature).
+ROLE_PROGRAM_NAMES: List[str] = [
+    _role_program_name(v) for v in _ROLE_TABLE if _role_program_name(v) in PROGRAM_SPECS
+]
+
+
+def role_program_for(cognitive_role_value: str) -> Optional[str]:
+    """Return the governed program name for a cognitive role, or None if that role
+    is not (yet) registered as an optimizable program."""
+    if not cognitive_role_value:
+        return None
+    name = _role_program_name(cognitive_role_value)
+    return name if name in PROGRAM_SPECS else None
 
 
 def get_spec(name: str) -> ProgramSpec:

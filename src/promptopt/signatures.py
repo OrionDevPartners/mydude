@@ -9,7 +9,12 @@ from typing import Dict, Type
 
 import dspy
 
-from src.promptopt.specs import JUDGE_PROGRAM, SEED_JUDGE_INSTRUCTIONS, get_spec
+from src.promptopt.specs import (
+    JUDGE_PROGRAM,
+    ROLE_PROGRAM_NAMES,
+    SEED_JUDGE_INSTRUCTIONS,
+    get_spec,
+)
 
 
 class JudgeSynthesis(dspy.Signature):
@@ -32,9 +37,35 @@ class JudgeSynthesis(dspy.Signature):
     )
 
 
+class RoleAgent(dspy.Signature):
+    """A governed cognitive-role agent producing one worker-format answer.
+
+    One shared signature backs every role program; the role's discipline lives in
+    the LIVE, governance-approved instructions loaded per call (not this docstring).
+    """
+
+    goal = dspy.InputField(desc="The overall swarm goal under deliberation.")
+    task = dspy.InputField(
+        desc="The scoped task assigned to this agent in this wave."
+    )
+    context = dspy.InputField(
+        desc="Prior facts, decisions, active constraints, and handoff context; "
+             "may be empty."
+    )
+    mode = dspy.InputField(desc="Reasoning mode: ANALYTIC or EXPLORATORY.")
+    worker_output = dspy.OutputField(
+        desc="The worker-format answer. MUST include every section header exactly: "
+             "RESULT, ARTIFACTS, CHECKS, RISKS, CAPABILITIES, COMPRESSED_HANDOFF."
+    )
+
+
 _SIGNATURES: Dict[str, Type[dspy.Signature]] = {
     JUDGE_PROGRAM: JudgeSynthesis,
 }
+# Every governed cognitive-role program shares the RoleAgent signature; their
+# instructions (the role discipline) differ per program and are governed in the DB.
+for _role_name in ROLE_PROGRAM_NAMES:
+    _SIGNATURES[_role_name] = RoleAgent
 
 # Seed the default docstring to the same text used for DB version 1, so a fresh
 # (uncompiled) signature behaves identically to the seeded live version.

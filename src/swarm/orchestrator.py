@@ -674,7 +674,7 @@ class WaveOrchestrator:
         async def run_one(i: int, job: Dict[str, str]):
             async with self.sem:
                 user_prompt = self._worker_prompt(wave_idx, i, job, handoff)
-                text = await self.llm.call(WORKER_SYSTEM_PROMPT, user_prompt)
+                text = await self._call_worker(job, handoff, user_prompt)
                 parsed = self._parse_worker(text)
                 updated = replace(
                     parsed,
@@ -768,6 +768,44 @@ class WaveOrchestrator:
             prompt += f"\nCOGNITIVE_ROLE_FOCUS: {role_suffix}\n"
 
         return prompt
+
+    async def _call_worker(self, job: Dict[str, str], handoff: Handoff, user_prompt: str) -> str:
+        """Execute one worker agent.
+
+        If the agent's cognitive role is registered as a governed prompt program,
+        run it through the single-call governed seam (run_role) — versioned, scored,
+        traced, and optimizable exactly like the judge. If that path is unavailable
+        (no provider, parse failure, or the role isn't registered), DEGRADE to the
+        existing multi-provider worker swarm. The degraded path is the prior approved
+        baseline, never an ungoverned ad-hoc prompt (pillars 1 & 4)."""
+        cog_role_name = job.get("cognitive_role_name", "")
+        program = None
+        if LLM_PROVIDER != "stub":
+            try:
+                from src.promptopt.specs import role_program_for
+                program = role_program_for(cog_role_name)
+            except Exception:
+                program = None
+
+        if program:
+            mode = "EXPLORATORY" if cog_role_name in ("creative_divergence", "exploratory") else "ANALYTIC"
+            context = (
+                f"FACTS: {handoff.facts}\n"
+                f"DECISIONS: {handoff.decisions}\n"
+                f"CONSTRAINTS: No raw secrets; request capabilities; small diffs; clear checks.\n"
+                f"INTENT: objective_id={self.intent.objective_id} "
+                f"constraints={self.intent.active_constraints}"
+            )
+            try:
+                from src.promptopt.runtime import run_role
+                return await run_role(program, handoff.goal, job["task"], context, mode)
+            except Exception as e:
+                logger.warning(
+                    "Governed role program '%s' unavailable (%s); degrading to the "
+                    "standard worker swarm path.", program, e,
+                )
+
+        return await self.llm.call(WORKER_SYSTEM_PROMPT, user_prompt)
 
     def _parse_worker(self, text: str) -> AgentResult:
         def grab(label: str) -> str:

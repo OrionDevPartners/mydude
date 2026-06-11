@@ -22,7 +22,7 @@ from src.database import SessionLocal
 from src.models import PromptOptimizationRun, PromptProgram
 from src.providers.secrets import get_env
 from src.promptopt import store
-from src.promptopt.metric import gepa_metric, metric
+from src.promptopt.metric import gepa_metric, make_gepa_metric, make_metric, metric
 from src.promptopt.runtime import _build_demos
 from src.promptopt.specs import get_spec
 
@@ -81,7 +81,7 @@ def _build_student(program_name: str, instructions: str, demos, lm):
     return student
 
 
-def _evaluate(program, dataset, input_fields: List[str]) -> Optional[float]:
+def _evaluate(program, dataset, input_fields: List[str], metric_fn=metric) -> Optional[float]:
     if not dataset:
         return None
     total, n = 0.0, 0
@@ -89,7 +89,7 @@ def _evaluate(program, dataset, input_fields: List[str]) -> Optional[float]:
         n += 1
         try:
             pred = program(**{f: getattr(ex, f, "") for f in input_fields})
-            total += metric(ex, pred)
+            total += metric_fn(ex, pred)
         except Exception:
             pass  # a failed prediction scores 0
     return round(total / max(1, n), 4)
@@ -131,13 +131,20 @@ def run_optimizers(program_name: str, instructions: str, demos,
     spec = get_spec(program_name)
     candidates: List[Dict[str, Any]] = []
 
+    # Spec-aware metrics: each program is scored against its OWN signature output
+    # field + section contract (the judge and every cognitive role share the law,
+    # not the field names).
+    sections = spec.required_sections or None
+    scalar_metric = make_metric(spec.output_field, sections)
+    gepa_feedback_metric = make_gepa_metric(spec.output_field, sections)
+
     student = _build_student(program_name, instructions, demos, lm)
-    base = _evaluate(student, valset or trainset, spec.input_fields)
+    base = _evaluate(student, valset or trainset, spec.input_fields, scalar_metric)
 
     # --- MIPROv2 baseline ---------------------------------------------------
     MIPROv2 = _mipro()
     mipro = MIPROv2(
-        metric=metric, prompt_model=lm, task_model=lm,
+        metric=scalar_metric, prompt_model=lm, task_model=lm,
         auto=budgets.get("mipro_auto", "light"),
         num_threads=budgets.get("num_threads", 1),
     )
@@ -149,13 +156,13 @@ def run_optimizers(program_name: str, instructions: str, demos,
         "optimizer": "MIPROv2",
         "instructions": mp.signature.instructions,
         "demos": _serialize_demos(getattr(mp, "demos", [])),
-        "score": _evaluate(compiled, valset or trainset, spec.input_fields),
+        "score": _evaluate(compiled, valset or trainset, spec.input_fields, scalar_metric),
     })
 
     # --- GEPA reflective (seeded from the MIPRO result) ---------------------
     GEPA = _gepa()
     gepa_kwargs: Dict[str, Any] = {
-        "metric": gepa_metric,
+        "metric": gepa_feedback_metric,
         "reflection_lm": lm,
         "num_threads": budgets.get("num_threads", 1),
         "reflection_minibatch_size": budgets.get("gepa_minibatch", 2),
@@ -171,7 +178,7 @@ def run_optimizers(program_name: str, instructions: str, demos,
         "optimizer": "GEPA",
         "instructions": gp.signature.instructions,
         "demos": _serialize_demos(getattr(gp, "demos", [])),
-        "score": _evaluate(gcompiled, valset or trainset, spec.input_fields),
+        "score": _evaluate(gcompiled, valset or trainset, spec.input_fields, scalar_metric),
     })
 
     return base, candidates

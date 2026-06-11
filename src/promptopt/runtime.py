@@ -79,3 +79,23 @@ async def run_judge(user_request: str, provider_outputs: str,
         },
         max_tokens=max_tokens,
     )
+
+
+async def run_role(program_name: str, goal: str, task: str, context: str = "",
+                   mode: str = "ANALYTIC", max_tokens: int = 1500) -> str:
+    """Governed single-call execution of a cognitive-role agent.
+
+    The role's discipline is the program's LIVE, approved instructions (replaces
+    the hardcoded role prompt). Same trace + scoring path as the judge, so role
+    runs feed the same optimization and governance promotion/rollback flow.
+    """
+    return await run_program(
+        program_name,
+        {
+            "goal": goal or "",
+            "task": task or "",
+            "context": context or "",
+            "mode": mode or "ANALYTIC",
+        },
+        max_tokens=max_tokens,
+    )

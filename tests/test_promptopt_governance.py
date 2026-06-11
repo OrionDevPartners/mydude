@@ -361,6 +361,131 @@ def _version_count(pid):
 
 
 # --------------------------------------------------------------------------- #
+# Cognitive-role program coverage (the engine optimizing a role, not the judge)
+# --------------------------------------------------------------------------- #
+
+ROLE_TEST_PROGRAM = "__promptopt_role_test__"
+
+
+def _register_role_test_program():
+    """Register a throwaway program on the shared RoleAgent signature with the
+    role IO contract (worker_output field + role inputs), so the spec-aware metric
+    is exercised against a NON-judge output field."""
+    from src.promptopt.signatures import RoleAgent
+    spec = ProgramSpec(
+        name=ROLE_TEST_PROGRAM,
+        signature_name=specs_mod.ROLE_SIGNATURE,
+        description="Throwaway cognitive-role program for prompt-engine tests.",
+        seed_instructions=(
+            "COGNITIVE ROLE: TEST. Apply skeptical analysis to the task."
+            + specs_mod.ROLE_WORKER_OUTPUT_CONTRACT
+        ),
+        input_fields=list(specs_mod.ROLE_INPUT_FIELDS),
+        output_field=specs_mod.ROLE_OUTPUT_FIELD,
+        required_sections=list(specs_mod.REQUIRED_SECTIONS),
+    )
+    specs_mod.PROGRAM_SPECS[ROLE_TEST_PROGRAM] = spec
+    sigs._SIGNATURES[ROLE_TEST_PROGRAM] = RoleAgent
+
+
+def _cleanup_role():
+    db = SessionLocal()
+    try:
+        prog = db.query(PromptProgram).filter_by(name=ROLE_TEST_PROGRAM).first()
+        if prog is not None:
+            db.query(PromptTrace).filter_by(program_id=prog.id).delete()
+            db.query(PromptOptimizationRun).filter_by(program_id=prog.id).delete()
+            db.query(PromptVersion).filter_by(program_id=prog.id).delete()
+            db.delete(prog)
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+    specs_mod.PROGRAM_SPECS.pop(ROLE_TEST_PROGRAM, None)
+    sigs._SIGNATURES.pop(ROLE_TEST_PROGRAM, None)
+
+
+def _role_dummy_lm():
+    import dspy
+    # Superset dict: RoleAgent reads `worker_output`; the meta-proposer reads the
+    # MIPRO fields. One dict satisfies every call (ChatAdapter ignores extras).
+    answer = {
+        specs_mod.ROLE_OUTPUT_FIELD: GOOD_TEXT,
+        "proposed_instruction": (
+            "COGNITIVE ROLE: TEST. Audit the task and return worker format with "
+            "every header: RESULT, ARTIFACTS, CHECKS, RISKS, CAPABILITIES, "
+            "COMPRESSED_HANDOFF."
+        ),
+        "observations": "Dataset asks a role agent to produce the six worker sections.",
+        "summary": "Produce a governed worker-format role answer.",
+        "program_description": "Cognitive-role agent producing worker-format output.",
+        "module_description": "Role module emitting worker sections.",
+        "rationale": "All required sections present and compliant.",
+        "reasoning": "Include every required section header.",
+    }
+    return dspy.utils.DummyLM(itertools.repeat(answer))
+
+
+def test_role_program_optimizes_on_its_own_output_field():
+    """A cognitive-role program (worker_output field) seeds v1, captures traces,
+    and produces scored candidates through the SAME optimizer + spec-aware metric
+    — proving the engine improves roles, not just the judge."""
+    _cleanup_role()
+    _register_role_test_program()
+    try:
+        store.seed_default_programs()
+        vid, instr, _ = store.get_live_instructions(ROLE_TEST_PROGRAM)
+        assert vid is not None
+        assert "OUTPUT CONTRACT" in instr
+
+        db = SessionLocal()
+        try:
+            pid = db.query(PromptProgram).filter_by(name=ROLE_TEST_PROGRAM).first().id
+        finally:
+            db.close()
+
+        for i in range(service.min_traces() + 2):
+            rid = store.record_trace(
+                ROLE_TEST_PROGRAM, vid,
+                {"goal": "ship X", "task": "audit step %d" % i,
+                 "context": "FACTS: []", "mode": "ANALYTIC"},
+                GOOD_TEXT,
+                score_info={"score": 0.8, "compliance_score": 90, "hallucination_risk": 0.1},
+                status="ok",
+            )
+            assert rid is not None
+
+        run = PromptOptimizationRun(
+            program_id=pid, optimizer="mipro+gepa", status="running",
+            trainset_size=0, started_by="tester",
+        )
+        db = SessionLocal()
+        try:
+            db.add(run)
+            db.commit()
+            run_id = run.id
+        finally:
+            db.close()
+
+        budgets = {
+            "mipro_auto": "light", "num_threads": 1,
+            "gepa_max_metric_calls": 4, "gepa_minibatch": 2, "max_tokens": 200,
+            "trace_limit": 50,
+        }
+        service.execute_run(run_id, ROLE_TEST_PROGRAM, budgets=budgets, lm=_role_dummy_lm())
+
+        status, error, base, best, candidates = _run_status(run_id)
+        assert status == "completed", "role optimization run failed: %s" % error
+        assert candidates, "no candidate versions persisted for the role program"
+        for c in candidates:
+            assert c["score"] is not None, "role candidate missing score"
+        assert best is not None
+    finally:
+        _cleanup_role()
+
+
+# --------------------------------------------------------------------------- #
 # Harness
 # --------------------------------------------------------------------------- #
 
@@ -374,6 +499,7 @@ _TESTS = [
     test_trace_capture_counts,
     test_optimization_with_dummy_lm_produces_candidates,
     test_optimization_fail_loud_without_provider,
+    test_role_program_optimizes_on_its_own_output_field,
 ]
 
 

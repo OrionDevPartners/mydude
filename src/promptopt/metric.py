@@ -73,16 +73,32 @@ def score_text(text: str, sections: List[str] = REQUIRED_SECTIONS) -> Dict[str, 
 
 
 def metric(gold: Any, pred: Any, trace: Any = None, *args, **kwargs) -> float:
-    """Scalar metric for MIPROv2 / dspy.Evaluate."""
+    """Scalar metric for MIPROv2 / dspy.Evaluate (judge defaults)."""
     return score_text(extract_output(pred))["score"]
 
 
-def make_feedback(s: Dict[str, Any]) -> str:
+def make_metric(output_field: str = JUDGE_OUTPUT_FIELD,
+                sections: List[str] = REQUIRED_SECTIONS):
+    """Build a scalar metric bound to a program's output field + required sections.
+
+    Lets every governed program (judge or cognitive role) be optimized with the
+    same scoring law against its OWN signature output field and section contract.
+    """
+    secs = list(sections) if sections else list(REQUIRED_SECTIONS)
+
+    def _metric(gold: Any, pred: Any, trace: Any = None, *args, **kwargs) -> float:
+        return score_text(extract_output(pred, output_field), secs)["score"]
+
+    return _metric
+
+
+def make_feedback(s: Dict[str, Any], sections: List[str] = REQUIRED_SECTIONS) -> str:
+    secs = list(sections) if sections else list(REQUIRED_SECTIONS)
     fb: List[str] = []
     if s["missing_sections"]:
         fb.append(
             "Missing required sections: " + ", ".join(s["missing_sections"])
-            + ". Include EVERY header exactly: " + ", ".join(REQUIRED_SECTIONS) + "."
+            + ". Include EVERY header exactly: " + ", ".join(secs) + "."
         )
     if s["violations"]:
         fb.append(
@@ -100,7 +116,21 @@ def make_feedback(s: Dict[str, Any]) -> str:
 
 def gepa_metric(gold: Any, pred: Any, trace: Any = None,
                 pred_name: Any = None, pred_trace: Any = None):
-    """Feedback-style metric for GEPA: returns Prediction(score, feedback)."""
+    """Feedback-style metric for GEPA: returns Prediction(score, feedback) (judge defaults)."""
     import dspy
     s = score_text(extract_output(pred))
     return dspy.Prediction(score=s["score"], feedback=make_feedback(s))
+
+
+def make_gepa_metric(output_field: str = JUDGE_OUTPUT_FIELD,
+                     sections: List[str] = REQUIRED_SECTIONS):
+    """Build a GEPA feedback metric bound to a program's output field + sections."""
+    secs = list(sections) if sections else list(REQUIRED_SECTIONS)
+
+    def _gepa(gold: Any, pred: Any, trace: Any = None,
+              pred_name: Any = None, pred_trace: Any = None):
+        import dspy
+        s = score_text(extract_output(pred, output_field), secs)
+        return dspy.Prediction(score=s["score"], feedback=make_feedback(s, secs))
+
+    return _gepa
