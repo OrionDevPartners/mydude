@@ -28,6 +28,8 @@ env/
 # Runtime memory stores (generated at runtime; not source)
 .cognee_data/
 .mem0_data/
+# Experimental embedded memory stack (DuckDB/SQLite files are runtime artifacts)
+data/agent_memory/
 
 # IDE
 .idea/
@@ -44,3 +46,5 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+agentledger/experimental/vendor/
+.devguard/
