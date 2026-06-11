@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
-  getCoach, getCoachSignals, ingestCoachText, computeCoachBehavior, askCoach,
+  getCoach, getCoachSignals, ingestCoachText, ingestCoachAudio, computeCoachBehavior, askCoach,
   reflectCoach, setCoachAutoreflect, setCoachStrictPrivate, setInsightOutcome,
   requestCoachAction, confirmCoachAction, rejectCoachAction, purgeCoach,
   CoachData, MoodSignal, CoachInsight, SecretaryAction, MoodProviderConn,
@@ -11,7 +11,7 @@ import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, FormField, Toggle
 import { fmtDate } from '@/lib/utils'
 import {
   Heart, RefreshCw, Plus, CheckCircle2, XCircle, AlertTriangle, Plug, Sparkles,
-  Send, Trash2, ShieldCheck, MessageSquare,
+  Send, Trash2, ShieldCheck, MessageSquare, Mic, Square, Upload,
 } from 'lucide-react'
 
 const SEVERITY_COLOR: Record<string, string> = {
@@ -271,8 +271,30 @@ function Signals({ data, working, action, setMsg, setErr, refetch }: {
   )
 }
 
-function CaptureModal({ open, onClose, onSaved, onError }: {
+function CaptureModal({ open, projects, onClose, onSaved, onError }: {
   open: boolean; projects: CoachData; onClose: () => void; onSaved: () => void; onError: (e: string) => void
+}) {
+  const [mode, setMode] = useState<'text' | 'voice'>('text')
+  const strictPrivate = projects.strict_private
+  return (
+    <Modal open={open} onClose={onClose} title="Capture a signal">
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+        <button type="button" className={`btn btn-sm ${mode === 'text' ? 'btn-secondary' : 'btn-ghost'}`} onClick={() => setMode('text')}>
+          <MessageSquare size={13} /> Text
+        </button>
+        <button type="button" className={`btn btn-sm ${mode === 'voice' ? 'btn-secondary' : 'btn-ghost'}`} onClick={() => setMode('voice')}>
+          <Mic size={13} /> Voice
+        </button>
+      </div>
+      {mode === 'text'
+        ? <TextCapture onClose={onClose} onSaved={onSaved} onError={onError} />
+        : <VoiceCapture strictPrivate={strictPrivate} onClose={onClose} onSaved={onSaved} onError={onError} />}
+    </Modal>
+  )
+}
+
+function TextCapture({ onClose, onSaved, onError }: {
+  onClose: () => void; onSaved: () => void; onError: (e: string) => void
 }) {
   const [form, setForm] = useState({ text: '', prefer: 'auto', project_id: '', event_ref: '' })
   const [saving, setSaving] = useState(false)
@@ -289,26 +311,132 @@ function CaptureModal({ open, onClose, onSaved, onError }: {
     finally { setSaving(false) }
   }
   return (
-    <Modal open={open} onClose={onClose} title="Capture a signal">
-      <form onSubmit={submit}>
-        <FormField label="How are you feeling? *" hint="Captured locally — analysed for mood/sentiment, stored private by design">
-          <textarea className="form-input" rows={3} value={form.text} onChange={e => set('text', e.target.value)} required />
-        </FormField>
-        <FormField label="Analysis" hint="auto = emotion if Hume connected, else sentiment">
-          <select className="form-input" value={form.prefer} onChange={e => set('prefer', e.target.value)}>
-            <option value="auto">auto</option>
-            <option value="sentiment">sentiment (LLM)</option>
-            <option value="emotion">emotion (Hume)</option>
-          </select>
-        </FormField>
-        <FormField label="Link to project ID"><input className="form-input" value={form.project_id} onChange={e => set('project_id', e.target.value)} placeholder="optional" /></FormField>
-        <FormField label="Event reference"><input className="form-input" value={form.event_ref} onChange={e => set('event_ref', e.target.value)} placeholder="optional" /></FormField>
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Capturing…' : 'Capture'}</button>
+    <form onSubmit={submit}>
+      <FormField label="How are you feeling? *" hint="Captured locally — analysed for mood/sentiment, stored private by design">
+        <textarea className="form-input" rows={3} value={form.text} onChange={e => set('text', e.target.value)} required />
+      </FormField>
+      <FormField label="Analysis" hint="auto = emotion if Hume connected, else sentiment">
+        <select className="form-input" value={form.prefer} onChange={e => set('prefer', e.target.value)}>
+          <option value="auto">auto</option>
+          <option value="sentiment">sentiment (LLM)</option>
+          <option value="emotion">emotion (Hume)</option>
+        </select>
+      </FormField>
+      <FormField label="Link to project ID"><input className="form-input" value={form.project_id} onChange={e => set('project_id', e.target.value)} placeholder="optional" /></FormField>
+      <FormField label="Event reference"><input className="form-input" value={form.event_ref} onChange={e => set('event_ref', e.target.value)} placeholder="optional" /></FormField>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Capturing…' : 'Capture'}</button>
+      </div>
+    </form>
+  )
+}
+
+function VoiceCapture({ strictPrivate, onClose, onSaved, onError }: {
+  strictPrivate: boolean; onClose: () => void; onSaved: () => void; onError: (e: string) => void
+}) {
+  const [meta, setMeta] = useState({ project_id: '', event_ref: '' })
+  const [blob, setBlob] = useState<Blob | null>(null)
+  const [filename, setFilename] = useState('recording.webm')
+  const [recording, setRecording] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+
+  function set(k: string, v: string) { setMeta(m => ({ ...m, [k]: v })) }
+
+  useEffect(() => {
+    if (!blob) { setPreviewUrl(null); return }
+    const url = URL.createObjectURL(blob)
+    setPreviewUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [blob])
+
+  // Stop any in-flight recording / mic when the modal unmounts.
+  useEffect(() => () => {
+    try { recorderRef.current?.stop() } catch { /* ignore */ }
+    recorderRef.current?.stream?.getTracks().forEach(t => t.stop())
+  }, [])
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      chunksRef.current = []
+      const rec = new MediaRecorder(stream)
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      rec.onstop = () => {
+        const b = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
+        setBlob(b)
+        setFilename(`recording.${(rec.mimeType || 'audio/webm').includes('ogg') ? 'ogg' : 'webm'}`)
+        stream.getTracks().forEach(t => t.stop())
+      }
+      recorderRef.current = rec
+      rec.start()
+      setRecording(true)
+    } catch {
+      onError('Microphone access was denied or is unavailable. You can upload an audio file instead.')
+    }
+  }
+
+  function stopRecording() {
+    try { recorderRef.current?.stop() } catch { /* ignore */ }
+    setRecording(false)
+  }
+
+  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    if (f) { setBlob(f); setFilename(f.name) }
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!blob) { onError('Record or upload an audio clip first.'); return }
+    setSaving(true)
+    try {
+      await ingestCoachAudio(blob, {
+        filename,
+        project_id: meta.project_id || undefined,
+        event_ref: meta.event_ref || undefined,
+      })
+      onSaved(); setBlob(null); setMeta({ project_id: '', event_ref: '' })
+    } catch (err: unknown) { onError(err instanceof Error ? err.message : 'Error') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <form onSubmit={submit}>
+      {strictPrivate && (
+        <Alert type="info">
+          <ShieldCheck size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
+          Strict-private mode is on. Voice emotion uses the Hume cloud and will be refused — disable strict-private mode to capture voice signals.
+        </Alert>
+      )}
+      <FormField label="Record your voice" hint="A short clip is analysed for vocal emotion (prosody) via Hume. Stored private by design.">
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {!recording
+            ? <button type="button" className="btn btn-secondary btn-sm" onClick={startRecording}><Mic size={14} /> Record</button>
+            : <button type="button" className="btn btn-primary btn-sm" onClick={stopRecording}><Square size={14} /> Stop</button>}
+          {recording && <span style={{ fontSize: 12, color: 'var(--danger, #e94560)' }}>● recording…</span>}
+          <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer', margin: 0 }}>
+            <Upload size={14} /> Upload file
+            <input type="file" accept="audio/*" onChange={onPick} style={{ display: 'none' }} />
+          </label>
         </div>
-      </form>
-    </Modal>
+      </FormField>
+      {previewUrl && (
+        <div style={{ marginBottom: 12 }}>
+          <audio controls src={previewUrl} style={{ width: '100%' }} />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{filename}</div>
+        </div>
+      )}
+      <FormField label="Link to project ID"><input className="form-input" value={meta.project_id} onChange={e => set('project_id', e.target.value)} placeholder="optional" /></FormField>
+      <FormField label="Event reference"><input className="form-input" value={meta.event_ref} onChange={e => set('event_ref', e.target.value)} placeholder="optional" /></FormField>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button type="submit" className="btn btn-primary" disabled={saving || !blob || recording}>{saving ? 'Analysing…' : 'Capture voice'}</button>
+      </div>
+    </form>
   )
 }
 

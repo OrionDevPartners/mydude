@@ -17,3 +17,4 @@
 - [Experimental container pattern](experimental-container-pattern.md) — dev-only code = gated-in-trunk (REPLIT_DEPLOYMENT gate + deps out of prod closure + post-merge), never a git branch.
 - [Agent Ledger](agent-ledger.md) — isolated SQLite registry (`python -m agentledger.query`) of packages/providers + their layer/container/function placement; rebuild via `agentledger.seed`.
 - [Cognitive-role prompt programs](role-program-optimization.md) — swarm role prompts are governed/optimizable like the judge; runtime must run the same seam the optimizer trains (no train/serve skew).
+- [Voice/prosody mood capture](voice-mood-capture.md) — Hume prosody emits no sentiment so valence stays None; audio is always cloud so strict-private must refuse voice.

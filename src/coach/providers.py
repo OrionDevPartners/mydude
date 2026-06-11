@@ -1,9 +1,10 @@
 """Credential sourcing + connection status for the mood/emotion provider(s).
 
 Provider-agnostic (governance pillar #2): the coach captures emotion through a
-provider object exposing ``analyze_text(text) -> dict``. Hume AI is the current
-implementation; selecting another provider is a config + client change, never a
-call-site change.
+provider object exposing ``analyze_text(text) -> dict`` and (optionally)
+``analyze_audio(audio_bytes, filename) -> dict`` for voice/prosody. Hume AI is
+the current implementation; selecting another provider is a config + client
+change, never a call-site change.
 
 Sourcing order (mirrors finance providers):
   1. Replit connector proxy (fetched fresh every call, never cached)

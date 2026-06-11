@@ -9,7 +9,9 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
+from fastapi import (
+    APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile,
+)
 from fastapi.responses import JSONResponse
 
 from src.web.auth import (
@@ -1648,6 +1650,36 @@ async def api_coach_ingest(
         except CoachNotConfigured as e:
             raise HTTPException(status_code=400, detail=str(e))
         except CoachLLMUnavailable as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (CoachAuthError, CoachProviderError) as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "signal": sig}
+    finally:
+        db.close()
+
+
+@router.post("/coach/ingest-audio")
+async def api_coach_ingest_audio(
+    file: UploadFile = File(...), project_id: str = Form(""),
+    event_ref: str = Form(""), _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.coach.ingestion import ingest_audio
+    from src.coach.providers import CoachNotConfigured, CoachProviderError, CoachAuthError
+    audio = await file.read()
+    if not audio:
+        raise HTTPException(status_code=400, detail="An audio file is required to capture a voice signal.")
+    pid = int(project_id.strip()) if project_id.strip().isdigit() else None
+    db = SessionLocal()
+    try:
+        try:
+            sig = await asyncio.to_thread(
+                ingest_audio, db, audio, file.filename or "recording.webm", None,
+                pid, event_ref.strip() or None,
+            )
+        except CoachNotConfigured as e:
             raise HTTPException(status_code=400, detail=str(e))
         except (CoachAuthError, CoachProviderError) as e:
             raise HTTPException(status_code=502, detail=str(e))

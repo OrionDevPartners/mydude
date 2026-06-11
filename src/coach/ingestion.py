@@ -178,6 +178,49 @@ def ingest_text(db, text, prefer="auto", observed_at=None, project_id=None,
     return _serialize(sig)
 
 
+def ingest_audio(db, audio_bytes, filename="recording.webm", observed_at=None,
+                 project_id=None, event_ref=None, strict_private=None):
+    """Capture a mood signal from voice/audio via the Hume prosody provider.
+
+    There is no on-device prosody model, so audio emotion ALWAYS uses the Hume
+    cloud provider. In strict-private mode this path is REFUSED (fail loud)
+    rather than silently egressing the recording — exactly like the text emotion
+    path. Raises ``CoachNotConfigured`` when Hume is unconfigured.
+    """
+    if not audio_bytes:
+        raise ValueError("Cannot ingest empty audio.")
+
+    if strict_private is None:
+        from src.web.settings_store import get_setting
+        strict_private = (get_setting("COACH_STRICT_PRIVATE", "0") or "0") == "1"
+
+    if strict_private:
+        raise ValueError(
+            "Strict-private mode is on: voice emotion analysis uses the Hume "
+            "cloud provider, which would send your recording off-device. There "
+            "is no local prosody model — disable strict-private mode to capture "
+            "voice signals."
+        )
+
+    from src.coach.providers import get_mood_provider
+    provider = get_mood_provider()  # raises CoachNotConfigured if unavailable
+    if not hasattr(provider, "analyze_audio"):
+        raise ValueError(
+            "The active mood provider does not support audio/voice capture."
+        )
+    res = provider.analyze_audio(audio_bytes, filename)
+    sig = _write_signal(
+        db, signal_type="emotion", source="%s_voice" % res.get("provider", "hume"),
+        observed_at=observed_at, valence=res.get("valence"),
+        arousal=res.get("arousal"), score=res.get("score"),
+        label=res.get("label"), metrics=res, project_id=project_id,
+        event_ref=event_ref, category="mood",
+    )
+    _audit(db, "ingest_voice", "ok",
+           "Voice emotion signal #%d via %s prosody." % (sig.id, res.get("provider")))
+    return _serialize(sig)
+
+
 def write_behavior_signal(db, *, source, score=None, valence=None, label=None,
                           summary=None, metrics=None, project_id=None,
                           event_ref=None, observed_at=None):

@@ -310,6 +310,17 @@ export const ingestCoachText = (data: { text: string; prefer?: string; project_i
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 
+export const ingestCoachAudio = (file: Blob, opts?: { filename?: string; project_id?: string; event_ref?: string }) => {
+  const fd = new FormData()
+  fd.append('file', file, opts?.filename || 'recording.webm')
+  if (opts?.project_id) fd.append('project_id', opts.project_id)
+  if (opts?.event_ref) fd.append('event_ref', opts.event_ref)
+  return request<{ ok: boolean; signal: MoodSignal }>('/coach/ingest-audio', {
+    method: 'POST',
+    body: fd,
+  })
+}
+
 export const computeCoachBehavior = () =>
   request<{ ok: boolean; written: unknown[]; skipped: { signal: string; reason: string }[] }>('/coach/behavior/compute', { method: 'POST' })
 export const askCoach = (question: string) =>
