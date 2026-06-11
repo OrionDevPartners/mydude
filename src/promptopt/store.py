@@ -441,6 +441,10 @@ def _version_row(v: PromptVersion) -> Dict[str, Any]:
         "score": v.score,
         "base_score": prov.get("base_score"),
         "delta": prov.get("delta"),
+        # Component breakdown (candidate vs. same-run live baseline) so operators
+        # see WHY a candidate scored what it did before promoting it.
+        "breakdown": prov.get("breakdown"),
+        "base_breakdown": prov.get("base_breakdown"),
         "instructions": v.instructions,
         "demos": json.loads(v.demos_json or "[]"),
         "provenance": prov,
@@ -470,6 +474,7 @@ def get_program_detail(name: str) -> Optional[Dict[str, Any]]:
             .limit(20)
             .all()
         )
+        live = _version_by_id(db, p.current_version_id) if p.current_version_id else None
         return {
             "program": {
                 "id": p.id,
@@ -477,6 +482,8 @@ def get_program_detail(name: str) -> Optional[Dict[str, Any]]:
                 "signature_name": p.signature_name,
                 "description": p.description,
                 "current_version_id": p.current_version_id,
+                "live_version_no": live.version_no if live else None,
+                "live_score": live.score if live else None,
                 "usable_trace_count": count_usable_traces(db, p.id),
             },
             "versions": [_version_row(v) for v in versions],

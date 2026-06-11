@@ -3,6 +3,7 @@ import {
   listPrompts, getPromptDetail, optimizePrompt, getPromptRun,
   promptVersionPromote, promptVersionRollback,
   PromptProgramSummary, PromptProgramDetail, PromptVersionRow, PromptRunRow,
+  PromptScoreBreakdown,
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Badge, Empty, Collapsible } from '@/components/ui'
@@ -27,6 +28,100 @@ function delta(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—'
   const v = (n * 100)
   return (v >= 0 ? '+' : '') + v.toFixed(1) + ' pts'
+}
+function cs(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—'
+  return n.toFixed(0) + ' / 100'
+}
+function num(n: number | null | undefined, digits = 2): string {
+  if (n === null || n === undefined) return '—'
+  return n.toFixed(digits)
+}
+
+// ---------------- Score comparison (candidate vs. live baseline) ----------------
+type Dir = 'up' | 'down'  // which direction is "better" for this metric
+
+function MetricRow({ label, live, cand, fmt, better }: {
+  label: string
+  live: number | null | undefined
+  cand: number | null | undefined
+  fmt: (n: number | null | undefined) => string
+  better: Dir
+}) {
+  const have = live !== null && live !== undefined && cand !== null && cand !== undefined
+  let diff = 0
+  let color = 'var(--text-muted)'
+  if (have) {
+    diff = (cand as number) - (live as number)
+    const improved = better === 'up' ? diff > 1e-9 : diff < -1e-9
+    const worsened = better === 'up' ? diff < -1e-9 : diff > 1e-9
+    color = improved ? '#2ecc71' : worsened ? '#e74c3c' : 'var(--text-muted)'
+  }
+  return (
+    <tr>
+      <td style={{ padding: '5px 10px 5px 0', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{label}</td>
+      <td style={{ padding: '5px 14px 5px 0', textAlign: 'right', color: 'var(--text-secondary, #cbd5e1)', fontVariantNumeric: 'tabular-nums' }}>{fmt(live)}</td>
+      <td style={{ padding: '5px 14px 5px 0', textAlign: 'right', fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{fmt(cand)}</td>
+      <td style={{ padding: '5px 0', textAlign: 'right', color, fontSize: 11.5, fontVariantNumeric: 'tabular-nums' }}>
+        {have && Math.abs(diff) > 1e-9 ? (better === 'up' ? (diff > 0 ? '▲' : '▼') : (diff < 0 ? '▲' : '▼')) : ''}
+      </td>
+    </tr>
+  )
+}
+
+function ScoreComparison({ v }: { v: PromptVersionRow }) {
+  const cand: PromptScoreBreakdown | null | undefined = v.breakdown
+  const live: PromptScoreBreakdown | null | undefined = v.base_breakdown
+  // Composite scores are always present on a scored candidate (base_score is the
+  // same-run live baseline); the component breakdown is present for runs created
+  // after breakdown capture shipped.
+  const haveScores = v.score !== null && v.score !== undefined
+  const haveBreakdown = !!cand
+  if (!haveScores && !haveBreakdown) return null
+
+  return (
+    <div style={{
+      marginTop: 12, padding: '10px 12px', borderRadius: 8,
+      background: 'rgba(0,0,0,0.18)', border: '1px solid var(--border)',
+    }}>
+      <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+        Live vs. candidate
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+        <thead>
+          <tr style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+            <th style={{ textAlign: 'left', padding: '0 10px 4px 0', fontWeight: 600 }}>Metric</th>
+            <th style={{ textAlign: 'right', padding: '0 14px 4px 0', fontWeight: 600 }}>Live</th>
+            <th style={{ textAlign: 'right', padding: '0 14px 4px 0', fontWeight: 600 }}>Candidate</th>
+            <th style={{ width: 16 }} />
+          </tr>
+        </thead>
+        <tbody>
+          <MetricRow label="Composite score" live={v.base_score} cand={v.score} fmt={pct} better="up" />
+          {haveBreakdown && <>
+            <MetricRow label="Section coverage" live={live?.format_fraction} cand={cand?.format_fraction} fmt={pct} better="up" />
+            <MetricRow label="Compliance score" live={live?.compliance_score} cand={cand?.compliance_score} fmt={cs} better="up" />
+            <MetricRow label="Hallucination risk" live={live?.hallucination_risk} cand={cand?.hallucination_risk} fmt={(n) => num(n, 2)} better="down" />
+          </>}
+        </tbody>
+      </table>
+      {haveBreakdown && cand && cand.missing_sections && cand.missing_sections.length > 0 && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: '#e0a458' }}>
+          Candidate still missing section{cand.missing_sections.length === 1 ? '' : 's'}: {cand.missing_sections.join(', ')}
+        </div>
+      )}
+      {haveBreakdown && cand && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+          Scored on {cand.n} held-out example{cand.n === 1 ? '' : 's'} from the same run.
+        </div>
+      )}
+      {!haveBreakdown && haveScores && (
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+          Metric breakdown unavailable for this version — re-optimize to capture the per-component split.
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ---------------- Program list ----------------
@@ -88,6 +183,7 @@ function VersionCard({ v, onAction, busy }: {
           score {pct(v.score)} {v.delta !== null && <span style={{ color: (v.delta ?? 0) >= 0 ? '#2ecc71' : '#e74c3c' }}>({delta(v.delta)})</span>}
         </span>
       </div>
+      {(v.status === 'candidate' || v.breakdown) && <ScoreComparison v={v} />}
       <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         {v.status === 'candidate' && (
           <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onAction('promote', v)} style={{ gap: 6 }}>

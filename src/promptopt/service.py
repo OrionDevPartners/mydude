@@ -95,6 +95,31 @@ def _evaluate(program, dataset, input_fields: List[str], metric_fn=metric) -> Op
     return round(total / max(1, n), 4)
 
 
+def _evaluate_detailed(program, dataset, input_fields: List[str],
+                       output_field: str, sections) -> Tuple[Optional[float], Optional[Dict[str, Any]]]:
+    """Score a program over a dataset AND return the averaged metric breakdown.
+
+    Runs the same predictions as ``_evaluate`` but keeps each output's component
+    scores (section coverage / compliance / hallucination risk), so the operator
+    can see WHY a candidate scored what it did, not only the composite number. A
+    failed prediction is scored worst-case (empty output) — never silently
+    skipped — so the breakdown can't be gamed by dropping hard examples.
+    """
+    from src.promptopt.metric import aggregate_scores, extract_output, score_text
+    if not dataset:
+        return None, None
+    rows: List[Dict[str, Any]] = []
+    for ex in dataset:
+        try:
+            pred = program(**{f: getattr(ex, f, "") for f in input_fields})
+            text = extract_output(pred, output_field)
+        except Exception:
+            text = ""
+        rows.append(score_text(text, sections))
+    agg = aggregate_scores(rows, sections)
+    return agg.get("score"), agg
+
+
 def _serialize_demos(demos) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for d in demos or []:
@@ -126,8 +151,12 @@ def _gepa():
 
 def run_optimizers(program_name: str, instructions: str, demos,
                    trainset: list, valset: list, lm,
-                   budgets: Dict[str, Any]) -> Tuple[Optional[float], List[Dict[str, Any]]]:
-    """Run MIPROv2 then GEPA. Returns (base_score, [candidate dicts])."""
+                   budgets: Dict[str, Any]) -> Tuple[Optional[float], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Run MIPROv2 then GEPA. Returns (base_score, base_breakdown, [candidate dicts]).
+
+    Every score is evaluated WITH its component breakdown against the SAME
+    eval set, so the candidate vs. live comparison the operator sees is apples to
+    apples (same examples, same metric, same run)."""
     spec = get_spec(program_name)
     candidates: List[Dict[str, Any]] = []
 
@@ -135,16 +164,18 @@ def run_optimizers(program_name: str, instructions: str, demos,
     # field + section contract (the judge and every cognitive role share the law,
     # not the field names).
     sections = spec.required_sections or None
-    scalar_metric = make_metric(spec.output_field, sections)
     gepa_feedback_metric = make_gepa_metric(spec.output_field, sections)
+    eval_set = valset or trainset
 
     student = _build_student(program_name, instructions, demos, lm)
-    base = _evaluate(student, valset or trainset, spec.input_fields, scalar_metric)
+    base, base_breakdown = _evaluate_detailed(
+        student, eval_set, spec.input_fields, spec.output_field, sections
+    )
 
     # --- MIPROv2 baseline ---------------------------------------------------
     MIPROv2 = _mipro()
     mipro = MIPROv2(
-        metric=scalar_metric, prompt_model=lm, task_model=lm,
+        metric=make_metric(spec.output_field, sections), prompt_model=lm, task_model=lm,
         auto=budgets.get("mipro_auto", "light"),
         num_threads=budgets.get("num_threads", 1),
     )
@@ -152,11 +183,15 @@ def run_optimizers(program_name: str, instructions: str, demos,
         student, trainset=trainset, valset=valset, requires_permission_to_run=False
     )
     mp = compiled.predictors()[0]
+    mp_score, mp_breakdown = _evaluate_detailed(
+        compiled, eval_set, spec.input_fields, spec.output_field, sections
+    )
     candidates.append({
         "optimizer": "MIPROv2",
         "instructions": mp.signature.instructions,
         "demos": _serialize_demos(getattr(mp, "demos", [])),
-        "score": _evaluate(compiled, valset or trainset, spec.input_fields, scalar_metric),
+        "score": mp_score,
+        "breakdown": mp_breakdown,
     })
 
     # --- GEPA reflective (seeded from the MIPRO result) ---------------------
@@ -174,14 +209,18 @@ def run_optimizers(program_name: str, instructions: str, demos,
     gepa = GEPA(**gepa_kwargs)
     gcompiled = gepa.compile(compiled, trainset=trainset, valset=valset)
     gp = gcompiled.predictors()[0]
+    gp_score, gp_breakdown = _evaluate_detailed(
+        gcompiled, eval_set, spec.input_fields, spec.output_field, sections
+    )
     candidates.append({
         "optimizer": "GEPA",
         "instructions": gp.signature.instructions,
         "demos": _serialize_demos(getattr(gp, "demos", [])),
-        "score": _evaluate(gcompiled, valset or trainset, spec.input_fields, scalar_metric),
+        "score": gp_score,
+        "breakdown": gp_breakdown,
     })
 
-    return base, candidates
+    return base, base_breakdown, candidates
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +273,7 @@ def execute_run(run_id: int, program_name: str, optimizer: str = "mipro+gepa",
         lm = ProviderBackedLM(runtime=False, max_tokens=budgets.get("max_tokens", 1500))
 
     try:
-        base, candidates = run_optimizers(
+        base, base_breakdown, candidates = run_optimizers(
             program_name, live_instructions, live_demos, trainset, valset, lm, budgets
         )
         persisted: List[Dict[str, Any]] = []
@@ -248,6 +287,11 @@ def execute_run(run_id: int, program_name: str, optimizer: str = "mipro+gepa",
                 "base_score": base,
                 "candidate_score": c["score"],
                 "delta": delta,
+                # Per-component breakdown for the operator's promote/rollback call:
+                # the candidate's metric components and the SAME-RUN live baseline,
+                # so "why is this better" is auditable, not just a single number.
+                "breakdown": c.get("breakdown"),
+                "base_breakdown": base_breakdown,
                 "trainset_size": len(trainset),
                 "valset_size": len(valset),
                 "run_id": run_id,

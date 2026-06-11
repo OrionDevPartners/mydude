@@ -337,6 +337,23 @@ def test_optimization_with_dummy_lm_produces_candidates():
     assert best is not None
     assert _version_count(pid) > before_versions, "no new candidate versions created"
 
+    # Each candidate version PRODUCED BY THIS RUN must carry the metric breakdown
+    # (candidate + same-run live baseline) so operators see WHY it scored what it
+    # did before promoting it. (Earlier tests inject breakdown-free candidates
+    # directly, so scope the check to this run's version ids.)
+    run_vids = {c["version_id"] for c in candidates}
+    detail = store.get_program_detail(TEST_PROGRAM)
+    cand_rows = [v for v in detail["versions"] if v["id"] in run_vids]
+    assert cand_rows, "no candidate version rows surfaced in program detail"
+    for v in cand_rows:
+        bd = v.get("breakdown")
+        base_bd = v.get("base_breakdown")
+        assert bd and base_bd, "candidate v%s missing breakdown/base_breakdown" % v["version_no"]
+        for comp in ("score", "format_fraction", "compliance_score", "hallucination_risk"):
+            assert comp in bd and comp in base_bd, "breakdown missing component %s" % comp
+        assert bd["n"] >= 1, "breakdown scored on zero examples"
+        assert v["base_score"] is not None, "candidate missing live baseline score"
+
 
 def test_optimization_fail_loud_without_provider():
     _add_traces(max(0, service.min_traces() + 2))

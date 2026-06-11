@@ -72,6 +72,47 @@ def score_text(text: str, sections: List[str] = REQUIRED_SECTIONS) -> Dict[str, 
     }
 
 
+def aggregate_scores(score_dicts: List[Dict[str, Any]],
+                     sections: List[str] = REQUIRED_SECTIONS) -> Dict[str, Any]:
+    """Average the per-output component breakdowns into one comparable summary.
+
+    Produces the same components ``score_text`` emits (composite score, section
+    coverage, compliance, hallucination risk) but averaged across an evaluation
+    set, so a candidate's score can be explained — not just shown — side by side
+    with the live baseline. ``missing_sections`` lists every required section that
+    was absent in at least one output (most-frequent first) for operator triage.
+    """
+    secs = list(sections) if sections else list(REQUIRED_SECTIONS)
+    n = len(score_dicts)
+    if n == 0:
+        return {
+            "n": 0,
+            "score": None,
+            "format_fraction": None,
+            "compliance_score": None,
+            "hallucination_risk": None,
+            "missing_sections": [],
+        }
+
+    def _avg(key: str) -> float:
+        return sum(float(d.get(key) or 0.0) for d in score_dicts) / n
+
+    miss_counts: Dict[str, int] = {}
+    for d in score_dicts:
+        for s in d.get("missing_sections", []) or []:
+            miss_counts[s] = miss_counts.get(s, 0) + 1
+    missing = sorted(miss_counts, key=lambda s: (-miss_counts[s], secs.index(s) if s in secs else 99))
+
+    return {
+        "n": n,
+        "score": round(_avg("score"), 4),
+        "format_fraction": round(_avg("format_fraction"), 4),
+        "compliance_score": round(_avg("compliance_score"), 1),
+        "hallucination_risk": round(_avg("hallucination_risk"), 4),
+        "missing_sections": missing,
+    }
+
+
 def metric(gold: Any, pred: Any, trace: Any = None, *args, **kwargs) -> float:
     """Scalar metric for MIPROv2 / dspy.Evaluate (judge defaults)."""
     return score_text(extract_output(pred))["score"]

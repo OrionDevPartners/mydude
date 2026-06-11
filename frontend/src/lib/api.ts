@@ -683,12 +683,21 @@ export interface FleetStatus {
 export interface PromptProgramSummary {
   id: number; name: string; signature_name: string; description: string | null;
   current_version_id: number | null; live_version_no: number | null;
-  version_count: number; usable_trace_count: number; updated_at: string | null;
+  live_score?: number | null;
+  version_count?: number; usable_trace_count: number; updated_at?: string | null;
+}
+export interface PromptScoreBreakdown {
+  n: number; score: number | null; format_fraction: number | null;
+  compliance_score: number | null; hallucination_risk: number | null;
+  missing_sections: string[];
 }
 export interface PromptVersionRow {
   id: number; version_no: number; status: string; ever_live: boolean;
   optimizer: string | null; score: number | null; base_score: number | null;
-  delta: number | null; instructions: string; provenance: Record<string, unknown>;
+  delta: number | null;
+  breakdown?: PromptScoreBreakdown | null;
+  base_breakdown?: PromptScoreBreakdown | null;
+  instructions: string; provenance: Record<string, unknown>;
   created_at: string | null; promoted_at: string | null;
 }
 export interface PromptRunCandidate { version_id: number; optimizer: string | null; score: number | null }
