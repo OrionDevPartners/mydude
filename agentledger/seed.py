@@ -310,6 +310,58 @@ def _scan_imports(py_path: str) -> Set[str]:
     return tokens
 
 
+# Module-specifier patterns for ES/TS source (regex — Python has no TS parser).
+_JS_FROM_RE = re.compile(r"""\bfrom\s*['"]([^'"]+)['"]""")
+_JS_SIDEEFFECT_RE = re.compile(r"""\bimport\s*['"]([^'"]+)['"]""")
+_JS_DYNAMIC_RE = re.compile(r"""\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)""")
+_JS_REQUIRE_RE = re.compile(r"""\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)""")
+
+
+def _js_files(container_path: str) -> List[str]:
+    """Return .ts/.tsx/.js/.jsx files under <container>/src, skipping node_modules."""
+    abs_dir = os.path.join(ROOT, container_path, "src")
+    out: List[str] = []
+    if not os.path.isdir(abs_dir):
+        return out
+    for dirpath, dirnames, filenames in os.walk(abs_dir):
+        dirnames[:] = [d for d in dirnames if d != "node_modules"]
+        for fn in filenames:
+            if fn.endswith((".ts", ".tsx", ".js", ".jsx")):
+                out.append(os.path.join(dirpath, fn))
+    return out
+
+
+def _pkg_from_specifier(spec: str) -> Optional[str]:
+    """Resolve an import specifier to its npm package name, or None for
+    relative ('./x'), absolute ('/x'), or local-alias ('@/x') imports."""
+    if not spec or spec.startswith((".", "/")) or spec.startswith("@/"):
+        return None
+    parts = spec.split("/")
+    if spec.startswith("@"):
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            return f"{parts[0]}/{parts[1]}"
+        return None
+    return parts[0] or None
+
+
+def _scan_js_imports(js_path: str) -> Set[str]:
+    """Return the set of npm package names imported by a JS/TS file."""
+    try:
+        src = open(js_path, "r", encoding="utf-8", errors="ignore").read()
+    except Exception:
+        return set()
+    specs: Set[str] = set()
+    for rx in (_JS_FROM_RE, _JS_SIDEEFFECT_RE, _JS_DYNAMIC_RE, _JS_REQUIRE_RE):
+        for m in rx.finditer(src):
+            specs.add(m.group(1))
+    pkgs: Set[str] = set()
+    for spec in specs:
+        name = _pkg_from_specifier(spec)
+        if name:
+            pkgs.add(name)
+    return pkgs
+
+
 def _scan_text(py_files: List[str]) -> str:
     chunks = []
     for p in py_files:
@@ -389,6 +441,7 @@ def seed() -> dict:
         # 3. Containers + functions (scanned from the real filesystem)
         container_by_path: Dict[str, Container] = {}
         container_imports: Dict[str, Set[str]] = {}
+        container_node_imports: Dict[str, Set[str]] = {}
         container_text: Dict[str, str] = {}
         for cpath, lslug in CONTAINER_LAYER.items():
             is_core = cpath == "src/core"
@@ -411,6 +464,10 @@ def seed() -> dict:
             stats["containers"] += 1
 
             if lang != "python":
+                node_imports: Set[str] = set()
+                for jf in _js_files(cpath):
+                    node_imports |= _scan_js_imports(jf)
+                container_node_imports[cpath] = node_imports
                 continue
             pyfiles = _py_files(cpath, core_top_level=is_core)
             imports: Set[str] = set()
@@ -498,6 +555,28 @@ def seed() -> dict:
                     layer_id=cont.layer_id, container_id=cont.id,
                     role="import dependency", criticality="normal",
                     evidence=f"ast-import-scan: {cpath}",
+                ))
+                stats["placements"] += 1
+                db.add(ComponentDependency(
+                    from_kind="container", from_id=cont.id,
+                    to_kind="package", to_id=pkg.id, relation="imports",
+                ))
+                stats["deps"] += 1
+
+        # 6b. Placements: node packages -> containers (real JS/TS import scan)
+        name_to_node_pkg = {p.name: p for p in pkg_by_key.values()
+                            if p.ecosystem == "node"}
+        for cpath, node_pkgs in container_node_imports.items():
+            cont = container_by_path[cpath]
+            for name in sorted(node_pkgs):
+                pkg = name_to_node_pkg.get(name)
+                if not pkg:
+                    continue
+                db.add(Placement(
+                    subject_kind="package", subject_id=pkg.id,
+                    layer_id=cont.layer_id, container_id=cont.id,
+                    role="import dependency", criticality="normal",
+                    evidence=f"js-import-scan: {cpath}/src",
                 ))
                 stats["placements"] += 1
                 db.add(ComponentDependency(
