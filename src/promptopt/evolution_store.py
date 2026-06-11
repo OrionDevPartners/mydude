@@ -442,6 +442,46 @@ def log_cycle(
         db.close()
 
 
+def get_recent_stalled_branch_cells(
+    component_id: int,
+    last_n_cycles: int = 10,
+) -> Dict[str, int]:
+    """Return {branch_cell: stall_count} over the last N cycle logs.
+
+    A stall signal is an EvolutionCycleLog whose outcome is 'stalled' and which
+    recorded the failing branch cell under the 'stalled_branch_cell' key of its
+    next_thesis_selection_json. Used by select_next_thesis to weight down branch
+    cells that have recently stalled so the loop learns from the stall signal
+    instead of blindly re-selecting the same dead-end cell.
+
+    Only the most recent ``last_n_cycles`` cycle logs are scanned so the negative
+    signal decays as fresh (non-stalling) cycles push old stalls out of the window.
+    """
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(EvolutionCycleLog)
+            .filter_by(component_id=component_id)
+            .order_by(EvolutionCycleLog.created_at.desc())
+            .limit(last_n_cycles)
+            .all()
+        )
+        counts: Dict[str, int] = {}
+        for r in rows:
+            if r.outcome != "stalled":
+                continue
+            try:
+                sel = json.loads(r.next_thesis_selection_json or "{}")
+            except Exception:
+                sel = {}
+            cell = sel.get("stalled_branch_cell")
+            if cell:
+                counts[cell] = counts.get(cell, 0) + 1
+        return counts
+    finally:
+        db.close()
+
+
 def list_cycle_logs(component_id: int, limit: int = 30) -> List[Dict[str, Any]]:
     db = SessionLocal()
     try:

@@ -907,6 +907,166 @@ def test_manual_trial_force_bypasses_loop_enabled():
 
 
 # ---------------------------------------------------------------------------
+# Test 18: a stall records the failing branch cell as a negative signal in
+#          EvolutionCycleLog (auditable stall signal)
+# ---------------------------------------------------------------------------
+
+def test_stall_records_negative_signal_in_cycle_log():
+    """When a cycle stalls, _run_cycle must record the failing branch cell under
+    'stalled_branch_cell' in the EvolutionCycleLog so the next selection can
+    learn from it."""
+    import unittest.mock as mock
+    from src.promptopt.evolution import _run_cycle, SandboxResult
+
+    name = TEST_PREFIX + "stall_signal_log"
+    _cleanup(name)
+    try:
+        component_id = _make_component(name, "swarm_config")
+        estore.set_loop_enabled(component_id, True)
+
+        # Sandbox returns a constant failing score so run_trial raises
+        # EvolutionStallError (stall path), driving outcome='stalled'.
+        def stalling_sandbox(**kwargs):
+            return SandboxResult(
+                all_tests_passed=False,
+                composite_score=0.30,
+                compliance_score=30.0,
+                hallucination_risk=0.7,
+                sandbox_label="EXPERIMENTAL",
+            )
+
+        with mock.patch(
+            "src.promptopt.evolution.run_experimental_sandbox",
+            side_effect=stalling_sandbox,
+        ):
+            outcome = _run_cycle(component_id, force=True)
+
+        assert_equal(outcome, "stalled", "constant failing score must produce a stalled cycle")
+
+        logs = estore.list_cycle_logs(component_id)
+        assert_true(len(logs) >= 1, "a cycle log must be written")
+        last = logs[0]
+        assert_equal(last["outcome"], "stalled", "cycle log outcome must be 'stalled'")
+        sel = last.get("next_selection") or {}
+        assert_true(
+            "stalled_branch_cell" in sel,
+            "stalled cycle log must record stalled_branch_cell as a negative signal"
+        )
+
+        # The store helper must surface this branch cell with a stall count.
+        counts = estore.get_recent_stalled_branch_cells(component_id, last_n_cycles=10)
+        assert_true(
+            sel["stalled_branch_cell"] in counts,
+            "get_recent_stalled_branch_cells must report the stalled branch cell"
+        )
+        assert_true(
+            counts[sel["stalled_branch_cell"]] >= 1,
+            "stall count for the failing branch cell must be >= 1"
+        )
+        print("PASS test_stall_records_negative_signal_in_cycle_log")
+    finally:
+        _cleanup(name)
+
+
+# ---------------------------------------------------------------------------
+# Test 19: select_next_thesis weights down recently-stalled branch cells
+# ---------------------------------------------------------------------------
+
+def test_select_next_thesis_deprioritizes_stalled_branch_cell():
+    """A branch cell that has stalled >= max_stall_retries times must be
+    deprioritized so an alternative branch cell is selected instead."""
+    name = TEST_PREFIX + "deprioritize_stalled"
+    _cleanup(name)
+    try:
+        component_id = _make_component(name, "swarm_config")
+
+        db = SessionLocal()
+        try:
+            c = db.query(CognitionComponent).filter_by(id=component_id).first()
+        finally:
+            db.close()
+
+        # Baseline: with no stalls, swarm_config selection favors the highest
+        # raw-signal candidate (min_cs_threshold, signal 0.72 > evidence_strength 0.70).
+        baseline_candidate, _ = select_next_thesis(c, cycle_index=1)
+        baseline_cell = baseline_candidate["branch_cell"]
+
+        # Record enough stalls of the baseline cell to cross the retry limit.
+        from src.promptopt.evolution import MAX_STALL_RETRIES
+        for k in range(MAX_STALL_RETRIES):
+            estore.log_cycle(
+                component_id=component_id,
+                cycle_index=10 + k,
+                outcome="stalled",
+                thesis_id=None,
+                next_selection={"stalled_branch_cell": baseline_cell},
+                detail="seeded stall %d" % k,
+            )
+
+        counts = estore.get_recent_stalled_branch_cells(component_id, last_n_cycles=10)
+        assert_true(
+            counts.get(baseline_cell, 0) >= MAX_STALL_RETRIES,
+            "seeded stalls must be counted for the baseline branch cell"
+        )
+
+        # Now selection must avoid the stalled cell (an alternative exists).
+        new_candidate, votes = select_next_thesis(c, cycle_index=2)
+        assert_true(
+            new_candidate["branch_cell"] != baseline_cell,
+            "select_next_thesis must avoid the deprioritized stalled branch cell "
+            "(picked %r, stalled %r)" % (new_candidate["branch_cell"], baseline_cell)
+        )
+        assert_true(
+            "stalled_branch_cells" in votes,
+            "selection_votes must record the stalled branch cell counts for audit"
+        )
+        assert_true(
+            baseline_cell in votes["stalled_branch_cells"],
+            "audit record must include the stalled branch cell"
+        )
+        print("PASS test_select_next_thesis_deprioritizes_stalled_branch_cell")
+    finally:
+        _cleanup(name)
+
+
+# ---------------------------------------------------------------------------
+# Test 20: stall adjustment is bounded and respects the retry limit
+# ---------------------------------------------------------------------------
+
+def test_stall_adjusted_signal_phases():
+    """_stall_adjusted_signal must leave un-stalled cells alone, apply a linear
+    penalty below the retry limit, and a heavy penalty at/above it."""
+    from src.promptopt.evolution import (
+        _stall_adjusted_signal, STALL_SIGNAL_PENALTY, STALL_DEPRIORITIZE_PENALTY,
+    )
+
+    base = 0.80
+    # No stalls -> unchanged
+    assert_equal(
+        _stall_adjusted_signal(base, "cellA", {}, max_retries=2), base,
+        "no stalls must leave the signal unchanged"
+    )
+    # 1 stall, limit 2 -> linear penalty
+    assert_equal(
+        _stall_adjusted_signal(base, "cellA", {"cellA": 1}, max_retries=2),
+        max(0.0, base - STALL_SIGNAL_PENALTY),
+        "below the retry limit must apply the linear per-stall penalty"
+    )
+    # 2 stalls, limit 2 -> heavy deprioritization
+    assert_equal(
+        _stall_adjusted_signal(base, "cellA", {"cellA": 2}, max_retries=2),
+        max(0.0, base - STALL_DEPRIORITIZE_PENALTY),
+        "at the retry limit must apply the heavy deprioritize penalty"
+    )
+    # Never goes negative
+    assert_true(
+        _stall_adjusted_signal(0.10, "cellA", {"cellA": 5}, max_retries=2) >= 0.0,
+        "adjusted signal must never be negative"
+    )
+    print("PASS test_stall_adjusted_signal_phases")
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -928,6 +1088,9 @@ TESTS = [
     test_enactment_record_written_before_truth_update,
     test_branch_cell_patch_isolates_single_cell,
     test_manual_trial_force_bypasses_loop_enabled,
+    test_stall_records_negative_signal_in_cycle_log,
+    test_select_next_thesis_deprioritizes_stalled_branch_cell,
+    test_stall_adjusted_signal_phases,
 ]
 
 

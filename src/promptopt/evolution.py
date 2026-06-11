@@ -42,6 +42,65 @@ STALL_SCORE_DELTA = 0.001
 LOOP_SLEEP_SECONDS = 30
 HIGH_IMPACT_SCORE_THRESHOLD = 0.80
 
+# --- Stall recovery tuning ----------------------------------------------------
+# How many recent cycle logs to scan for stall signals when selecting the next
+# thesis. Stalls older than this window have decayed and no longer penalize.
+STALL_LOOKBACK_CYCLES = 10
+# Maximum number of times a branch cell may stall (within the lookback window)
+# before it is hard-deprioritized rather than merely weighted down. Configurable
+# via the 'evolution.max_stall_retries' AppSetting.
+MAX_STALL_RETRIES = 2
+# Per-stall penalty subtracted from a candidate's selection signal while the
+# branch cell is still under its retry limit (refine-and-retry phase).
+STALL_SIGNAL_PENALTY = 0.15
+# Heavier penalty applied once a branch cell reaches MAX_STALL_RETRIES so an
+# alternative branch cell wins whenever one exists.
+STALL_DEPRIORITIZE_PENALTY = 0.50
+
+
+def _max_stall_retries() -> int:
+    """Resolve the configurable per-branch-cell stall retry limit.
+
+    Reads the 'evolution.max_stall_retries' AppSetting when present, otherwise
+    falls back to the MAX_STALL_RETRIES default. Never raises.
+    """
+    try:
+        from src.database import SessionLocal
+        from src.models import AppSetting
+        db = SessionLocal()
+        try:
+            row = db.query(AppSetting).filter_by(key="evolution.max_stall_retries").first()
+            if row and row.value is not None:
+                return max(1, int(float(row.value)))
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return MAX_STALL_RETRIES
+
+
+def _stall_adjusted_signal(
+    base_signal: float,
+    branch_cell: str,
+    stalled_counts: Dict[str, int],
+    max_retries: int,
+) -> float:
+    """Lower a candidate's selection signal based on recent stall history.
+
+    - No recent stalls for the cell: signal is unchanged.
+    - Below the retry limit: apply a linear per-stall penalty (the loop is still
+      willing to retry the cell with a refined thesis, but prefers alternatives).
+    - At or above the retry limit: apply a heavy deprioritization penalty so any
+      non-stalled branch cell wins, while still leaving the cell selectable if it
+      is the only option (cycle cadence is never broken).
+    """
+    n = stalled_counts.get(branch_cell, 0)
+    if n <= 0:
+        return base_signal
+    if n >= max_retries:
+        return max(0.0, base_signal - STALL_DEPRIORITIZE_PENALTY)
+    return max(0.0, base_signal - STALL_SIGNAL_PENALTY * n)
+
 
 class EvolutionStallError(RuntimeError):
     """A thesis trial hit MAX_ITERATIONS without all tests passing."""
@@ -455,14 +514,33 @@ def select_next_thesis(
     if not candidates:
         raise RuntimeError("No thesis candidates generated for component '%s'" % component.name)
 
+    # Learn from recent stalls: weight down (or deprioritize) branch cells that
+    # have stalled in the last N cycles so the loop refines its approach instead
+    # of blindly re-selecting a dead-end branch cell.
+    stalled_counts: Dict[str, int] = {}
+    max_retries = MAX_STALL_RETRIES
+    try:
+        from src.promptopt import evolution_store as estore
+        stalled_counts = estore.get_recent_stalled_branch_cells(
+            component.id, STALL_LOOKBACK_CYCLES
+        )
+        max_retries = _max_stall_retries()
+    except Exception:
+        stalled_counts = {}
+
     best_candidate = candidates[0]
+    best_adjusted = -1.0
     votes: Dict[str, Dict[str, Any]] = {}
 
     for i, cand in enumerate(candidates):
+        raw_signal = cand.get("score_signal", 0.5)
+        signal = _stall_adjusted_signal(
+            raw_signal, cand["branch_cell"], stalled_counts, max_retries
+        )
+        cand["_adjusted_signal"] = signal
         for role in [CognitiveRole.ARCHITECT, CognitiveRole.EVIDENCE_VALIDATOR,
                      CognitiveRole.SKEPTIC, CognitiveRole.FALSIFIER]:
             base_w = ROLE_BASE_WEIGHTS.get(role, 0.5)
-            signal = cand.get("score_signal", 0.5)
             cs = int(signal * 100)
             evidence_strength = min(1.0, signal + 0.1)
             hr = max(0.0, 1.0 - signal)
@@ -472,15 +550,17 @@ def select_next_thesis(
             accept = signal >= 0.65 and (
                 role != CognitiveRole.SKEPTIC or signal >= 0.75
             )
+            stall_n = stalled_counts.get(cand["branch_cell"], 0)
             votes[agent_id] = {
                 "weight": weight,
                 "accept": accept,
-                "reason": "%s evaluated candidate %d (cell=%s signal=%.2f)" % (
-                    role.value, i, cand["branch_cell"], signal
+                "reason": "%s evaluated candidate %d (cell=%s signal=%.2f raw=%.2f stalls=%d)" % (
+                    role.value, i, cand["branch_cell"], signal, raw_signal, stall_n
                 ),
             }
 
-        if cand.get("score_signal", 0) > best_candidate.get("score_signal", 0):
+        if signal > best_adjusted:
+            best_adjusted = signal
             best_candidate = cand
 
     result = run_consensus(votes, threshold=0.60)
@@ -489,6 +569,10 @@ def select_next_thesis(
         "consensus_confidence": result.consensus_confidence,
         "accepted": result.accepted,
         "selected_branch_cell": best_candidate["branch_cell"],
+        "selected_signal_raw": best_candidate.get("score_signal", 0.5),
+        "selected_signal_adjusted": round(best_adjusted, 4),
+        "stalled_branch_cells": stalled_counts,
+        "max_stall_retries": max_retries,
         "cycle_index": cycle_index,
         "dissent_count": len(result.dissent),
     }
@@ -1202,12 +1286,17 @@ def _run_cycle(component_id: int, force: bool = False) -> str:
         logger.error("[EvolutionLoop] thesis=%d ERROR: %s\n%s", thesis_id, e, traceback.format_exc())
 
     cycle_count = estore.increment_cycle(component_id)
+    next_selection = {"next_cycle": cycle_count + 1, "from_outcome": outcome}
+    if outcome == "stalled":
+        # Record the failing branch cell as a negative signal so the next
+        # select_next_thesis weights this branch cell down (stall recovery).
+        next_selection["stalled_branch_cell"] = thesis_candidate["branch_cell"]
     estore.log_cycle(
         component_id=component_id,
         cycle_index=cycle_index,
         outcome=outcome,
         thesis_id=thesis_id,
-        next_selection={"next_cycle": cycle_count + 1, "from_outcome": outcome},
+        next_selection=next_selection,
         detail="cycle=%d thesis=%d outcome=%s" % (cycle_index, thesis_id, outcome),
     )
 
