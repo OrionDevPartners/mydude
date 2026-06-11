@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { Shield, Eye, EyeOff } from 'lucide-react'
 
 export function Login() {
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -14,11 +15,11 @@ export function Login() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    if (!password) return
+    if (!username || !password) return
     setLoading(true)
     setError(null)
     try {
-      await login(password)
+      await login(username, password)
       await refetch()
       navigate('/')
     } catch (err) {
@@ -62,6 +63,19 @@ export function Login() {
 
           <form onSubmit={handleSubmit}>
             <div className="form-group">
+              <label className="form-label">Username</label>
+              <input
+                type="text"
+                className="form-input"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                placeholder="Enter username"
+                autoComplete="username"
+                autoFocus
+                required
+              />
+            </div>
+            <div className="form-group">
               <label className="form-label">Password</label>
               <div style={{ position: 'relative' }}>
                 <input
@@ -70,7 +84,7 @@ export function Login() {
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   placeholder="Enter password"
-                  autoFocus
+                  autoComplete="current-password"
                   required
                 />
                 <button

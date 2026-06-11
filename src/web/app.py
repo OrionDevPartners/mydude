@@ -151,6 +151,12 @@ async def startup():
         )
 
     try:
+        from src.web.auth import seed_admin_user
+        seed_admin_user()
+    except Exception as e:
+        logger.error("Admin account seed failed: %s", e)
+
+    try:
         from src.promptopt import store as prompt_store
         from src.promptopt import service as prompt_service
         prompt_store.seed_default_programs()

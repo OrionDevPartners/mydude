@@ -15,15 +15,20 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 
 from src.web.auth import (
-    ADMIN_PASSWORD,
     MAX_PASSWORD_LEN,
+    MAX_USERNAME_LEN,
     SESSION_MAX_AGE,
     _dev_auth_bypass_enabled,
     _login_failures,
     _serializer,
     _set_session_cookie,
+    authenticate_user,
     client_ip,
+    hash_password,
+    make_session_token,
+    require_admin,
     require_auth,
+    resolve_session,
 )
 from src.web.branding import PRODUCT
 from src.web.ratelimit import client_ip
@@ -71,8 +76,9 @@ async def branding():
 
 
 @router.post("/login")
-async def api_login(request: Request, password: str = Form("")):
-    import secrets as _s
+async def api_login(request: Request, username: str = Form(""), password: str = Form("")):
+    from datetime import datetime as _dtnow
+    from src.database import SessionLocal
     ip = client_ip(request)
     allowed, retry_after = _login_failures.peek(ip)
     if not allowed:
@@ -80,14 +86,22 @@ async def api_login(request: Request, password: str = Form("")):
             status_code=429,
             detail="Too many failed attempts. Try again in %d seconds." % retry_after,
         )
-    if len(password) <= MAX_PASSWORD_LEN and _s.compare_digest(password, ADMIN_PASSWORD):
-        _login_failures.reset(ip)
-        token = _serializer.dumps({"authenticated": True})
-        resp = JSONResponse({"ok": True})
-        _set_session_cookie(resp, token)
-        return resp
+    if len(password) <= MAX_PASSWORD_LEN and len(username) <= MAX_USERNAME_LEN:
+        db = SessionLocal()
+        try:
+            user = authenticate_user(db, username, password)
+            if user is not None:
+                _login_failures.reset(ip)
+                user.last_login_at = _dtnow.utcnow()
+                db.commit()
+                token = make_session_token(user)
+                resp = JSONResponse({"ok": True, "username": user.username, "is_admin": bool(user.is_admin)})
+                _set_session_cookie(resp, token)
+                return resp
+        finally:
+            db.close()
     _login_failures.record(ip)
-    raise HTTPException(status_code=401, detail="Invalid password")
+    raise HTTPException(status_code=401, detail="Invalid username or password")
 
 
 @router.post("/logout")
@@ -99,19 +113,183 @@ async def api_logout():
 
 @router.get("/me")
 async def api_me(request: Request):
-    if _dev_auth_bypass_enabled():
-        return {"authenticated": True, "dev_bypass": True}
-    from itsdangerous import BadSignature, SignatureExpired
-    token = request.cookies.get("session_token")
-    if not token:
+    data = resolve_session(request)
+    if data is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    return {
+        "authenticated": True,
+        "username": data.get("username"),
+        "is_admin": bool(data.get("is_admin")),
+        "dev_bypass": bool(data.get("dev_bypass")),
+    }
+
+
+def _actor(auth: dict) -> dict:
+    """Audit attribution for the currently authenticated identity."""
+    return {
+        "actor_user_id": auth.get("uid"),
+        "actor_username": auth.get("username"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# User management (admin only)
+# ---------------------------------------------------------------------------
+
+def _user_dict(u) -> dict:
+    return {
+        "id": u.id,
+        "username": u.username,
+        "email": u.email or "",
+        "is_active": bool(u.is_active),
+        "is_admin": bool(u.is_admin),
+        "created_at": _dt(u.created_at),
+        "last_login_at": _dt(u.last_login_at),
+    }
+
+
+@router.get("/users")
+async def api_users(auth=Depends(require_admin)):
+    from src.database import SessionLocal
+    from src.models import User
+    db = SessionLocal()
     try:
-        data = _serializer.loads(token, max_age=SESSION_MAX_AGE)
-        if data.get("authenticated") is not True:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        return {"authenticated": True}
-    except (BadSignature, SignatureExpired):
-        raise HTTPException(status_code=401, detail="Session expired")
+        users = db.query(User).order_by(User.created_at.asc()).all()
+        return {"users": [_user_dict(u) for u in users]}
+    finally:
+        db.close()
+
+
+@router.post("/users")
+async def api_create_user(
+    username: str = Form(""),
+    password: str = Form(""),
+    email: str = Form(""),
+    is_admin: str = Form(""),
+    auth=Depends(require_admin),
+):
+    from src.database import SessionLocal
+    from src.models import User
+    from sqlalchemy import func
+
+    username = username.strip()
+    email = email.strip()
+    make_admin = is_admin.lower() in ("1", "true", "yes", "on")
+
+    if not username or len(username) > MAX_USERNAME_LEN:
+        raise HTTPException(400, "Username is required and must be under %d characters." % MAX_USERNAME_LEN)
+    if len(password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters.")
+    if len(password) > MAX_PASSWORD_LEN:
+        raise HTTPException(400, "Password is too long.")
+    if len(email) > 255:
+        raise HTTPException(400, "Email is too long.")
+
+    db = SessionLocal()
+    try:
+        clash = db.query(User).filter(func.lower(User.username) == username.lower()).first()
+        if clash:
+            raise HTTPException(409, "That username is already taken.")
+        if email:
+            eclash = db.query(User).filter(func.lower(User.email) == email.lower()).first()
+            if eclash:
+                raise HTTPException(409, "That email is already in use.")
+        user = User(
+            username=username,
+            email=email or None,
+            password_hash=hash_password(password),
+            is_active=True,
+            is_admin=make_admin,
+        )
+        db.add(user)
+        db.commit()
+        return {"ok": True, "user": _user_dict(user)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, "Failed to create user: %s" % e)
+    finally:
+        db.close()
+
+
+@router.post("/users/{user_id}/toggle")
+async def api_toggle_user(user_id: int, auth=Depends(require_admin)):
+    from src.database import SessionLocal
+    from src.models import User
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found.")
+        if user.id == auth.get("uid"):
+            raise HTTPException(400, "You cannot deactivate your own account.")
+        if user.is_active and user.is_admin:
+            active_admins = db.query(User).filter(User.is_admin == True, User.is_active == True).count()  # noqa: E712
+            if active_admins <= 1:
+                raise HTTPException(400, "Cannot deactivate the last active admin.")
+        user.is_active = not user.is_active
+        db.commit()
+        return {"ok": True, "is_active": user.is_active}
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(500, "Could not update user.")
+    finally:
+        db.close()
+
+
+@router.post("/users/{user_id}/password")
+async def api_reset_user_password(user_id: int, password: str = Form(""), auth=Depends(require_admin)):
+    from src.database import SessionLocal
+    from src.models import User
+    if len(password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters.")
+    if len(password) > MAX_PASSWORD_LEN:
+        raise HTTPException(400, "Password is too long.")
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found.")
+        user.password_hash = hash_password(password)
+        db.commit()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(500, "Could not reset password.")
+    finally:
+        db.close()
+
+
+@router.post("/users/{user_id}/delete")
+async def api_delete_user(user_id: int, auth=Depends(require_admin)):
+    from src.database import SessionLocal
+    from src.models import User
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found.")
+        if user.id == auth.get("uid"):
+            raise HTTPException(400, "You cannot delete your own account.")
+        if user.is_admin:
+            active_admins = db.query(User).filter(User.is_admin == True, User.is_active == True).count()  # noqa: E712
+            if user.is_active and active_admins <= 1:
+                raise HTTPException(400, "Cannot delete the last active admin.")
+        db.delete(user)
+        db.commit()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(500, "Could not delete user.")
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +462,7 @@ async def api_task_detail(task_id: int, _=Depends(require_auth)):
 # ---------------------------------------------------------------------------
 
 @router.get("/keys")
-async def api_keys(request: Request, _=Depends(require_auth)):
+async def api_keys(request: Request, auth=Depends(require_auth)):
     from src.database import SessionLocal
     from src.models import ApiKey
     from src.web.crypto import decrypt_value, mask_key
@@ -313,7 +491,8 @@ async def api_keys(request: Request, _=Depends(require_auth)):
                     revealed_value = decrypt_value(target.encrypted_key)
                     db.add(KeyAuditLog(
                         api_key_id=target.id, provider=target.provider,
-                        label=target.label, action="reveal", detail="Key value revealed in UI"
+                        label=target.label, action="reveal", detail="Key value revealed in UI",
+                        **_actor(auth),
                     ))
                     db.commit()
                 except Exception:
@@ -380,7 +559,7 @@ async def api_add_key(
     notes: str = Form(""),
     expires_at: str = Form(""),
     rotation_days: str = Form(""),
-    _=Depends(require_auth),
+    auth=Depends(require_auth),
 ):
     from src.database import SessionLocal
     from src.models import ApiKey, KeyAuditLog
@@ -435,7 +614,7 @@ async def api_add_key(
         )
         db.add(new_key)
         db.flush()
-        db.add(KeyAuditLog(api_key_id=new_key.id, provider=new_key.provider, label=new_key.label, action="create", detail="Key added to vault"))
+        db.add(KeyAuditLog(api_key_id=new_key.id, provider=new_key.provider, label=new_key.label, action="create", detail="Key added to vault", **_actor(auth)))
         db.commit()
     except HTTPException:
         raise
@@ -450,7 +629,7 @@ async def api_add_key(
 
 
 @router.post("/keys/{key_id}/rotate")
-async def api_rotate_key(key_id: int, api_key: str = Form(""), _=Depends(require_auth)):
+async def api_rotate_key(key_id: int, api_key: str = Form(""), auth=Depends(require_auth)):
     from src.database import SessionLocal
     from src.models import ApiKey, KeyAuditLog
     from src.web.crypto import encrypt_value
@@ -468,7 +647,7 @@ async def api_rotate_key(key_id: int, api_key: str = Form(""), _=Depends(require
             raise HTTPException(404, "Key not found.")
         key.encrypted_key = encrypt_value(api_key)
         key.last_rotated_at = datetime.utcnow()
-        db.add(KeyAuditLog(api_key_id=key.id, provider=key.provider, label=key.label, action="rotate", detail="Key value rotated"))
+        db.add(KeyAuditLog(api_key_id=key.id, provider=key.provider, label=key.label, action="rotate", detail="Key value rotated", **_actor(auth)))
         db.commit()
     except HTTPException:
         raise
@@ -483,7 +662,7 @@ async def api_rotate_key(key_id: int, api_key: str = Form(""), _=Depends(require
 
 
 @router.post("/keys/{key_id}/toggle")
-async def api_toggle_key(key_id: int, _=Depends(require_auth)):
+async def api_toggle_key(key_id: int, auth=Depends(require_auth)):
     from src.database import SessionLocal
     from src.models import ApiKey, KeyAuditLog
     db = SessionLocal()
@@ -493,7 +672,7 @@ async def api_toggle_key(key_id: int, _=Depends(require_auth)):
             raise HTTPException(404, "Key not found.")
         key.is_active = not key.is_active
         db.add(KeyAuditLog(api_key_id=key.id, provider=key.provider, label=key.label,
-                           action="enable" if key.is_active else "disable"))
+                           action="enable" if key.is_active else "disable", **_actor(auth)))
         db.commit()
         result = {"ok": True, "is_active": key.is_active}
     except HTTPException:
@@ -509,7 +688,7 @@ async def api_toggle_key(key_id: int, _=Depends(require_auth)):
 
 
 @router.post("/keys/{key_id}/delete")
-async def api_delete_key(key_id: int, _=Depends(require_auth)):
+async def api_delete_key(key_id: int, auth=Depends(require_auth)):
     import os
     from src.database import SessionLocal
     from src.models import ApiKey, KeyAuditLog
@@ -522,7 +701,7 @@ async def api_delete_key(key_id: int, _=Depends(require_auth)):
         ev = _resolve_env_var(key)
         if ev:
             os.environ.pop(ev, None)
-        db.add(KeyAuditLog(provider=key.provider, label=key.label, action="delete", detail="Key removed from vault"))
+        db.add(KeyAuditLog(provider=key.provider, label=key.label, action="delete", detail="Key removed from vault", **_actor(auth)))
         db.delete(key)
         db.commit()
     except HTTPException:
@@ -549,6 +728,7 @@ async def api_key_audit(_=Depends(require_auth)):
             "label": l.label or "",
             "action": l.action,
             "detail": l.detail or "",
+            "actor": l.actor_username or "—",
             "created_at": _dt(l.created_at),
         } for l in logs]
     finally:

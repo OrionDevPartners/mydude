@@ -33,7 +33,7 @@ export function KeyAudit() {
             <div className="glass-card" style={{ overflow: 'hidden' }}>
               <table className="data-table">
                 <thead>
-                  <tr><th>Provider</th><th>Label</th><th>Action</th><th>Detail</th><th>Time</th></tr>
+                  <tr><th>Provider</th><th>Label</th><th>Action</th><th>User</th><th>Detail</th><th>Time</th></tr>
                 </thead>
                 <tbody>
                   {data.entries.map((e, i) => (
@@ -41,6 +41,7 @@ export function KeyAudit() {
                       <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{e.provider}</td>
                       <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.label || '—'}</td>
                       <td><span className={`badge ${actionBadge(e.action)}`}>{e.action}</span></td>
+                      <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.actor || '—'}</td>
                       <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{e.detail}</td>
                       <td style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{fmtDate(e.created_at)}</td>
                     </tr>

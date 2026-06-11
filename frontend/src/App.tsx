@@ -7,6 +7,7 @@ import { TaskHistory } from '@/pages/TaskHistory'
 import { TaskDetail } from '@/pages/TaskDetail'
 import { Keys } from '@/pages/Keys'
 import { KeyAudit } from '@/pages/KeyAudit'
+import { Users } from '@/pages/Users'
 import { Directory } from '@/pages/Directory'
 import { Connected } from '@/pages/Connected'
 import { Capabilities } from '@/pages/Capabilities'
@@ -55,6 +56,7 @@ function AppRoutes() {
               <Route path="/tasks/:id" element={<TaskDetail />} />
               <Route path="/keys" element={<Keys />} />
               <Route path="/keys/audit" element={<KeyAudit />} />
+              <Route path="/users" element={<Users />} />
               <Route path="/directory" element={<Directory />} />
               <Route path="/connected" element={<Connected />} />
               <Route path="/capabilities" element={<Capabilities />} />

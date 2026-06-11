@@ -5,7 +5,8 @@ import { logout } from '@/lib/api'
 import {
   LayoutDashboard, History, Key, Globe, Plug, Zap,
   ShieldCheck, GitBranch, Brain, Activity, CreditCard,
-  Cpu, CircleDollarSign, Heart, UserSquare, LogOut, Menu, X, Bot, Sparkles, FlaskConical
+  Cpu, CircleDollarSign, Heart, UserSquare, LogOut, Menu, X, Bot, Sparkles, FlaskConical,
+  Users as UsersIcon, User as UserIcon
 } from 'lucide-react'
 
 interface NavItem { label: string; to: string; icon: ReactNode; section?: string }
@@ -32,13 +33,17 @@ const NAV: NavItem[] = [
 ]
 
 function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
-  const { branding } = useAuth()
+  const { branding, user } = useAuth()
   const navigate = useNavigate()
 
   async function handleLogout() {
     await logout()
     navigate('/login')
   }
+
+  const nav: NavItem[] = user?.is_admin
+    ? [...NAV, { label: 'Users', to: '/users', icon: <UsersIcon size={16} /> }]
+    : NAV
 
   return (
     <div style={{
@@ -56,7 +61,7 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
       </div>
 
       <div style={{ flex: 1, paddingTop: 8 }}>
-        {NAV.map((item) => (
+        {nav.map((item) => (
           <div key={item.to}>
             {item.section && (
               <div className="nav-section">{item.section}</div>
@@ -75,6 +80,15 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
       </div>
 
       <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10, marginTop: 8 }}>
+        {user?.username && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px 10px', fontSize: 12.5, color: 'var(--text-secondary)' }}>
+            <UserIcon size={14} style={{ opacity: 0.7 }} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {user.username}
+              {user.is_admin && <span style={{ color: 'var(--text-muted)' }}> · admin</span>}
+            </span>
+          </div>
+        )}
         <button
           className="btn btn-ghost"
           onClick={handleLogout}

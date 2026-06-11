@@ -256,6 +256,10 @@ class KeyAuditLog(Base):
     label = Column(String(100), nullable=True)
     action = Column(String(40), nullable=False)
     detail = Column(Text, nullable=True)
+    # Who performed the action. Nullable so historical rows (written before
+    # per-user accounts existed) and dev-bypass actions remain representable.
+    actor_user_id = Column(Integer, nullable=True, index=True)
+    actor_username = Column(String(80), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -1097,3 +1101,23 @@ class EvolutionCycleLog(Base):
     detail = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+
+class User(Base):
+    """An individual operator account.
+
+    Replaces the single shared admin password with per-person credentials so
+    every privileged action is attributable and one account can be revoked
+    without affecting the others. The password is stored only as a bcrypt hash;
+    the plaintext is never persisted. ``is_admin`` gates user-management.
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(80), unique=True, nullable=False, index=True)
+    email = Column(String(255), unique=True, nullable=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_admin = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login_at = Column(DateTime, nullable=True)

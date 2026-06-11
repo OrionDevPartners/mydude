@@ -53,15 +53,39 @@ async function requestBlob(path: string, options?: RequestInit): Promise<string>
 
 // Auth
 export const getBranding = () => request<{ name: string; short_name: string; tagline: string }>('/branding')
-export const getMe = () => request<{ authenticated: boolean }>('/me')
-export const login = (password: string) =>
-  request<{ ok: boolean }>('/login', {
+export const getMe = () =>
+  request<{ authenticated: boolean; username: string | null; is_admin: boolean; dev_bypass: boolean }>('/me')
+export const login = (username: string, password: string) =>
+  request<{ ok: boolean; username: string; is_admin: boolean }>('/login', {
     method: 'POST',
-    body: formBody({ password }),
+    body: formBody({ username, password }),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 export const logout = () =>
   request<{ ok: boolean }>('/logout', { method: 'POST' })
+
+// User management (admin only)
+export interface AppUser {
+  id: number; username: string; email: string; is_active: boolean; is_admin: boolean;
+  created_at: string | null; last_login_at: string | null;
+}
+export const getUsers = () => request<{ users: AppUser[] }>('/users')
+export const createUser = (data: { username: string; password: string; email?: string; is_admin?: boolean }) =>
+  request<{ ok: boolean; user: AppUser }>('/users', {
+    method: 'POST',
+    body: formBody({ username: data.username, password: data.password, email: data.email || '', is_admin: data.is_admin ? '1' : '' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const toggleUser = (id: number) =>
+  request<{ ok: boolean; is_active: boolean }>(`/users/${id}/toggle`, { method: 'POST' })
+export const resetUserPassword = (id: number, password: string) =>
+  request<{ ok: boolean }>(`/users/${id}/password`, {
+    method: 'POST',
+    body: formBody({ password }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const deleteUser = (id: number) =>
+  request<{ ok: boolean }>(`/users/${id}/delete`, { method: 'POST' })
 
 // Dashboard / Tasks
 export const getDashboard = () => request<DashboardData>('/dashboard')
@@ -485,7 +509,7 @@ export interface ApiKey {
 export interface ServiceEntry { slug: string; name: string; category: string; env_var?: string; key_url?: string; signup_url?: string; steps?: string[]; saved: boolean }
 export interface KeysData { keys: ApiKey[]; catalog: ServiceEntry[]; categories: string[]; used_categories: string[]; reminders: { level: string; text: string }[]; total_count: number }
 export interface AddKeyPayload { provider: string; label?: string; api_key: string; category?: string; env_var?: string; notes?: string; expires_at?: string; rotation_days?: string }
-export interface AuditEntry { provider: string; label: string; action: string; detail: string; created_at: string }
+export interface AuditEntry { provider: string; label: string; action: string; actor: string | null; detail: string; created_at: string }
 export interface DirectoryData { grouped: { category: string; services: ServiceEntry[] }[] }
 export interface ConnectedData { rows: ConnectedRow[]; proxy_available: boolean; connected_count: number; total_count: number }
 export interface ConnectedRow { name: string; category: string; connector: string; connected: boolean; created_at: string | null; description?: string }
