@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import traceback
@@ -100,6 +101,38 @@ def _stall_adjusted_signal(
     if n >= max_retries:
         return max(0.0, base_signal - STALL_DEPRIORITIZE_PENALTY)
     return max(0.0, base_signal - STALL_SIGNAL_PENALTY * n)
+
+
+# --- LLM-backed thesis generation (governed swarm dispatch) ----------------
+# Minimum average compliance score the swarm output must reach before its
+# proposal is allowed to enter the candidate pool. Below this (or HIGH/CRITICAL
+# hallucination tier, or an aborted run) the LLM candidate is discarded and the
+# loop falls back to heuristic candidates — no ungoverned output reaches state.
+LLM_THESIS_MIN_CS = float(os.getenv("EVOLUTION_LLM_MIN_CS", "55"))
+# Max seconds to wait for one governed swarm dispatch before giving up and
+# falling back to heuristics (the loop must never hang on a provider).
+LLM_THESIS_TIMEOUT_SECONDS = float(os.getenv("EVOLUTION_LLM_TIMEOUT", "240"))
+# Bounded step applied to a numeric branch cell from an LLM-recommended direction.
+LLM_THESIS_NUMERIC_STEP = 0.05
+
+_INCREASE_KEYWORDS = (
+    "increase", "raise", "higher", "strengthen", "tighten", "stricter",
+    "more strict", "boost", "elevate", "harden",
+)
+_DECREASE_KEYWORDS = (
+    "decrease", "lower", "reduce", "loosen", "relax", "less strict",
+    "weaken", "soften", "ease",
+)
+
+
+def _llm_thesis_enabled() -> bool:
+    """LLM-backed thesis generation is on by default; operators can disable it.
+
+    Set EVOLUTION_LLM_THESIS=0 (or false/no/off) to force heuristic-only
+    candidates even when a provider is configured.
+    """
+    val = os.getenv("EVOLUTION_LLM_THESIS", "1").strip().lower()
+    return val not in ("0", "false", "no", "off")
 
 
 class EvolutionStallError(RuntimeError):
@@ -363,6 +396,266 @@ def run_experimental_sandbox(
 # Thesis selector — weighted-debate consensus over candidate theses
 # ---------------------------------------------------------------------------
 
+def _run_orchestrator_sync(
+    goal: str,
+    domain: str = "meta_optimization",
+    team: str = "evolution",
+    timeout: float = LLM_THESIS_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """Run the governed WaveOrchestrator synchronously from the loop thread.
+
+    Wraps (never reimplements) the swarm. The orchestrator is async; the
+    evolution loop runs in daemon threads, so we dispatch the coroutine onto
+    the shared persistent provider loop used by the prompt engine and block on
+    the result. Provider credentials are sourced by the adapters through the
+    existing connector-proxy/vault chain — DSPy/this loop never sees a secret.
+    """
+    import asyncio
+    from src.swarm.broker import CapabilityBroker
+    from src.swarm.policy import PolicyEngine
+    from src.swarm.integrations import Integrations
+    from src.swarm.orchestrator import WaveOrchestrator
+    from src.promptopt.lm_bridge import _persistent_loop
+
+    broker = CapabilityBroker(PolicyEngine(), Integrations())
+    orch = WaveOrchestrator(broker)
+    fut = asyncio.run_coroutine_threadsafe(
+        orch.run(goal=goal, domain=domain, team=team), _persistent_loop()
+    )
+    return fut.result(timeout=timeout)
+
+
+def _build_thesis_goal(
+    component_type: str,
+    component_name: str,
+    branch_cell: str,
+    settings: Dict[str, Any],
+    live_instructions: str,
+    cycle_index: int,
+) -> str:
+    """Build the meta-optimization goal handed to the governed swarm."""
+    base = (
+        "SELF-EVOLUTION META-OPTIMIZATION (cycle %d).\n"
+        "You are the governed MyDude.io swarm proposing ONE concrete, "
+        "single-variable improvement to a cognition component. Honor the "
+        "governance pillars: epistemic labeling, evidence grounding, no "
+        "placeholders, fail loud.\n\n"
+        "Component: %s\nComponent type: %s\nTarget branch cell: %s\n"
+        % (cycle_index, component_name, component_type, branch_cell)
+    )
+    if component_type == "prompt_program":
+        return base + (
+            "Current instructions:\n'''\n%s\n'''\n\n"
+            "Propose ONE specific improvement DIRECTIVE that can be appended to "
+            "these instructions to raise the compliance score and lower "
+            "hallucination risk while preserving all existing required behavior "
+            "and output format. State the directive concretely as what the model "
+            "must now do." % (live_instructions or "(empty)")
+        )
+    if component_type == "swarm_config":
+        cur = settings.get("swarm.min_evidence_strength", "0.6")
+        return base + (
+            "Current swarm.min_evidence_strength=%s (safe range 0.40-0.95). "
+            "Given recent governance and audit signals, decide whether this "
+            "should be RAISED or LOWERED, and justify with evidence. State the "
+            "direction (raise/lower) explicitly." % cur
+        )
+    if component_type == "role_composition":
+        return base + (
+            "Decide whether the SKEPTIC cognitive role's debate weight should be "
+            "RAISED or LOWERED to better control hallucination risk, and justify "
+            "with evidence. State the direction (raise/lower) explicitly."
+        )
+    return base + "Propose ONE concrete improvement and justify it with evidence."
+
+
+def _synthesis_parts(result: Dict[str, Any]) -> Tuple[str, str]:
+    """Extract a directive block + a flat text blob from a swarm run result.
+
+    Returns (directive, flat_text). The directive is a deduped bullet list drawn
+    from the swarm's DECISIONS / NEXT_TASKS / FACTS — the load-bearing synthesis
+    the LLM produced. flat_text is the same content joined for keyword scanning.
+    """
+    parts: List[str] = []
+    seen = set()
+    for key in ("DECISIONS", "NEXT_TASKS", "FACTS"):
+        for item in (result.get(key) or [])[:5]:
+            s = str(item).strip()
+            if s and s not in seen:
+                seen.add(s)
+                parts.append(s)
+    directive = "\n".join("- " + p for p in parts[:6])
+    flat_text = " ".join(parts)
+    return directive, flat_text
+
+
+def _direction_from_text(text: str) -> int:
+    """Infer an LLM-recommended adjustment direction from synthesis text.
+
+    Returns +1 (raise), -1 (lower), or 0 (no clear signal).
+    """
+    t = (text or "").lower()
+    inc = sum(t.count(k) for k in _INCREASE_KEYWORDS)
+    dec = sum(t.count(k) for k in _DECREASE_KEYWORDS)
+    if inc > dec:
+        return 1
+    if dec > inc:
+        return -1
+    return 0
+
+
+def _llm_thesis_candidate(
+    component: Any,
+    cycle_index: int,
+    settings: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Generate ONE governed, LLM-backed thesis candidate via the swarm.
+
+    Returns a candidate dict shaped exactly like the heuristic candidates, or
+    None when no provider is available, the feature is disabled, the swarm
+    output fails the compliance/hallucination gate, or no actionable signal was
+    produced. Returning None is the graceful fallback — the caller keeps its
+    heuristic candidates.
+    """
+    if not _llm_thesis_enabled():
+        return None
+
+    try:
+        from src.promptopt.lm_bridge import available_provider
+        if available_provider() is None:
+            return None
+    except Exception:
+        return None
+
+    component_type = component.component_type
+    component_name = component.name
+    branch_cells = BRANCH_CELLS_BY_TYPE.get(component_type, [])
+    if not branch_cells:
+        return None
+
+    live_instructions = ""
+    if component_type == "prompt_program":
+        try:
+            from src.promptopt.store import get_live_instructions
+            _, live_instructions, _ = get_live_instructions(component_name)
+        except Exception:
+            live_instructions = ""
+
+    primary_cell = branch_cells[0]
+    goal = _build_thesis_goal(
+        component_type, component_name, primary_cell, settings,
+        live_instructions, cycle_index,
+    )
+
+    try:
+        result = _run_orchestrator_sync(
+            goal,
+            domain="meta_optimization",
+            team="evolution_%s" % component_type,
+        )
+    except Exception as e:
+        logger.warning(
+            "[EVOLUTION] LLM thesis dispatch failed for %s — falling back to "
+            "heuristics: %s", component_name, e,
+        )
+        return None
+
+    # ── Governance gate on the swarm output (pillar 4) ──
+    if result.get("ABORT_REASON"):
+        logger.info(
+            "[EVOLUTION] LLM thesis discarded for %s (swarm aborted: %s)",
+            component_name, result.get("ABORT_REASON"),
+        )
+        return None
+
+    hr = result.get("HALLUCINATION_RISK") or {}
+    avg_hr = float(hr.get("average", 1.0))
+    tier = str(hr.get("tier") or "CRITICAL").upper()
+    cs_list = result.get("COMPLIANCE_SCORES") or []
+    cs_vals = [c.get("score", 0) for c in cs_list if isinstance(c, dict)]
+    avg_cs = (sum(cs_vals) / len(cs_vals)) if cs_vals else 0.0
+
+    if tier in ("HIGH", "CRITICAL") or avg_cs < LLM_THESIS_MIN_CS:
+        logger.info(
+            "[EVOLUTION] LLM thesis for %s failed governance gate "
+            "(avg_cs=%.1f hr=%.3f tier=%s) — falling back to heuristics",
+            component_name, avg_cs, avg_hr, tier,
+        )
+        return None
+
+    directive, flat_text = _synthesis_parts(result)
+    if not directive:
+        return None
+
+    # Governance-derived selection signal: high CS + low HR ⇒ stronger signal.
+    score_signal = round(min(0.95, 0.5 * (avg_cs / 100.0) + 0.5 * (1.0 - avg_hr)), 4)
+    gov_prefix = "LLM swarm proposal (cycle %d, CS=%.0f, HR=%.2f): " % (
+        cycle_index, avg_cs, avg_hr,
+    )
+
+    if component_type == "prompt_program":
+        new_instructions = (live_instructions or "") + (
+            "\n\nGOVERNED LLM IMPROVEMENT DIRECTIVE (cycle %d; swarm CS=%.0f HR=%.2f):\n%s"
+            % (cycle_index, avg_cs, avg_hr, directive)
+        )
+        return {
+            "branch_cell": "instructions",
+            "thesis": {"instructions": new_instructions},
+            "rationale": gov_prefix + (
+                "append a governed improvement directive synthesized by the swarm."
+            ),
+            "requires_human_gate": False,
+            "score_signal": score_signal,
+            "source": "llm_swarm",
+        }
+
+    if component_type == "swarm_config":
+        direction = _direction_from_text(flat_text)
+        if direction == 0:
+            return None
+        cur = float(settings.get("swarm.min_evidence_strength", "0.6") or "0.6")
+        lo, hi = _BRANCH_CELL_BOUNDS["evidence_strength"]
+        new_val = round(min(hi, max(lo, cur + direction * LLM_THESIS_NUMERIC_STEP)), 3)
+        if new_val == round(cur, 3):
+            return None
+        return {
+            "branch_cell": "evidence_strength",
+            "thesis": {"value": new_val, "key": "swarm.min_evidence_strength"},
+            "rationale": gov_prefix + (
+                "%s evidence_strength %.2f→%.2f based on swarm reasoning." % (
+                    "raise" if direction > 0 else "lower", cur, new_val,
+                )
+            ),
+            "requires_human_gate": False,
+            "score_signal": score_signal,
+            "source": "llm_swarm",
+        }
+
+    if component_type == "role_composition":
+        from src.swarm.contract import ROLE_BASE_WEIGHTS, CognitiveRole
+        direction = _direction_from_text(flat_text)
+        if direction == 0:
+            return None
+        cur = float(ROLE_BASE_WEIGHTS.get(CognitiveRole.SKEPTIC, 0.9))
+        new_w = round(min(1.0, max(0.0, cur + direction * LLM_THESIS_NUMERIC_STEP)), 3)
+        if new_w == round(cur, 3):
+            return None
+        return {
+            "branch_cell": "role_weights.skeptic",
+            "thesis": {"weight": new_w, "role": "skeptic"},
+            "rationale": gov_prefix + (
+                "%s skeptic weight %.2f→%.2f based on swarm reasoning." % (
+                    "raise" if direction > 0 else "lower", cur, new_w,
+                )
+            ),
+            "requires_human_gate": False,
+            "score_signal": score_signal,
+            "source": "llm_swarm",
+        }
+
+    return None
+
+
 def _generate_thesis_candidates(
     component: Any,
     cycle_index: int,
@@ -370,7 +663,11 @@ def _generate_thesis_candidates(
     """Generate candidate theses from governance signals.
 
     Pulls recent MetaClaims, performance trends, and AppSettings to produce
-    concrete, single-branch-cell thesis candidates. No LLM call required.
+    concrete, single-branch-cell thesis candidates. When an LLM provider is
+    available, also dispatches the governed WaveOrchestrator to propose an
+    LLM-backed candidate (governed by the compliance + hallucination checks);
+    falls back to heuristic candidates only when no provider is configured or
+    the swarm output fails the governance gate.
     """
     candidates: List[Dict[str, Any]] = []
     component_type = component.component_type
@@ -484,6 +781,19 @@ def _generate_thesis_candidates(
             })
         except Exception:
             pass
+
+    # ── Governed LLM-backed candidate (dispatches the swarm when a provider is
+    # available; governed by compliance + hallucination checks). Never raises:
+    # any failure leaves the heuristic candidates intact (graceful fallback).
+    try:
+        llm_candidate = _llm_thesis_candidate(component, cycle_index, settings)
+        if llm_candidate is not None:
+            candidates.insert(0, llm_candidate)
+    except Exception as e:
+        logger.warning(
+            "[EVOLUTION] LLM thesis augmentation failed for %s — using "
+            "heuristics: %s", component_name, e,
+        )
 
     if not candidates and branch_cells:
         candidates.append({
