@@ -20,5 +20,17 @@ uv pip install duckdb "psycopg[binary,pool]"
 # columns), watchdog (optional real-time file watcher). Also dev-gated off in prod.
 uv pip install fastembed pyarrow watchdog
 
+# Rebuild the Agent Ledger (agentledger/) from current project state so it never
+# drifts after a merge that adds packages/providers or restructures src/. The seed
+# is idempotent (drops + rebuilds its own isolated SQLite file) and records a
+# LedgerEvent audit row for each rebuild. This is agent-only dev infrastructure and
+# is NOT part of the app's runtime, so a rebuild failure must not abort the merge or
+# block the deps/migrations above — warn loudly instead of failing hard.
+if python -m agentledger.seed; then
+    echo "[post-merge] Agent ledger rebuilt from current project state."
+else
+    echo "[post-merge] WARNING: agent ledger rebuild failed; ledger may be stale. Run 'python -m agentledger.seed' manually." >&2
+fi
+
 # Note: database schema is auto-migrated on app startup via _sync_missing_columns,
 # so no separate migration step is required here.

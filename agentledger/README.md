@@ -41,6 +41,19 @@ python -m agentledger.seed
 
 Re-run this whenever packages, providers, or the `src/` layout change.
 
+### Automatic rebuild after every merge
+
+You normally never need to run the seed by hand. The post-merge setup script
+(`scripts/post-merge.sh`, wired via `[postMerge]` in `.replit`) runs
+`python -m agentledger.seed` after each task merge, so the ledger stays in sync
+with reality with zero manual effort. Each automatic rebuild appends a
+`LedgerEvent` audit row (`actor="seeder"`, `action="seed"`).
+
+The rebuild is intentionally non-fatal: because the ledger is agent-only dev
+infrastructure (not part of the app runtime), a rebuild failure prints a warning
+but does not abort the merge or block dependency installation. If you see that
+warning, run `python -m agentledger.seed` manually to investigate.
+
 ## Query (for agents)
 
 ```bash
