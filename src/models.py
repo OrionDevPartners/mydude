@@ -284,6 +284,32 @@ class TaskRun(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DecisionTrace(Base):
+    """One governed-turn audit record emitted by Cogitation.think().
+
+    Every agent path (coach, fleet, api, subsystem) that flows through the
+    Cogitation entrypoint writes exactly one DecisionTrace per turn so every
+    reasoning decision is auditable and queryable.
+    """
+    __tablename__ = "decision_traces"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    turn_id = Column(String(36), nullable=False, index=True)
+    source = Column(String(60), nullable=False, index=True)
+    goal_preview = Column(String(500), nullable=True)
+    stages_json = Column(Text, nullable=True)
+    jurisdiction_json = Column(Text, nullable=True)
+    avg_cs = Column(Float, nullable=True)
+    avg_hr = Column(Float, nullable=True)
+    hr_tier = Column(String(20), nullable=True)
+    provenance_summary = Column(Text, nullable=True)
+    tool_calls_json = Column(Text, nullable=True)
+    outcome = Column(String(30), nullable=False, default="completed")
+    aborted = Column(Boolean, default=False)
+    task_run_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Subscription(Base):
     """A tracked recurring subscription.
 

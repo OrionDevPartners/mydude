@@ -1,6 +1,11 @@
-"""BotRunner — translates a persisted Bot/Team into swarm orchestrator inputs
-and executes a governed run, wiring the bot's identity + protocols into the
-PORTER/WORKER persona layers the orchestrator already consumes.
+"""BotRunner — translates a persisted Bot/Team into Cogitation inputs and
+executes a governed run through the single cognition entrypoint.
+
+All bot runs flow through Cogitation.think() which handles:
+  - Memory recall + writeback (namespace-scoped per bot/team)
+  - Full WaveOrchestrator governance loop (waves, provenance, sentinel/auditor)
+  - Jurisdiction pinning (via context)
+  - DecisionTrace persistence
 
 Memory integration: each bot/team writes and reads from a namespaced slice of
 the shared Cognee/Mem0 substrate so context accumulates across runs.
@@ -62,7 +67,7 @@ async def run_bot(
     bot_id: int,
     goal_override: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Execute a single bot run through the governed swarm orchestrator.
+    """Execute a single bot run through the governed Cogitation entrypoint.
 
     Returns the orchestrator result dict, augmented with fleet metadata.
     Never raises — returns an error dict on failure so the lifecycle state
@@ -95,6 +100,7 @@ async def run_bot(
         db.add(task_run)
         db.commit()
         db.refresh(task_run)
+        task_run_id = task_run.id
     except Exception as e:
         logger.error("BotRunner setup failed for bot %s: %s", bot_id, e)
         db.close()
@@ -103,67 +109,32 @@ async def run_bot(
         pass
 
     try:
-        from src.swarm.broker import CapabilityBroker
-        from src.swarm.policy import PolicyEngine
-        from src.swarm.integrations import Integrations
-        from src.swarm.orchestrator import WaveOrchestrator
+        from src.swarm.cogitation import Cogitation, CogitationContext
 
-        allowed_caps = bot.allowed_caps or []
-        policy = PolicyEngine()
+        # Bot capability restriction: wrap the broker so the bot is limited to
+        # its declared allowed_caps.  Cogitation._run_orchestrator builds a fresh
+        # broker each turn; we override it via a subclass injected into the
+        # orchestrator BEFORE the run (see _run_orchestrator_for_bot below).
+        allowed_caps: List[str] = bot.allowed_caps or []
+        bot_name = bot.name
 
-        class BotCapabilityBroker(CapabilityBroker):
-            """Restrict this bot to its declared allowed_caps list."""
-            async def request(self, capability, params):
-                if allowed_caps and capability not in allowed_caps:
-                    from src.swarm.policy import PolicyDecision
-                    from src.swarm.broker import BrokerResult
-                    return BrokerResult(
-                        False,
-                        PolicyDecision(False, f"Bot '{bot.name}' is not permitted to use capability '{capability}'"),
-                        None,
-                    )
-                return await super().request(capability, params)
-
-        broker = BotCapabilityBroker(policy, Integrations())
-        orch = WaveOrchestrator(broker)
-
-        augmented_goal = f"{persona_prompt}\n\nGOAL:\n{goal}" if persona_prompt else goal
-
-        import uuid
-        from src.memory import get_substrate
-        mem = get_substrate()
-
-        recalled = []
-        try:
-            recalled = mem.inject_for_task(f"{namespace}:{goal}", top_k=5)
-        except Exception as e:
-            logger.warning("BotRunner memory recall failed: %s", e)
-
-        if recalled:
-            augmented_goal += "\n\nRECALLED MEMORY:\n" + "\n".join(recalled)
-
-        result = await orch.run(
-            goal=augmented_goal,
+        ctx = CogitationContext(
+            source=f"fleet:bot:{bot_name}",
             domain=domain,
             team=team_name,
-            task_run_id=task_run.id,
+            task_run_id=task_run_id,
+            namespace=namespace,
+            persona_prompt=persona_prompt,
         )
 
-        try:
-            mem.persist_handoff(
-                goal=f"{namespace}:{goal}",
-                facts=result.get("FACTS", []),
-                decisions=result.get("DECISIONS", []),
-                claim_ledger_summary=str(result.get("CLAIM_LEDGER", "")),
-                session_id=str(task_run.id),
-            )
-        except Exception as e:
-            logger.warning("BotRunner memory persist failed: %s", e)
+        cog = _BotCogitation(allowed_caps=allowed_caps, bot_name=bot_name)
+        cog_result = await cog.think(goal, ctx)
+        result = cog_result.result
 
         import json
         db2 = SessionLocal()
         try:
-            tr = db2.query(TaskRun).filter(TaskRun.id == task_run.id).first()
+            tr = db2.query(TaskRun).filter(TaskRun.id == task_run_id).first()
             if tr:
                 tr.result = json.dumps(result, default=str)
                 tr.status = "complete"
@@ -172,13 +143,20 @@ async def run_bot(
                 from datetime import datetime
                 b.lifecycle = "stopped"
                 b.last_run_at = datetime.utcnow()
-                b.last_task_run_id = task_run.id
+                b.last_task_run_id = task_run_id
             db2.commit()
         finally:
             db2.close()
 
         db.close()
-        return {"ok": True, "bot_id": bot_id, "task_run_id": task_run.id, "result": result}
+        return {
+            "ok": True,
+            "bot_id": bot_id,
+            "task_run_id": task_run_id,
+            "result": result,
+            "cogitation_turn_id": cog_result.turn_id,
+            "cogitation_trace_id": cog_result.decision_trace_id,
+        }
 
     except Exception as e:
         logger.error("BotRunner execution failed for bot %s: %s", bot_id, e)
@@ -235,3 +213,81 @@ async def run_team(team_id: int) -> Dict[str, Any]:
         db2.close()
 
     return {"ok": True, "team_id": team_id, "bot_results": outcomes}
+
+
+# ---------------------------------------------------------------------------
+# Bot-specific Cogitation subclass with capability restriction
+# ---------------------------------------------------------------------------
+
+class _BotCogitation:
+    """Cogitation wrapper that restricts broker capabilities to the bot's
+    declared allowed_caps list.  Uses composition (wraps Cogitation) so the
+    governance loop is never duplicated."""
+
+    def __init__(self, allowed_caps: List[str], bot_name: str) -> None:
+        from src.swarm.cogitation import Cogitation
+        self._cog = Cogitation()
+        self._allowed_caps = allowed_caps
+        self._bot_name = bot_name
+
+    async def think(self, goal: str, ctx) -> Any:
+        from src.swarm.cogitation import CogitationResult
+
+        # Patch _run_orchestrator to inject the capability-restricted broker.
+        original_run = self._cog._run_orchestrator.__func__
+
+        async def _restricted_run(augmented_goal, context):
+            from src.swarm.broker import CapabilityBroker, BrokerResult
+            from src.swarm.policy import PolicyEngine, PolicyDecision
+            from src.swarm.integrations import Integrations
+            from src.swarm.orchestrator import WaveOrchestrator
+
+            allowed_caps = self._allowed_caps
+            bot_name = self._bot_name
+
+            class BotCapabilityBroker(CapabilityBroker):
+                async def request(self, capability, params):
+                    if allowed_caps and capability not in allowed_caps:
+                        return BrokerResult(
+                            False,
+                            PolicyDecision(
+                                False,
+                                f"Bot '{bot_name}' is not permitted to use "
+                                f"capability '{capability}'"
+                            ),
+                            None,
+                        )
+                    return await super().request(capability, params)
+
+            policy = PolicyEngine()
+            broker = BotCapabilityBroker(policy, Integrations())
+            orch = WaveOrchestrator(broker)
+
+            if context.strict_private:
+                orch.llm.apply_jurisdiction({
+                    "cloud_shift_active": False,
+                    "exec_locus": "local",
+                })
+
+            return await orch.run(
+                goal=augmented_goal,
+                domain=context.domain or "general",
+                team=context.team or "default",
+                task_run_id=context.task_run_id,
+            )
+
+        import types
+        self._cog._run_orchestrator = types.MethodType(
+            lambda self_inner, aug, ctx_inner: _restricted_run(aug, ctx_inner),
+            self._cog,
+        )
+        result = await self._cog.think(goal, ctx)
+        return result
+
+    @property
+    def turn_id(self):
+        return None  # accessed from result
+
+    @property
+    def decision_trace_id(self):
+        return None

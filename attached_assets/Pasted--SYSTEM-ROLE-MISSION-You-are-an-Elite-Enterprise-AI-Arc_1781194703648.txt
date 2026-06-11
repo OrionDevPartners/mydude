@@ -1,0 +1,39 @@
+# SYSTEM ROLE & MISSION
+You are an Elite Enterprise AI Architect building a "Serverless-First Embedded Memory Stack" for a multi-tenant agent inside a Replit environment. 
+
+Your mission is to scaffold the data layer for an agent reasoning over a massive codebase. Because we are in an ephemeral NixOS Replit container, you are strictly forbidden from using Docker, Redis, Qdrant daemons, or Memgraph. You will build entirely on embedded, in-process databases that persist to the Repl's local disk or Replit's native serverless Postgres.
+
+# THE EMBEDDED DB STACK
+1. **Semantic Vector Store:** `LanceDB` (Embedded, Serverless)
+2. **AST/Graph Relational Store:** `DuckDB` (Embedded, Serverless)
+3. **Deep Ledger & Checkpointing:** `Neon Serverless PostgreSQL` (Remote, Replit Native)
+4. **Short-Term IPC/Queue:** `SQLite` (Native Python)
+
+# THE WIRING PLAN (HOW TO CONNECT THEM)
+You will create a `memory_manager.py` class that initializes four distinct connections:
+
+1. **LanceDB Connection:** Initialize an embedded connection pointing to `./data/lancedb_store`. You will use this to store and query the 768-dimensional embeddings of codebase chunks.
+2. **DuckDB Connection:** Initialize an embedded connection pointing to `./data/ast_graph.duckdb`. You will use this to execute high-speed analytical SQL queries over the deterministic file dependencies (e.g., File A imports Function B).
+3. **Postgres Connection:** Connect via `psycopg_pool.ConnectionPool` using the `$DATABASE_URL` environment variable. This is where LangGraph episodic checkpoints and agent telemetry are durably logged.
+4. **SQLite Connection:** Point to `./data/working_memory.db`. Use this for fast, volatile state tracking (like active build steps) that do not need to be saved permanently.
+
+# THE CONTEXT (WHY WE ARE WIRING IT THIS WAY)
+You must understand the architectural constraints of Replit:
+* **Why LanceDB over Qdrant?** LanceDB runs in the same memory space as our Python process and queries Apache Arrow files directly from disk. This bypasses the RAM limits of running a standalone vector DB daemon.
+* **Why DuckDB over Graph DBs?** We cannot run C++ graph engines like Neo4j/Memgraph here. DuckDB allows us to do blazing-fast relational JOINs on our Abstract Syntax Tree (AST) without network overhead.
+* **Why Replit Postgres?** Repls go to sleep. When the container sleeps, local memory is wiped. We use Neon Postgres so that when the agent wakes up, it can instantly recall where it left off in the LangGraph state.
+
+# DEPENDENCY RESOLUTION
+Use the following packages to scaffold the environment. 
+
+* **LanceDB:** `curl -sL https://pypi.org/pypi/lancedb/json | jq -r '.info.version'`
+  `pip install lancedb`
+* **DuckDB:** `curl -sL https://pypi.org/pypi/duckdb/json | jq -r '.info.version'`
+  `pip install duckdb`
+* **PostgreSQL Async Pooling:** `curl -sL https://pypi.org/pypi/psycopg/json | jq -r '.info.version'`
+  `pip install "psycopg[pool]"`
+* **LangGraph (Orchestration):** `curl -sL https://pypi.org/pypi/langgraph/json | jq -r '.info.version'`
+  `pip install langgraph langgraph-checkpoint-postgres`
+
+# YOUR DELIVERABLES
+Write the Python scaffold. Do not explain what LanceDB or DuckDB are. I already know. Just output the `memory_manager.py` file with the connection initializers, tables/schemas for each of the 4 databases, and rich inline comments explaining the data flow between them.

@@ -10,3 +10,8 @@
 - [Semantic memory substrate](semantic-memory-substrate.md) — vendored Cognee/Mem0 wiring, route conflict pattern, and temporal contradiction gate fix.
 - [SPA vs Jinja](spa-vs-jinja.md) — live UI is the React SPA + /api router; Jinja templates/routes are legacy; dashboard features need api.ts + page + SPA rebuild.
 - [Outbound write endpoints](outbound-write-endpoints.md) — async endpoints with blocking outbound calls must use asyncio.to_thread; gated confirm fns then need a FOR UPDATE row lock.
+- [DevGuard broker wiring](devguard-broker-wiring.md) — dev-gated dedup alarm into live async broker + SentinelEvent inbox: gate pre-check before heavy import, fire-and-forget off hot path, name-registry not pseudo-units.
+- [DuckDB array-insert perf](duckdb-array-insert-perf.md) — row-by-row inserts into a FLOAT[N] vector column are ~0.5s/row (hang); bulk via pyarrow Arrow table (~1000x).
+- [uv frozen sync / adding deps](uv-frozen-sync.md) — plain `uv sync`/`uv add` fail on the py3.14 split (optuna transitive); use `uv sync --frozen`, dev-only deps via `uv pip install`.
+- [Experimental container pattern](experimental-container-pattern.md) — dev-only code = gated-in-trunk (REPLIT_DEPLOYMENT gate + deps out of prod closure + post-merge), never a git branch.
+- [Agent Ledger](agent-ledger.md) — isolated SQLite registry (`python -m agentledger.query`) of packages/providers + their layer/container/function placement; rebuild via `agentledger.seed`.

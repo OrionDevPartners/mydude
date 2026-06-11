@@ -1,0 +1,38 @@
+User asked for an isolated DB so agents can track what packages and providers
+the project needs and what layer/container/function they belong to, because the
+project context is too heavy to track from memory without a ledger.
+
+What was built (new agentledger/ package, fully isolated from the app):
+- agentledger/db.py — own SQLite engine (agent_ledger.db), own SQLAlchemy Base;
+never touches the app's PostgreSQL or src/database.py.
+- agentledger/models.py — advanced schema: Layer->Container->Function hierarchy;
+Package + Provider catalog; Capability<->Provider M2M with
+primary/fallback tiers (pillar #2); SecretRequirement
+storing only env-var/vault-key references + sourcing order
+(pillar #3, never values); polymorphic Placement edges
+(package|provider -> layer/container/function) with evidence
++ criticality; ComponentDependency typed edges; append-only
+LedgerEvent audit.
+- agentledger/seed.py — populates from REAL project state (pillar #1, no placeholders):
+packages from pyproject.toml + frontend/package.json;
+containers from the filesystem; functions + package placements
+from an ast import scan; providers from a curated catalog
+verified against the source tree (unverified -> status planned).
+- agentledger/query.py — CLI/lib for agents (summary, layers, containers, providers,
+packages, capability, where, container, search).
+- agentledger/README.md — usage + governance notes.
+
+Seeded result: 8 layers, 18 containers, 857 functions, 59 packages (22 py / 37 node),
+17 providers, 13 capabilities, 68 evidence-backed placements.
+
+Notes / deviations:
+- Chose an isolated SQLite file (vs Postgres tables) to honor "isolated for replit
+agents" — it is agent infrastructure, not wired into the FastAPI app.
+- Placement scan is Python-ast-only for now, so node packages are catalogued but not
+yet placed per-container (no fabricated placements). Proposed as a follow-up.
+- Verified app still imports cleanly (src.coach.llm, src.fleet.runner, src.swarm.cogitation)
+after earlier paused Task #85 cogitation edits; both workflows running.
+- Recorded the ledger in agent memory so future agents query it first.
+
+
+Cancel

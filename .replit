@@ -4,7 +4,7 @@ expertMode = true
 
 [nix]
 channel = "stable-25_05"
-packages = ["cargo", "gitFull", "libiconv", "libxcrypt", "libyaml", "openssl", "pkg-config", "playwright-driver", "rustc", "unzip"]
+packages = ["cargo", "gitFull", "libiconv", "libxcrypt", "libyaml", "openssl", "pkg-config", "playwright-driver", "postgresql", "rustc", "unzip"]
 
 [workflows]
 runButton = "Project"

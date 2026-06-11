@@ -1,26 +1,24 @@
-"""Synchronous bridge to the governed LLM swarm for the coach sub-stack.
+"""Synchronous bridge to the governed Cogitation entrypoint for the coach sub-stack.
 
 Coach modules are synchronous (mirroring finance), so routers drive them via
 ``asyncio.to_thread`` and the scheduler calls them directly in a worker thread.
-``call_team_sync`` runs the async ``MultiProviderLLM.call_team`` to completion in
-the current (worker) thread.
+``call_team_sync`` runs the full Cogitation loop (WaveOrchestrator + provenance +
+sentinel/auditor pass) to completion in the current (worker) thread.
 
 Governance:
-  - All coach LLM output is governed: ``call_team`` scores each reply for
-    compliance + hallucination and the judge weights/rejects accordingly.
+  - All coach LLM output flows through Cogitation.think() — the single governed
+    cognition entrypoint — receiving the full multi-wave debate, provenance tree,
+    compliance/hallucination scoring, sentinel/auditor pass, and DecisionTrace.
   - Fails loud (``CoachLLMUnavailable``) when no provider is configured — never
     returns a fabricated answer.
   - ``strict_private=True`` pins jurisdiction so ONLY local providers may see the
     content (Private-Mode for inference); fails loud if no local model exists.
 
 MUST be called from a thread WITHOUT a running event loop (worker thread or the
-scheduler), because it uses ``asyncio.run``.
+scheduler), because it uses ``asyncio.run`` via Cogitation.think_sync().
 """
-import asyncio
 import logging
 from typing import Any, Dict, Optional
-
-from src.swarm.llm_multi import MultiProviderLLM
 
 logger = logging.getLogger(__name__)
 
@@ -35,24 +33,40 @@ def call_team_sync(
     roles_hint: Optional[Dict[str, str]] = None,
     strict_private: bool = False,
 ) -> Dict[str, Any]:
-    """Run the governed swarm and return its result dict. Fail loud."""
-    llm = MultiProviderLLM()
-    if strict_private:
-        # Private-Mode for inference: drop all non-local providers so sensitive
-        # emotional content is never sent to a cloud model.
-        llm.apply_jurisdiction(cloud_shift_active=False)
+    """Run the governed Cogitation loop and return a call_team-compatible dict.
 
-    result = asyncio.run(llm.call_team(system, user, roles_hint)) or {}
-    scores = result.get("compliance_scores") or {}
-    merged = result.get("merged") or ""
+    Routes through Cogitation.think_sync() → WaveOrchestrator, applying the
+    full governance pass (waves, provenance, sentinel/auditor, DecisionTrace).
+    The system prompt is passed as the persona_prompt so the coach's voice and
+    citation rules are preserved inside the swarm's persona layer.
 
-    if not scores or "No providers configured" in merged:
-        if strict_private:
+    Returns a dict with keys: merged, compliance_scores, hallucination_risks,
+    replies, _cogitation_turn_id, _cogitation_trace_id.
+    """
+    from src.swarm.cogitation import Cogitation, CogitationContext
+
+    ctx = CogitationContext(
+        source="coach",
+        strict_private=strict_private,
+        domain="coach",
+        team="default",
+        persona_prompt=system,
+    )
+
+    cog_result = Cogitation().think_sync(user, ctx)
+
+    merged = cog_result.merged
+    scores = cog_result.compliance_scores
+
+    if cog_result.outcome == "error" or not cog_result.result or not cog_result.result.get("FACTS") and not cog_result.result.get("DECISIONS"):
+        if "No providers configured" in merged or not scores:
+            if strict_private:
+                raise CoachLLMUnavailable(
+                    "Strict-private mode is on but no LOCAL LLM provider is "
+                    "available. Configure a local model or disable COACH_STRICT_PRIVATE."
+                )
             raise CoachLLMUnavailable(
-                "Strict-private mode is on but no LOCAL LLM provider is "
-                "available. Configure a local model or disable COACH_STRICT_PRIVATE."
+                "No LLM provider is configured. Add an LLM API key in the vault."
             )
-        raise CoachLLMUnavailable(
-            "No LLM provider is configured. Add an LLM API key in the vault."
-        )
-    return result
+
+    return cog_result.as_call_team_dict()

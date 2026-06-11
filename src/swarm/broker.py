@@ -164,4 +164,19 @@ class CapabilityBroker:
             out = await self.integrations.fleet_provision_approve(params)
             return BrokerResult(True, decision, out)
 
+        # A genuinely-new (unimplemented) capability is being requested.
+        # DevGuard's dedup alarm checks whether an equivalent already exists so
+        # we never rebuild it. It is dev-only (a no-op in production), alert-only
+        # (never blocks or mutates), and fire-and-forget — the index build runs
+        # off the request hot path so the response is never delayed. Failures
+        # are swallowed, mirroring the record_sentinel_event pattern above.
+        try:
+            import asyncio
+            from agentledger.experimental.devguard.capability_guard import on_new_capability
+            asyncio.get_running_loop().run_in_executor(
+                None, lambda: on_new_capability(capability, params)
+            )
+        except Exception:
+            pass
+
         return BrokerResult(True, decision, f"Capability executed (stub): {capability} {params}")
