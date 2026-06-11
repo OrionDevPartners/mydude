@@ -680,3 +680,74 @@ export const promptVersionPromote = (versionId: number) =>
     `/prompts/versions/${versionId}/promote`, { method: 'POST' })
 export const promptVersionRollback = (versionId: number) =>
   request<{ ok: boolean }>(`/prompts/versions/${versionId}/rollback`, { method: 'POST' })
+
+// Evolution Loop (edge-truth / thesis self-evolution)
+export interface EvolutionIteration {
+  id: number; iteration_no: number; sandbox_label: string;
+  test_results: Record<string, unknown>; compliance_score: number | null;
+  hallucination_risk: number | null; composite_score: number | null;
+  all_tests_passed: boolean; outcome: string; error: string | null;
+  created_at: string | null;
+}
+export interface EvolutionThesis {
+  id: number; component_id: number; branch_cell: string;
+  thesis: Record<string, unknown>; rationale: string | null; status: string;
+  test_score: number | null; base_score: number | null;
+  governance_proposal_id: string | null; governance_proposal_db_id: number | null;
+  requires_human_gate: boolean; trial_iteration_count: number;
+  stalled_at: string | null; cycle_index: number;
+  selection_votes: Record<string, unknown>;
+  iterations: EvolutionIteration[];
+  created_at: string | null; updated_at: string | null;
+}
+export interface CognitionComponent {
+  id: number; name: string; component_type: string; description: string | null;
+  truth_json: Record<string, unknown>; truth_version_id: number | null;
+  loop_state: string; loop_enabled: boolean; cycle_count: number;
+  last_cycle_at: string | null; active_thesis: EvolutionThesis | null;
+  total_theses: number; promoted_theses: number;
+  thread_alive: boolean;
+  created_at: string | null; updated_at: string | null;
+}
+export interface EvolutionCycleLog {
+  id: number; cycle_index: number; outcome: string; thesis_id: number | null;
+  next_selection: Record<string, unknown>; detail: string | null; created_at: string | null;
+}
+export interface ComponentDetail {
+  component: CognitionComponent;
+  theses: EvolutionThesis[];
+  cycle_logs: EvolutionCycleLog[];
+}
+
+export const listEvolutionComponents = () =>
+  request<{ components: CognitionComponent[] }>('/evolution/components')
+export const getEvolutionComponent = (id: number) =>
+  request<ComponentDetail>(`/evolution/components/${id}`)
+export const startEvolutionLoop = (id: number) =>
+  request<{ ok: boolean; started: boolean; already_running: boolean }>(
+    `/evolution/components/${id}/start`, { method: 'POST' })
+export const stopEvolutionLoop = (id: number) =>
+  request<{ ok: boolean; stopped: boolean }>(
+    `/evolution/components/${id}/stop`, { method: 'POST' })
+export const listEvolutionTheses = (params?: { component_id?: number; status?: string }) => {
+  const p = new URLSearchParams()
+  if (params?.component_id !== undefined) p.set('component_id', String(params.component_id))
+  if (params?.status) p.set('status', params.status)
+  const qs = p.toString()
+  return request<{ theses: EvolutionThesis[]; total: number }>(`/evolution/theses${qs ? '?' + qs : ''}`)
+}
+export const getEvolutionThesis = (id: number) =>
+  request<EvolutionThesis>(`/evolution/theses/${id}`)
+export const seedEvolutionThesis = (
+  componentId: number,
+  body: { branch_cell: string; thesis: Record<string, unknown>; rationale?: string; requires_human_gate?: boolean }
+) =>
+  request<{ ok: boolean; thesis_id: number }>(
+    `/evolution/components/${componentId}/thesis`,
+    { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }
+  )
+export const triggerEvolutionTrial = (componentId: number) =>
+  request<{ ok: boolean; outcome: string }>(
+    `/evolution/components/${componentId}/trial`, { method: 'POST' })
+export const getEvolutionLoopStatus = () =>
+  request<{ components: CognitionComponent[] }>('/evolution/loop/status')

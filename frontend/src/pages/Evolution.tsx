@@ -1,0 +1,414 @@
+import { useState, useCallback } from 'react'
+import {
+  listEvolutionComponents, getEvolutionComponent, startEvolutionLoop, stopEvolutionLoop,
+  triggerEvolutionTrial, seedEvolutionThesis,
+  CognitionComponent, ComponentDetail, EvolutionThesis, EvolutionCycleLog,
+} from '@/lib/api'
+import { useApi } from '@/hooks/useApi'
+import { Card, Spinner, Alert, PageHeader, Badge, Empty, Collapsible } from '@/components/ui'
+import { fmtDate } from '@/lib/utils'
+import {
+  FlaskConical, ChevronRight, ChevronLeft, Play, Square, RotateCcw,
+  ShieldCheck, CheckCircle, AlertCircle, Clock, Cpu, Activity, GitBranch,
+  Zap, AlertTriangle,
+} from 'lucide-react'
+
+const STATUS_COLOR: Record<string, string> = {
+  proposed: 'blue',
+  testing: 'orange',
+  awaiting_consensus: 'orange',
+  awaiting_human_approval: 'yellow',
+  promoted: 'green',
+  rejected: 'red',
+  stalled: 'red',
+  error: 'red',
+}
+
+const LOOP_COLOR: Record<string, string> = {
+  idle: 'gray',
+  running: 'green',
+  paused: 'orange',
+  error: 'red',
+}
+
+const OUTCOME_COLOR: Record<string, string> = {
+  promoted: 'green',
+  rejected: 'red',
+  stalled: 'red',
+  error: 'red',
+  pass: 'green',
+  fail: 'red',
+}
+
+function pct(n: number | null | undefined) {
+  if (n === null || n === undefined) return '—'
+  return (n * 100).toFixed(1) + '%'
+}
+
+function scoreColor(n: number | null | undefined) {
+  if (n === null || n === undefined) return 'var(--text-muted)'
+  if (n >= 0.6) return '#2ecc71'
+  if (n >= 0.35) return '#f39c12'
+  return '#e74c3c'
+}
+
+// ---------------------------------------------------------------------------
+// Iteration timeline
+// ---------------------------------------------------------------------------
+function IterationRow({ iter }: { iter: ReturnType<typeof Object.create> }) {
+  const icon = iter.outcome === 'pass'
+    ? <CheckCircle size={13} color="#2ecc71" />
+    : iter.outcome === 'error' || iter.outcome === 'fail'
+    ? <AlertCircle size={13} color="#e74c3c" />
+    : <Clock size={13} />
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 12.5 }}>
+      {icon}
+      <Badge color={OUTCOME_COLOR[iter.outcome] || 'gray'}>{iter.outcome}</Badge>
+      <span style={{ color: 'var(--text-muted)' }}>iter #{iter.iteration_no}</span>
+      <span style={{ color: scoreColor(iter.composite_score), fontWeight: 600 }}>
+        {pct(iter.composite_score)}
+      </span>
+      <span style={{ color: 'var(--text-muted)' }}>
+        CS {iter.compliance_score?.toFixed(0) ?? '—'}
+      </span>
+      <span style={{ color: 'var(--text-muted)' }}>
+        HR {iter.hallucination_risk?.toFixed(3) ?? '—'}
+      </span>
+      <Badge color="gray" style={{ marginLeft: 'auto', fontSize: 10 }}>{iter.sandbox_label}</Badge>
+      {iter.error && (
+        <span style={{ color: '#e74c3c', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 }} title={iter.error}>
+          {iter.error}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Thesis card
+// ---------------------------------------------------------------------------
+function ThesisCard({ thesis, expanded }: { thesis: EvolutionThesis; expanded?: boolean }) {
+  const [open, setOpen] = useState(expanded ?? false)
+  return (
+    <Card style={{ padding: '12px 14px', marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap', cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+          {thesis.branch_cell}
+        </span>
+        <Badge color={STATUS_COLOR[thesis.status] || 'gray'}>{thesis.status}</Badge>
+        {thesis.requires_human_gate && <Badge color="orange">human-gate</Badge>}
+        {thesis.governance_proposal_id && (
+          <Badge color="blue" style={{ fontSize: 10 }}>proposal: {thesis.governance_proposal_id}</Badge>
+        )}
+        <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+          cycle #{thesis.cycle_index} · {thesis.trial_iteration_count} iter
+        </span>
+        {thesis.test_score !== null && (
+          <span style={{ fontSize: 12, fontWeight: 700, color: scoreColor(thesis.test_score) }}>
+            {pct(thesis.test_score)}
+          </span>
+        )}
+      </div>
+      {thesis.rationale && (
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
+          {thesis.rationale}
+        </p>
+      )}
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          {thesis.iterations.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                EXPERIMENTAL Trial Iterations
+              </div>
+              {thesis.iterations.map(i => <IterationRow key={i.id} iter={i} />)}
+            </div>
+          )}
+          <Collapsible title={<span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Thesis payload</span>}>
+            <pre style={{
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, lineHeight: 1.5,
+              background: 'rgba(0,0,0,0.25)', padding: 10, borderRadius: 6, marginTop: 6,
+              color: 'var(--text-secondary, #cbd5e1)', maxHeight: 200, overflow: 'auto',
+            }}>{JSON.stringify(thesis.thesis, null, 2)}</pre>
+          </Collapsible>
+        </div>
+      )}
+      <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+        created {fmtDate(thesis.created_at)}
+        {thesis.stalled_at && <span style={{ color: '#e74c3c' }}> · stalled {fmtDate(thesis.stalled_at)}</span>}
+      </div>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Cycle log row
+// ---------------------------------------------------------------------------
+function CycleLogRow({ log }: { log: EvolutionCycleLog }) {
+  const icon = log.outcome === 'promoted'
+    ? <CheckCircle size={13} color="#2ecc71" />
+    : log.outcome === 'rejected'
+    ? <AlertCircle size={13} color="#e74c3c" />
+    : <AlertTriangle size={13} color="#f39c12" />
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 12.5 }}>
+      {icon}
+      <Badge color={OUTCOME_COLOR[log.outcome] || 'gray'}>{log.outcome}</Badge>
+      <span style={{ color: 'var(--text-muted)' }}>cycle #{log.cycle_index}</span>
+      {log.thesis_id && <span style={{ color: 'var(--text-muted)' }}>thesis #{log.thesis_id}</span>}
+      {log.detail && <span style={{ color: 'var(--text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.detail}</span>}
+      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', flexShrink: 0 }}>{fmtDate(log.created_at)}</span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Component detail panel
+// ---------------------------------------------------------------------------
+function ComponentDetail({ id, onBack }: { id: number; onBack: () => void }) {
+  const { data, loading, error, refetch } = useApi<ComponentDetail>(() => getEvolutionComponent(id), [id])
+  const [notice, setNotice] = useState<{ type: 'success' | 'error' | 'info'; msg: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const handleStart = useCallback(async () => {
+    setBusy(true); setNotice(null)
+    try {
+      const res = await startEvolutionLoop(id)
+      setNotice({ type: 'success', msg: res.already_running ? 'Loop was already running.' : 'Evolution loop started.' })
+      refetch()
+    } catch (e: unknown) {
+      setNotice({ type: 'error', msg: e instanceof Error ? e.message : 'Failed to start loop' })
+    } finally { setBusy(false) }
+  }, [id, refetch])
+
+  const handleStop = useCallback(async () => {
+    setBusy(true); setNotice(null)
+    try {
+      await stopEvolutionLoop(id)
+      setNotice({ type: 'info', msg: 'Loop stop signal sent.' })
+      refetch()
+    } catch (e: unknown) {
+      setNotice({ type: 'error', msg: e instanceof Error ? e.message : 'Failed to stop loop' })
+    } finally { setBusy(false) }
+  }, [id, refetch])
+
+  const handleTrial = useCallback(async () => {
+    setBusy(true); setNotice(null)
+    try {
+      const res = await triggerEvolutionTrial(id)
+      setNotice({ type: 'success', msg: `Trial complete — outcome: ${res.outcome}` })
+      refetch()
+    } catch (e: unknown) {
+      setNotice({ type: 'error', msg: e instanceof Error ? e.message : 'Trial failed' })
+    } finally { setBusy(false) }
+  }, [id, refetch])
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={24} /></div>
+  if (error) return <Alert type="error">{error}</Alert>
+  if (!data) return <Empty message="Component not found." />
+
+  const c = data.component
+  const isRunning = c.loop_state === 'running' || c.thread_alive
+  const activeTheses = data.theses.filter(t => ['proposed', 'testing', 'awaiting_consensus', 'awaiting_human_approval'].includes(t.status))
+  const promotedTheses = data.theses.filter(t => t.status === 'promoted')
+  const rejectedTheses = data.theses.filter(t => ['rejected', 'stalled'].includes(t.status))
+
+  return (
+    <div>
+      <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ gap: 6, marginBottom: 14 }}>
+        <ChevronLeft size={15} /> All components
+      </button>
+
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 16, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>{c.name}</h2>
+            <Badge color="gray">{c.component_type}</Badge>
+            <Badge color={LOOP_COLOR[c.loop_state] || 'gray'}>{c.loop_state}</Badge>
+            {c.thread_alive && <Badge color="green">thread alive</Badge>}
+          </div>
+          {c.description && (
+            <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>{c.description}</p>
+          )}
+          <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12, color: 'var(--text-muted)' }}>
+            <span><b>{c.cycle_count}</b> cycles</span>
+            <span><b>{c.total_theses}</b> theses</span>
+            <span><b>{c.promoted_theses}</b> promoted</span>
+            {c.last_cycle_at && <span>last cycle {fmtDate(c.last_cycle_at)}</span>}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          {!isRunning ? (
+            <button className="btn btn-primary btn-sm" disabled={busy} onClick={handleStart} style={{ gap: 6 }}>
+              <Play size={13} /> Start loop
+            </button>
+          ) : (
+            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={handleStop} style={{ gap: 6 }}>
+              <Square size={13} /> Stop loop
+            </button>
+          )}
+          <button className="btn btn-ghost btn-sm" disabled={busy || isRunning} onClick={handleTrial} style={{ gap: 6 }} title={isRunning ? 'Stop loop first to run manual trial' : ''}>
+            {busy ? <Spinner size={13} /> : <RotateCcw size={13} />}
+            Run trial
+          </button>
+        </div>
+      </div>
+
+      {notice && <Alert type={notice.type} onClose={() => setNotice(null)}>{notice.msg}</Alert>}
+
+      {/* Active thesis */}
+      {activeTheses.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
+            <Activity size={14} style={{ opacity: 0.7 }} />
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Active Thesis (EXPERIMENTAL)</h3>
+          </div>
+          {activeTheses.map(t => <ThesisCard key={t.id} thesis={t} expanded />)}
+        </div>
+      )}
+
+      {/* Current truth */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
+          <ShieldCheck size={14} style={{ opacity: 0.7 }} />
+          <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Current Truth (Champion)</h3>
+        </div>
+        <Card style={{ padding: '12px 14px' }}>
+          {c.truth_version_id !== null && (
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 6 }}>
+              Linked prompt version: <b>#{c.truth_version_id}</b>
+            </div>
+          )}
+          <Collapsible title={<span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Truth snapshot</span>}>
+            <pre style={{
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, lineHeight: 1.5,
+              background: 'rgba(0,0,0,0.25)', padding: 10, borderRadius: 6, marginTop: 6,
+              color: 'var(--text-secondary, #cbd5e1)', maxHeight: 200, overflow: 'auto',
+            }}>{JSON.stringify(c.truth_json, null, 2)}</pre>
+          </Collapsible>
+        </Card>
+      </div>
+
+      {/* Promotion history */}
+      {promotedTheses.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
+            <CheckCircle size={14} style={{ opacity: 0.7 }} />
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Promoted Theses</h3>
+          </div>
+          {promotedTheses.map(t => <ThesisCard key={t.id} thesis={t} />)}
+        </div>
+      )}
+
+      {/* Rejected theses */}
+      {rejectedTheses.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
+            <AlertCircle size={14} style={{ opacity: 0.7 }} />
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Rejected / Stalled Theses</h3>
+          </div>
+          {rejectedTheses.map(t => <ThesisCard key={t.id} thesis={t} />)}
+        </div>
+      )}
+
+      {/* Cycle log */}
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
+          <GitBranch size={14} style={{ opacity: 0.7 }} />
+          <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Cycle Audit Log</h3>
+        </div>
+        <Card style={{ padding: '6px 14px 10px' }}>
+          {data.cycle_logs.length === 0
+            ? <p style={{ fontSize: 12.5, color: 'var(--text-muted)', padding: '10px 0', margin: 0 }}>No cycles recorded yet.</p>
+            : data.cycle_logs.map(l => <CycleLogRow key={l.id} log={l} />)}
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Component list
+// ---------------------------------------------------------------------------
+function ComponentCard({ c, onSelect }: { c: CognitionComponent; onSelect: () => void }) {
+  const isRunning = c.loop_state === 'running' || c.thread_alive
+  const typeIcon =
+    c.component_type === 'prompt_program' ? <Zap size={14} /> :
+    c.component_type === 'swarm_config' ? <Cpu size={14} /> :
+    <Activity size={14} />
+
+  return (
+    <Card style={{ padding: '14px 16px', cursor: 'pointer' }} onClick={onSelect}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 4, flexWrap: 'wrap' }}>
+            {typeIcon}
+            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{c.name}</span>
+            <Badge color="gray">{c.component_type}</Badge>
+            <Badge color={LOOP_COLOR[c.loop_state] || 'gray'}>{c.loop_state}</Badge>
+            {isRunning && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: '#2ecc71' }}>
+                <Spinner size={11} /> evolving
+              </span>
+            )}
+          </div>
+          {c.description && (
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, lineHeight: 1.4 }}>{c.description}</p>
+          )}
+          <div style={{ display: 'flex', gap: 14, marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+            <span><b>{c.cycle_count}</b> cycles</span>
+            <span><b>{c.total_theses}</b> theses</span>
+            <span style={{ color: '#2ecc71' }}><b>{c.promoted_theses}</b> promoted</span>
+            {c.active_thesis && (
+              <span style={{ color: '#f39c12' }}>
+                active thesis: {c.active_thesis.branch_cell} ({c.active_thesis.status})
+              </span>
+            )}
+          </div>
+        </div>
+        <ChevronRight size={17} style={{ opacity: 0.45, flexShrink: 0 }} />
+      </div>
+    </Card>
+  )
+}
+
+function ComponentList({ onSelect }: { onSelect: (id: number) => void }) {
+  const { data, loading, error } = useApi(() => listEvolutionComponents(), [])
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={24} /></div>
+  if (error) return <Alert type="error">{error}</Alert>
+  if (!data || data.components.length === 0) return (
+    <Empty
+      message="No cognition components registered yet. They are seeded at application startup."
+      icon={<FlaskConical size={28} />}
+    />
+  )
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      {data.components.map(c => (
+        <ComponentCard key={c.id} c={c} onSelect={() => onSelect(c.id)} />
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+export function Evolution() {
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+
+  return (
+    <div>
+      <PageHeader
+        title="Evolution Loop"
+        subtitle="EXPERIMENTAL: each cognition component evolves its edge truth through isolated thesis trials, weighted-debate consensus, and governance-gated promotion. The loop self-perpetuates — every promotion or rejection seeds the next thesis automatically."
+      />
+      {selectedId !== null
+        ? <ComponentDetail id={selectedId} onBack={() => setSelectedId(null)} />
+        : <ComponentList onSelect={setSelectedId} />}
+    </div>
+  )
+}

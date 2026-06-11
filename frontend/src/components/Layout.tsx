@@ -5,7 +5,7 @@ import { logout } from '@/lib/api'
 import {
   LayoutDashboard, History, Key, Globe, Plug, Zap,
   ShieldCheck, GitBranch, Brain, Activity, CreditCard,
-  Cpu, CircleDollarSign, Heart, UserSquare, LogOut, Menu, X, Bot, Sparkles
+  Cpu, CircleDollarSign, Heart, UserSquare, LogOut, Menu, X, Bot, Sparkles, FlaskConical
 } from 'lucide-react'
 
 interface NavItem { label: string; to: string; icon: ReactNode; section?: string }
@@ -20,6 +20,7 @@ const NAV: NavItem[] = [
   { label: 'Governance', to: '/governance', icon: <ShieldCheck size={16} /> },
   { label: 'Provenance', to: '/provenance', icon: <GitBranch size={16} /> },
   { label: 'Prompt Engine', to: '/prompt-engine', icon: <Sparkles size={16} /> },
+  { label: 'Evolution Loop', to: '/evolution', icon: <FlaskConical size={16} /> },
   { label: 'Memory', to: '/memory', icon: <Brain size={16} /> },
   { label: 'System Health', to: '/system', icon: <Activity size={16} /> },
   { label: 'Subscriptions', to: '/subscriptions', icon: <CreditCard size={16} />, section: 'TOOLS' },

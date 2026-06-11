@@ -990,3 +990,110 @@ class ProvisioningJob(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
+# ---------------------------------------------------------------------------
+# Edge-truth / thesis self-evolution loop (EXPERIMENTAL sandbox)
+# ---------------------------------------------------------------------------
+
+class CognitionComponent(Base):
+    """A cognition component whose 'edge truth' (champion conclusion) evolves.
+
+    Each component has a current truth snapshot and participates in a perpetual
+    self-improvement loop where improvement theses (challengers) are tested in an
+    EXPERIMENTAL sandbox and promoted only through the governance gate.
+
+    component_type:
+      prompt_program   — a PromptProgram (links truth_version_id)
+      swarm_config     — a swarm parameter bundle (AppSetting keys)
+      role_composition — cognitive role weights per wave
+
+    loop_state: idle | running | paused | error
+    """
+    __tablename__ = "cognition_components"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), unique=True, nullable=False, index=True)
+    component_type = Column(String(40), nullable=False, default="prompt_program")
+    description = Column(Text, nullable=True)
+    truth_json = Column(Text, nullable=True)
+    truth_version_id = Column(Integer, nullable=True)
+    loop_state = Column(String(20), default="idle", index=True)
+    loop_enabled = Column(Boolean, default=False)
+    cycle_count = Column(Integer, default=0)
+    last_cycle_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CognitionThesis(Base):
+    """A proposed improvement to exactly one branch cell of a cognition component.
+
+    Targets a single branch cell (e.g. 'instructions', 'consensus_threshold',
+    'role_weights.skeptic') so promotion swaps only that cell — the whole brain
+    inherits the upgrade by default without touching the rest of the system.
+
+    Status lifecycle:
+      proposed → testing → awaiting_consensus → promoted | rejected | stalled
+    """
+    __tablename__ = "cognition_theses"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    component_id = Column(Integer, ForeignKey("cognition_components.id"), nullable=False, index=True)
+    branch_cell = Column(String(120), nullable=False)
+    thesis_json = Column(Text, nullable=False)
+    rationale = Column(Text, nullable=True)
+    status = Column(String(30), default="proposed", index=True)
+    test_score = Column(Float, nullable=True)
+    base_score = Column(Float, nullable=True)
+    governance_proposal_id = Column(String(80), nullable=True)
+    governance_proposal_db_id = Column(Integer, nullable=True)
+    requires_human_gate = Column(Boolean, default=False)
+    trial_iteration_count = Column(Integer, default=0)
+    stalled_at = Column(DateTime, nullable=True)
+    cycle_index = Column(Integer, default=0)
+    selection_votes_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ThesisTrialIteration(Base):
+    """One build/test iteration within an EXPERIMENTAL thesis trial.
+
+    All iterations run inside the EXPERIMENTAL sandbox — they never read from or
+    write to the live truth path. The sandbox_label column is always 'EXPERIMENTAL'
+    and every row here is the complete, auditable record of what ran and what scored.
+    """
+    __tablename__ = "thesis_trial_iterations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    thesis_id = Column(Integer, ForeignKey("cognition_theses.id"), nullable=False, index=True)
+    iteration_no = Column(Integer, nullable=False)
+    sandbox_label = Column(String(20), default="EXPERIMENTAL", nullable=False)
+    test_results_json = Column(Text, nullable=True)
+    compliance_score = Column(Float, nullable=True)
+    hallucination_risk = Column(Float, nullable=True)
+    composite_score = Column(Float, nullable=True)
+    all_tests_passed = Column(Boolean, default=False)
+    outcome = Column(String(20), nullable=False, default="pending")
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EvolutionCycleLog(Base):
+    """Audit log for each completed/failed/stalled evolution cycle.
+
+    Created at the end of every cycle (whether the thesis was promoted, rejected,
+    or stalled). Also records how the NEXT thesis was selected so the selection
+    logic is fully auditable.
+    """
+    __tablename__ = "evolution_cycle_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    component_id = Column(Integer, ForeignKey("cognition_components.id"), nullable=False, index=True)
+    cycle_index = Column(Integer, nullable=False)
+    outcome = Column(String(20), nullable=False)
+    thesis_id = Column(Integer, nullable=True)
+    next_thesis_selection_json = Column(Text, nullable=True)
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+

@@ -17,16 +17,27 @@ app = FastAPI(title=PRODUCT_NAME, docs_url=None, redoc_url=None)
 
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 _SPA_INDEX = pathlib.Path("static/spa/index.html")
+_ASSET_EXTS = (
+    ".js", ".css", ".woff", ".woff2", ".ttf", ".eot",
+    ".png", ".svg", ".ico", ".map", ".webp", ".jpg", ".jpeg", ".gif",
+)
 
 
 def _is_api_request(request: Request) -> bool:
     return request.url.path.startswith("/api/") or request.url.path == "/api"
 
 
+def _is_asset_request(request: Request) -> bool:
+    """True for requests that look like static asset fetches (JS, CSS, fonts, images).
+    These must NEVER receive a text/html SPA fallback — that causes MIME type errors."""
+    p = request.url.path
+    return p.startswith("/static/") or any(p.endswith(e) for e in _ASSET_EXTS)
+
+
 def _error_response(request: Request, status_code: int, detail: str):
-    if _is_api_request(request):
+    if _is_api_request(request) or _is_asset_request(request):
         return JSONResponse({"detail": detail}, status_code=status_code)
-    # For browser navigation, serve the SPA which renders its own error UI
+    # For browser navigation routes, serve the SPA which renders its own error UI
     if _SPA_INDEX.is_file():
         return FileResponse(_SPA_INDEX, status_code=200)
     return JSONResponse({"detail": detail}, status_code=status_code)
@@ -83,8 +94,14 @@ async def health():
 
 # SPA fallback — all non-API, non-static paths serve the React SPA index.
 # Registered last so /api/* and /static/* mounts take priority.
+# Guard: if the path looks like a static asset that is missing, return 404
+# (don't serve index.html as text/html for a JS/CSS path — that causes MIME errors).
 @app.get("/{full_path:path}")
 async def _spa_fallback(full_path: str):
+    _STATIC_EXTS = (".js", ".css", ".woff", ".woff2", ".ttf", ".png", ".svg",
+                    ".ico", ".map", ".json", ".webp", ".jpg", ".jpeg")
+    if full_path.startswith("static/") or any(full_path.endswith(e) for e in _STATIC_EXTS):
+        return JSONResponse({"detail": "asset not found"}, status_code=404)
     if _SPA_INDEX.is_file():
         return FileResponse(_SPA_INDEX)
     return JSONResponse({"detail": "Frontend not built. Run: cd frontend && npm run build"}, status_code=404)
@@ -132,6 +149,13 @@ async def startup():
         logger.info("Prompt engine seeded; %d orphaned run(s) recovered", recovered)
     except Exception as e:
         logger.warning("Prompt engine init failed: %s", e)
+
+    try:
+        from src.promptopt.evolution import seed_components
+        seed_components()
+        logger.info("Evolution loop: cognition components seeded")
+    except Exception as e:
+        logger.warning("Evolution loop seed failed: %s", e)
 
     try:
         from src.web.routes_keys import sync_keys_to_env
