@@ -629,8 +629,11 @@ async def api_governance(request: Request, _=Depends(require_auth)):
         ).group_by(ProviderMetric.provider).all()
 
         alerts = [{
-            "id": a.id, "rule": a.rule, "severity": a.severity,
-            "detail": a.detail or "", "acknowledged": a.acknowledged,
+            "id": a.id, "rule": a.alert_type, "severity": a.severity,
+            "detail": " — ".join(
+                p for p in (a.description, a.recommended_action) if p
+            ) or "",
+            "acknowledged": a.acknowledged,
             "created_at": _dt(a.created_at),
         } for a in alerts_q]
         ledger = [{

@@ -210,3 +210,17 @@ async def startup():
         logger.info("Coach scheduler started (opt-in via ENABLE_COACH_REFLECTION)")
     except Exception as e:
         logger.warning("Coach scheduler failed to start: %s", e)
+
+    try:
+        from src.selfheal.health_monitor import get_health_monitor
+        import os as _os
+        health_interval = int(
+            _os.environ.get("HEALTH_MONITOR_INTERVAL", "120") or "120"
+        )
+        await get_health_monitor().start(interval=health_interval)
+        logger.info(
+            "Health monitor started (interval=%ds; alerts on Mesh local-node offline)",
+            health_interval,
+        )
+    except Exception as e:
+        logger.warning("Health monitor failed to start: %s", e)

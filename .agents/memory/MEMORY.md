@@ -18,3 +18,4 @@
 - [Agent Ledger](agent-ledger.md) — isolated SQLite registry (`python -m agentledger.query`) of packages/providers + their layer/container/function placement; rebuild via `agentledger.seed`.
 - [Cognitive-role prompt programs](role-program-optimization.md) — swarm role prompts are governed/optimizable like the judge; runtime must run the same seam the optimizer trains (no train/serve skew).
 - [Voice/prosody mood capture](voice-mood-capture.md) — Hume prosody emits no sentiment so valence stays None; audio is always cloud so strict-private must refuse voice.
+- [Mesh local-node offline alerts](local-node-offline-alerts.md) — background HealthMonitor raises dedup'd SentinelEvents when a local node drops; SPA /api/governance must map alert_type/description (no rule/detail cols).
