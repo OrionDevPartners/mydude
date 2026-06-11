@@ -21,6 +21,12 @@ These run offline, with no real providers, network, or database:
   3. The life-coach (``src/coach/coach.py``) short-circuits to
      ``insufficient_data`` BEFORE calling any LLM when recall is empty (fail loud
      rather than fabricate a pattern).
+  4. Private-Mode at the memory substrate (``src/memory/substrate.py``):
+       * ``write_claim(local_only=True)`` writes to the LOCAL store but NEVER the
+         cloud store, and tags the node/audit as private — the single most
+         important privacy promise (mood data never leaves the device).
+       * the default (``local_only=False``) path still reaches the cloud store, so
+         the test proves the flag is what gates egress.
 
 The DB, the delivery layer, the memory substrate, and the swarm are all faked, so
 the suite is hermetic.
@@ -319,6 +325,73 @@ def test_ask_insufficient_data_short_circuits_before_llm():
     assert "ask" in _audit_actions(db)
 
 
+# -- Private-Mode at the memory substrate ------------------------------------
+
+class _FakeStore:
+    """Records every add() so we can prove which store an entry reached."""
+
+    def __init__(self):
+        self.added = []
+
+    def add(self, entry):
+        self.added.append(entry)
+        return entry
+
+
+def _bare_substrate(local, cloud):
+    """Build a MemorySubstrate without touching the real Cognee/Mem0 adapters."""
+    import threading
+    from collections import deque
+
+    sub = substrate_mod.MemorySubstrate.__new__(substrate_mod.MemorySubstrate)
+    sub._local = local
+    sub._cloud = cloud
+    sub._bridge = None
+    sub._audit = deque(maxlen=200)
+    sub._last_sync = None
+    sub._lock = threading.Lock()
+    return sub
+
+
+def test_write_claim_local_only_never_touches_cloud():
+    local, cloud = _FakeStore(), _FakeStore()
+    sub = _bare_substrate(local, cloud)
+
+    entry = sub.write_claim(
+        "I felt anxious before the meeting today",
+        category="mood",
+        local_only=True,
+    )
+
+    assert len(local.added) == 1, "private claim must be written to the LOCAL store"
+    assert cloud.added == [], "private claim must NEVER reach the cloud store"
+    assert local.added[0] is entry
+    assert entry.metadata.get("private") is True, "node must be tagged private"
+
+    audit = sub.audit_events(limit=5)
+    assert audit, "a persist event must be recorded"
+    assert "private/local-only" in audit[0]["detail"], \
+        "audit must mark the write as private/local-only"
+    assert entry.memory_id in audit[0]["log"]
+
+
+def test_write_claim_default_reaches_cloud():
+    local, cloud = _FakeStore(), _FakeStore()
+    sub = _bare_substrate(local, cloud)
+
+    entry = sub.write_claim("Quarterly revenue grew 12 percent", category="fact")
+
+    assert len(cloud.added) == 1, "default path must reach the cloud store"
+    assert len(local.added) == 1, "default path must also write locally"
+    assert cloud.added[0] is entry
+    assert entry.metadata.get("private") is not True, \
+        "default node must not be tagged private"
+
+    audit = sub.audit_events(limit=5)
+    assert audit and "local+cloud" in audit[0]["detail"], \
+        "audit must mark the default write as local+cloud"
+
+
 def _run_all():
     tests = [
         test_request_creates_pending_and_sends_nothing,
@@ -331,6 +404,8 @@ def _run_all():
         test_ingest_refuses_cloud_emotion_in_strict_mode,
         test_ingest_auto_uses_local_sentiment_in_strict_mode,
         test_ask_insufficient_data_short_circuits_before_llm,
+        test_write_claim_local_only_never_touches_cloud,
+        test_write_claim_default_reaches_cloud,
     ]
     failed = 0
     for t in tests:
