@@ -38,7 +38,7 @@ class OpenAIChatAdapter(LLMAdapter):
     def _build_client(self):
         if AsyncOpenAI is None:
             return None
-        api_key = get_secret(self.spec.secrets[0]) if self.spec.secrets else None
+        api_key = self.primary_secret_value()
         if not api_key:
             return None
         kwargs = {"api_key": api_key}
@@ -75,7 +75,7 @@ class AnthropicMessagesAdapter(LLMAdapter):
     def _build_client(self):
         if anthropic is None:
             return None
-        api_key = get_secret(self.spec.secrets[0]) if self.spec.secrets else None
+        api_key = self.primary_secret_value()
         if not api_key:
             return None
         return anthropic.AsyncAnthropic(api_key=api_key)
@@ -98,18 +98,87 @@ class GeminiGenerateAdapter(LLMAdapter):
     def _build_client(self):
         if genai is None:
             return None
-        api_key = get_secret(self.spec.secrets[0]) if self.spec.secrets else None
+        api_key = self.primary_secret_value()
         if not api_key:
             return None
         genai.configure(api_key=api_key)
         return genai
 
+    # Bound every inference call so a stalled request fails loud instead of
+    # hanging a caller. The SDK/GAPIC default is 600s plus a ServiceUnavailable
+    # retry (10-20 min in practice); 180s is well above our worst real call
+    # (~130s) yet terminates the underlying gRPC transport (raising
+    # DeadlineExceeded), which cancelling the awaiting coroutine alone cannot do.
+    REQUEST_TIMEOUT_S = 180
+
     async def generate(self, system: str, user: str, max_tokens: int) -> str:
         if self.client() is None:
             raise RuntimeError("gemini client unavailable")
         model = genai.GenerativeModel(self._model, system_instruction=system)
-        r = await asyncio.to_thread(model.generate_content, user)
-        return (getattr(r, "text", "") or "").strip()
+        r = await asyncio.to_thread(
+            model.generate_content, user,
+            request_options={"timeout": self.REQUEST_TIMEOUT_S},
+        )
+        text = self._extract_text(r)
+        if not text:
+            # Fail loud rather than silently returning empty: a thinking / pro
+            # model can finish with a safety block or a thought-only candidate,
+            # and an empty synthesis must surface, not masquerade as a result.
+            raise RuntimeError(
+                "gemini returned no text (%s)"
+                % (self._blocked_reason(r) or "empty response")
+            )
+        return text.strip()
+
+    @staticmethod
+    def _extract_text(r) -> str:
+        """Robustly assemble answer text across SDK response shapes.
+
+        The ``.text`` quick-accessor raises on multi-part / thinking responses
+        (e.g. a thought part alongside the answer), so prefer walking the
+        candidate parts and fall back to ``.text`` only if that yields nothing.
+        """
+        try:
+            answer: List[str] = []
+            any_text: List[str] = []
+            for cand in (getattr(r, "candidates", None) or []):
+                content = getattr(cand, "content", None)
+                for part in (getattr(content, "parts", None) or []):
+                    t = getattr(part, "text", None)
+                    if not t:
+                        continue
+                    any_text.append(t)
+                    if not getattr(part, "thought", False):
+                        answer.append(t)
+            chosen = answer or any_text
+            if chosen:
+                return "".join(chosen)
+        except Exception:
+            pass
+        try:
+            t = getattr(r, "text", None)
+            if t:
+                return t
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _blocked_reason(r) -> str:
+        """Best-effort human-readable reason a response carried no text."""
+        try:
+            pf = getattr(r, "prompt_feedback", None)
+            br = getattr(pf, "block_reason", None)
+            if br:
+                return "prompt blocked: %s" % br
+            cands = getattr(r, "candidates", None) or []
+            if cands:
+                fr = getattr(cands[0], "finish_reason", None)
+                if fr:
+                    return "finish_reason=%s" % fr
+        except Exception:
+            pass
+        return ""
 
     async def list_models(self) -> Optional[List[str]]:
         if self.client() is None:

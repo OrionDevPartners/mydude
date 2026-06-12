@@ -15,6 +15,7 @@ so their lazily-built async clients never straddle two event loops.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import threading
 from types import SimpleNamespace
@@ -100,6 +101,14 @@ def harden_dspy_cache() -> bool:
 harden_dspy_cache()
 
 
+# Provider-agnostic backstop for the SYNC optimizer path (num_threads=1, so one
+# stalled call freezes the whole run). The adapter owns the real request timeout
+# that terminates the transport; this only bounds the awaiting coroutine in case
+# a non-generate call (e.g. model listing) stalls. Kept above the worst real
+# call (~130s) and above the adapter's own timeout (180s) so the adapter wins.
+_OPTIMIZER_CALL_TIMEOUT_S = 240.0
+
+
 # --- ONE persistent daemon event loop for sync (optimizer) adapter calls -------
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _loop_lock = threading.Lock()
@@ -158,13 +167,33 @@ def _build_first_available_adapter(provider_key: Optional[str] = None):
     )
 
 
+class _AttrDict(dict):
+    """A dict that also allows attribute access.
+
+    litellm's usage object supports BOTH ``dict(usage)`` and ``usage.prompt_tokens``;
+    DSPy's BaseLM relies on ``dict(response.usage)`` (a plain SimpleNamespace is NOT
+    iterable as key/value pairs and raises TypeError there), while other code may
+    read attributes. Subclassing dict satisfies every consumer.
+    """
+
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError as exc:  # pragma: no cover - mirrors attribute semantics
+            raise AttributeError(key) from exc
+
+
 def _openai_response(text: str, model: str) -> Any:
     """Minimal OpenAI-/litellm-style response object DSPy's BaseLM consumes."""
-    message = SimpleNamespace(role="assistant", content=text or "", tool_calls=None)
+    message = SimpleNamespace(
+        role="assistant", content=text or "", tool_calls=None,
+        reasoning_content=None, provider_specific_fields={},
+    )
     choice = SimpleNamespace(message=message, finish_reason="stop", index=0, text=text or "")
-    usage = SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+    usage = _AttrDict(prompt_tokens=0, completion_tokens=0, total_tokens=0)
     return SimpleNamespace(
-        choices=[choice], usage=usage, model=model, id="promptopt", object="chat.completion"
+        choices=[choice], usage=usage, model=model, id="promptopt",
+        object="chat.completion", _hidden_params={},
     )
 
 
@@ -189,6 +218,25 @@ class ProviderBackedLM(dspy.BaseLM):
         self._budget = max_tokens
         self._adapter = None
         self._adapter_lock = threading.Lock()
+
+    def __deepcopy__(self, memo):
+        """Deepcopy-safe: optimizers (MIPROv2) deep-copy the program AND its LM.
+
+        The lazily-built adapter holds an un-copyable provider client/module and
+        the lock is a thread primitive — both break copy.deepcopy. Drop the
+        adapter (it rebuilds lazily on first use in the copy) and mint a fresh
+        lock; deep-copy everything else (model, budget, kwargs, history)."""
+        cls = self.__class__
+        clone = cls.__new__(cls)
+        memo[id(self)] = clone
+        for k, v in self.__dict__.items():
+            if k == "_adapter":
+                clone.__dict__[k] = None
+            elif k == "_adapter_lock":
+                clone.__dict__[k] = threading.Lock()
+            else:
+                clone.__dict__[k] = copy.deepcopy(v, memo)
+        return clone
 
     # -- message handling -----------------------------------------------------
     @staticmethod
@@ -234,11 +282,25 @@ class ProviderBackedLM(dspy.BaseLM):
     # -- DSPy entry points ----------------------------------------------------
     def forward(self, prompt=None, messages=None, **kwargs):
         system, user = self._split(prompt, messages)
-        fut = asyncio.run_coroutine_threadsafe(
-            self._agenerate(system, user), _persistent_loop()
-        )
-        text = fut.result()
-        return _openai_response(text, self.model)
+        last_exc: Optional[BaseException] = None
+        for attempt in range(2):
+            fut = asyncio.run_coroutine_threadsafe(
+                asyncio.wait_for(
+                    self._agenerate(system, user),
+                    timeout=_OPTIMIZER_CALL_TIMEOUT_S,
+                ),
+                _persistent_loop(),
+            )
+            try:
+                text = fut.result()
+                return _openai_response(text, self.model)
+            except Exception as e:  # timeout, deadline, or transient provider error
+                last_exc = e
+                # Drop the cached adapter so the next attempt rebuilds it; the
+                # second attempt re-raises (fail loud) rather than faking output.
+                with self._adapter_lock:
+                    self._adapter = None
+        raise last_exc
 
     async def aforward(self, prompt=None, messages=None, **kwargs):
         system, user = self._split(prompt, messages)

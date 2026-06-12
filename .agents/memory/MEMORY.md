@@ -23,3 +23,6 @@
 - [Mesh local-node offline alerts](local-node-offline-alerts.md) — background HealthMonitor raises dedup'd SentinelEvents when a local node drops; SPA /api/governance must map alert_type/description (no rule/detail cols).
 - [Evolution loop LLM thesis dispatch](evolution-llm-thesis.md) — thesis gen dispatches WaveOrchestrator on lm_bridge's persistent loop; gate on CS/HR; falls back to heuristics when no provider/governance fail.
 - [ENCRYPTION_KEY persistence](encryption-key-persistence.md) — vault Fernet key must be a persistent secret (never rotate); app warns via encryption_persistent on /keys + /capabilities when auto-generated.
+- [Prompt-opt live-provider runs](promptopt-real-provider-runs.md) — MIPRO/GEPA vs a real LLM: bounded timeout+fail-loud, deepcopy-safe LM, noisy small valsets, completion-only persistence, budget levers.
+- [Vault->env secret sync](vault-env-secret-sync.md) — key-sync must never delete env/connector-sourced secrets it doesn't own, or it wipes the live provider credential.
+- [Secret/env staleness](secret-env-staleness.md) — agent bash snapshots env; read live secret from workflow /proc/PID/environ, compare SHA fingerprints; Gemini disabled-API gotcha.

@@ -27,6 +27,11 @@ class ProviderSpec:
     base_url_env: str = ""
     default_base_url: str = ""
     alias_env: str = ""
+    # Alternative env_2 secret NAMES that satisfy the *primary* credential when
+    # the canonical name (secrets[0]) is absent. Honors the "separate provider
+    # from secrets" pillar: the same key works whether the operator stored it as
+    # GEMINI_API_KEY, GOOGLE_API_KEY, google_ai_studio, etc. First present wins.
+    secret_fallbacks: List[str] = field(default_factory=list)
 
 
 class LLMAdapter(ABC):
@@ -57,8 +62,36 @@ class LLMAdapter(ABC):
         return self._model
 
     # -- availability ---------------------------------------------------------
+    def _primary_secret_candidates(self) -> List[str]:
+        """Candidate NAMES for the primary credential: the canonical name
+        (secrets[0]) plus any configured fallbacks, in priority order."""
+        names: List[str] = []
+        if self.spec.secrets:
+            names.append(self.spec.secrets[0])
+        names.extend(self.spec.secret_fallbacks)
+        return names
+
+    def primary_secret_name(self) -> Optional[str]:
+        """First present candidate name for the primary credential, else None."""
+        for name in self._primary_secret_candidates():
+            if has_secret(name):
+                return name
+        return None
+
+    def primary_secret_value(self) -> Optional[str]:
+        """Value of the first present primary-credential name, else None."""
+        name = self.primary_secret_name()
+        return get_secret(name) if name else None
+
     def secrets_present(self) -> bool:
-        return all(has_secret(s) for s in self.spec.secrets)
+        # Local/keyless providers (no secrets, no fallbacks) are always present.
+        if not self.spec.secrets and not self.spec.secret_fallbacks:
+            return True
+        # The primary credential may be satisfied by any fallback name.
+        if self.spec.secrets and self.primary_secret_name() is None:
+            return False
+        # Any *additional* required secrets must be present by their exact name.
+        return all(has_secret(s) for s in self.spec.secrets[1:])
 
     def client(self):
         if not self._client_built:

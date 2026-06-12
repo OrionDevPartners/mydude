@@ -71,25 +71,31 @@ def _audit(db, action, key=None, detail=None, provider=None, label=None):
         logger.warning("Failed to write audit log: %s", e)
 
 
+# Env vars whose CURRENT value this process injected from the vault. We only
+# ever clear these on re-sync — never secrets sourced from the environment
+# (Replit Secrets / connector proxy) that the vault did not set. Clearing a
+# managed name unconditionally would destroy a live env-provided credential
+# (governance pillar #3: the env fallback must keep working).
+_vault_injected_vars: set = set()
+
+
 def sync_keys_to_env():
     """Inject active key values into the environment under their env var and
-    record that they were made available for use."""
+    record that they were made available for use.
+
+    A disabled/deleted vault key must not leave its secret lingering in the
+    process environment, but we must NOT clobber secrets the vault never
+    injected (e.g. a provider key supplied via Replit Secrets). So we track the
+    env vars we set and, on re-sync, clear only those that are no longer backed
+    by an active vault key. At boot the tracking set is empty, so nothing is
+    deleted — only active vault keys are layered on top of the existing env.
+    """
+    global _vault_injected_vars
     db = SessionLocal()
     try:
-        all_keys = db.query(ApiKey).all()
-        active_keys = [k for k in all_keys if k.is_active]
-        # Clear env vars for EVERY known/managed key (active or not) so that a
-        # key that was disabled or deleted does not leave its secret lingering
-        # in the process environment.
-        managed_vars = set(LEGACY_ENV_MAP.values())
-        for k in all_keys:
-            ev = _resolve_env_var(k)
-            if ev:
-                managed_vars.add(ev)
-        for ev in managed_vars:
-            os.environ.pop(ev, None)
-
+        active_keys = [k for k in db.query(ApiKey).all() if k.is_active]
         now = datetime.utcnow()
+        new_injected = set()
         for key in active_keys:
             ev = _resolve_env_var(key)
             if not ev:
@@ -97,8 +103,14 @@ def sync_keys_to_env():
             try:
                 os.environ[ev] = decrypt_value(key.encrypted_key)
                 key.last_used_at = now
+                new_injected.add(ev)
             except Exception as e:
                 logger.warning("Failed to decrypt key %s: %s", key.id, e)
+        # Remove only vars THIS vault sync previously injected that are no
+        # longer backed by an active key. Leaves env-sourced secrets intact.
+        for ev in (_vault_injected_vars - new_injected):
+            os.environ.pop(ev, None)
+        _vault_injected_vars = new_injected
         db.commit()
     except Exception as e:
         db.rollback()

@@ -54,6 +54,7 @@ def _spec_from_entry(key: str, d: dict) -> ProviderSpec:
         base_url_env=d.get("base_url_env", ""),
         default_base_url=d.get("default_base_url", ""),
         alias_env=d.get("alias_env", ""),
+        secret_fallbacks=list(d.get("secret_fallbacks", [])),
     )
 
 

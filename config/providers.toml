@@ -65,13 +65,24 @@ exec_locus = "anthropic_hosted"
 
 [providers.gemini]
 adapter = "gemini_generate"
-secrets = ["GEMINI_API_KEY"]
+# This deployment's working, billing-enabled Gemini credential lives in the
+# `google_ai_studio` secret, so it is the primary. The conventional names are
+# kept as fallbacks for portability, but they must NOT take precedence here: a
+# stale `GEMINI_API_KEY` in this environment points at a Google project whose
+# Generative Language API is disabled, which would otherwise win and fail loud
+# with PermissionDenied. First present wins (Governance Pillar #3 — separate
+# provider from secrets).
+secrets = ["google_ai_studio"]
+secret_fallbacks = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 model_env = "GEMINI_MODEL"
-default_model = "gemini-2.0-flash"
+# Pinned to Gemini 3.1 Pro (operator directive: this provider runs 3.1 Pro only).
+# The pattern is anchored so it matches ONLY gemini-3.1-pro / -preview and never
+# the -customtools, -image, or flash / 2.x variants the live API also lists.
+default_model = "models/gemini-3.1-pro-preview"
 concurrency_env = "GEMINI_CONCURRENCY"
 default_concurrency = 3
 role_hint = "Edge cases + alternative approaches + high recall brainstorming"
-model_patterns = ['gemini.*2.*flash']
+model_patterns = ['gemini-3\.1-pro(-preview)?$']
 exec_locus = "in_azure"
 
 [providers.grok]
