@@ -426,6 +426,49 @@ async def _is_visible(page, selector):
         return False
 
 
+async def _is_enabled(el):
+    """Best-effort enabled-state of a Playwright element handle / locator.
+
+    Defaults to True when the element exposes no ``is_enabled`` (or it errors)
+    so callers degrade to the prior visibility-only behaviour rather than
+    treating every control as disabled.
+    """
+    fn = getattr(el, "is_enabled", None)
+    if fn is None:
+        return True
+    try:
+        return bool(await fn())
+    except Exception:
+        return True
+
+
+async def _input_label_text(el):
+    """Best-effort human-readable label for a form input (radio / option).
+
+    Tries ``aria-label`` and ``value`` attributes first, then falls back to the
+    text of the input's enclosing / associated ``<label>``. Used only to make
+    sure a survey answer we auto-select isn't really a "keep my plan" control.
+    """
+    for attr in ("aria-label", "value"):
+        try:
+            v = await el.get_attribute(attr)
+            if v and v.strip():
+                return v
+        except Exception:
+            pass
+    try:
+        txt = await el.evaluate(
+            "e => { const l = e.closest('label') || (e.id && "
+            "document.querySelector('label[for=\"' + e.id + '\"]')); "
+            "return l ? l.innerText : ''; }"
+        )
+        if txt and txt.strip():
+            return txt
+    except Exception:
+        pass
+    return ""
+
+
 async def _has_captcha(page):
     try:
         content = (await page.content()).lower()
@@ -549,18 +592,23 @@ async def _do_login(page, login_url, account_url, username, password, otp,
     return None
 
 
-async def _click_progressing_control(page, texts):
+async def _click_progressing_control(page, texts, gated=None):
     """Click the next cancel-progressing control on the current page.
 
     Walks the candidate labels (real ``<button>`` first, then link / role=button
-    styled controls) and clicks the first visible match that is NOT a retention
-    "keep / pause / stay subscribed / accept offer" control. Returns the clicked
-    control's text, or ``None`` when nothing progresses the cancel.
+    styled controls) and clicks the first visible, ENABLED match that is NOT a
+    retention "keep / pause / stay subscribed / accept offer" control. Returns
+    the clicked control's text, or ``None`` when nothing progresses the cancel.
 
     The keep-guard (``_looks_like_keep``) means that even if a cancel label is a
     substring of a retention button's text (e.g. searching "Cancel anyway" finds
     "Cancel anyway? No — keep my plan"), that button is skipped and the genuine
     decline/cancel control next to it is used instead.
+
+    When ``gated`` is a mutable dict, a visible-but-disabled cancel-progressing
+    control sets ``gated["found"] = True``. That signals the caller that a real
+    cancel control exists but is disabled (typically until a required survey is
+    answered), so it can satisfy the survey and retry rather than giving up.
     """
     finders = (
         lambda label: page.get_by_role("button", name=label, exact=False),
@@ -581,6 +629,12 @@ async def _click_progressing_control(page, texts):
                     text = await _safe_text(el)
                     if _looks_like_keep(text):
                         continue  # never accept a retention/keep offer
+                    if not await _is_enabled(el):
+                        # A genuine cancel control that's disabled until a
+                        # required survey is filled — flag it for the caller.
+                        if gated is not None:
+                            gated["found"] = True
+                        continue
                     await el.click()
                     return (text or label).strip()
                 except Exception:
@@ -618,6 +672,62 @@ async def _has_visible_keep_control(page):
     return False
 
 
+async def _satisfy_required_survey(page):
+    """Answer a simple required survey gating a cancel-progressing control.
+
+    Some cancel flows ("Tell us why you're leaving") disable the next button
+    until a required radio group or dropdown is filled. This selects a single
+    neutral reason so the gated control becomes clickable. It NEVER picks an
+    option that keeps/pauses the subscription (``_looks_like_keep`` guard), and
+    it only ever selects a reason — it does not submit anything itself; the
+    keep-guarded ``_click_progressing_control`` still drives the actual cancel.
+
+    Returns True if a choice was made, else False.
+    """
+    # Radio groups: select the first visible, enabled, non-keep option.
+    try:
+        radios = page.locator("input[type=radio]")
+        n = await radios.count()
+    except Exception:
+        n = 0
+    for i in range(n):
+        try:
+            r = radios.nth(i)
+            if not await r.is_visible() or not await _is_enabled(r):
+                continue
+            if _looks_like_keep(await _input_label_text(r)):
+                continue
+            await r.check()
+            return True
+        except Exception:
+            continue
+    # Dropdowns: pick the first real (non-placeholder), non-keep option.
+    try:
+        selects = page.locator("select")
+        sn = await selects.count()
+    except Exception:
+        sn = 0
+    for i in range(sn):
+        try:
+            sel = selects.nth(i)
+            if not await sel.is_visible() or not await _is_enabled(sel):
+                continue
+            options = sel.locator("option")
+            m = await options.count()
+            for j in range(m):
+                opt = options.nth(j)
+                val = await opt.get_attribute("value")
+                if not val:
+                    continue  # placeholder / empty option
+                if _looks_like_keep(await _safe_text(opt)):
+                    continue
+                await sel.select_option(value=val)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
     """Click through cancel/confirm controls on the current (logged-in) page.
 
@@ -647,7 +757,15 @@ async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
     # interpose a "pause instead" / discount / survey / "are you sure?" screen
     # between initiate and confirm, adding one or two decline steps.
     for _ in range(6):
-        text = await _click_progressing_control(page, texts)
+        gated = {"found": False}
+        text = await _click_progressing_control(page, texts, gated)
+        if not text and gated["found"]:
+            # A real cancel control exists but is disabled until a required
+            # survey ("why are you leaving?") is answered. Pick a neutral
+            # reason (never a keep/pause option) and retry the same step.
+            if await _satisfy_required_survey(page):
+                await page.wait_for_timeout(500)
+                text = await _click_progressing_control(page, texts)
         if not text:
             break
         clicked.append(text)

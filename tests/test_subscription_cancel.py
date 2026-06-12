@@ -265,6 +265,289 @@ def test_do_cancel_honest_when_only_keep_controls_after_progressing_steps():
     assert res.text and "Clicked:" in res.text, res.text
 
 
+# -- fake survey-gated page for _do_cancel ------------------------------------
+
+class _SBtn:
+    def __init__(self, text, role="button", visible=True, requires_survey=False):
+        self.text = text
+        self.role = role
+        self.visible = visible
+        self.requires_survey = requires_survey
+
+
+class _SRadio:
+    def __init__(self, label, visible=True):
+        self.label = label
+        self.visible = visible
+        self.checked = False
+
+
+class _SOption:
+    def __init__(self, value, text):
+        self.value = value
+        self.text = text
+
+
+class _SSelect:
+    def __init__(self, options, visible=True):
+        self.options = options
+        self.visible = visible
+        self.selected = None
+
+
+class _SBtnElement:
+    def __init__(self, page, btn):
+        self._page = page
+        self._btn = btn
+
+    async def is_visible(self):
+        return bool(self._btn and self._btn.visible)
+
+    async def is_enabled(self):
+        if not self._btn:
+            return False
+        if self._btn.requires_survey:
+            return self._page.survey_satisfied
+        return True
+
+    async def inner_text(self):
+        return self._btn.text if self._btn else ""
+
+    async def text_content(self):
+        return self._btn.text if self._btn else ""
+
+    async def click(self):
+        self._page._advance(self._btn.text)
+
+
+class _SRadioElement:
+    def __init__(self, page, radio):
+        self._page = page
+        self._radio = radio
+
+    async def is_visible(self):
+        return bool(self._radio and self._radio.visible)
+
+    async def is_enabled(self):
+        return True
+
+    async def get_attribute(self, name):
+        if name in ("aria-label", "value") and self._radio:
+            return self._radio.label
+        return None
+
+    async def check(self):
+        self._radio.checked = True
+        self._page.survey_satisfied = True
+
+
+class _SOptionElement:
+    def __init__(self, option):
+        self._option = option
+
+    async def get_attribute(self, name):
+        if name == "value" and self._option:
+            return self._option.value
+        return None
+
+    async def inner_text(self):
+        return self._option.text if self._option else ""
+
+    async def text_content(self):
+        return self._option.text if self._option else ""
+
+
+class _SOptionLocator:
+    def __init__(self, options):
+        self._options = options
+
+    async def count(self):
+        return len(self._options)
+
+    def nth(self, i):
+        return _SOptionElement(self._options[i] if 0 <= i < len(self._options) else None)
+
+
+class _SSelectElement:
+    def __init__(self, page, sel):
+        self._page = page
+        self._sel = sel
+
+    async def is_visible(self):
+        return bool(self._sel and self._sel.visible)
+
+    async def is_enabled(self):
+        return True
+
+    def locator(self, selector):
+        return _SOptionLocator(self._sel.options if self._sel else [])
+
+    async def select_option(self, value=None, **k):
+        self._sel.selected = value
+        self._page.survey_satisfied = True
+
+
+class _SLocator:
+    def __init__(self, page, items, kind):
+        self._page = page
+        self._items = items
+        self._kind = kind
+
+    async def count(self):
+        return len(self._items)
+
+    def nth(self, i):
+        item = self._items[i] if 0 <= i < len(self._items) else None
+        if self._kind == "radio":
+            return _SRadioElement(self._page, item)
+        if self._kind == "select":
+            return _SSelectElement(self._page, item)
+        return _SBtnElement(self._page, item)
+
+
+class _SButtonQuery:
+    def __init__(self, page):
+        self._page = page
+
+    def filter(self, has_text=None):
+        needle = (has_text or "").lower()
+        btns = [b for b in self._page._current()["buttons"]
+                if b.visible and needle in b.text.lower()]
+        return _SLocator(self._page, btns, "button")
+
+
+class _FakeSurveyCancelPage:
+    """A fake page modeling a cancel flow with a survey-gated step.
+
+    Each step is a dict with ``buttons``/``radios``/``selects``. A button marked
+    ``requires_survey`` reports ``is_enabled() == False`` until a radio is
+    checked or a dropdown option is chosen, mimicking a "Continue to cancel"
+    control disabled behind a required "why are you leaving?" survey.
+    """
+
+    def __init__(self, steps):
+        self.steps = steps
+        self.idx = 0
+        self.url = "https://www.example.com/account"
+        self.clicks = []
+        self.survey_satisfied = False
+
+    def _current(self):
+        if self.idx < len(self.steps):
+            s = self.steps[self.idx]
+            return {
+                "buttons": s.get("buttons", []),
+                "radios": s.get("radios", []),
+                "selects": s.get("selects", []),
+            }
+        return {"buttons": [], "radios": [], "selects": []}
+
+    def _advance(self, label):
+        self.clicks.append(label)
+        if self.idx < len(self.steps):
+            self.idx += 1
+        self.survey_satisfied = False
+
+    async def wait_for_load_state(self, *a, **k):
+        return None
+
+    async def wait_for_selector(self, *a, **k):
+        if not any(b.visible for b in self._current()["buttons"]):
+            raise RuntimeError("nothing visible yet")
+        return True
+
+    async def wait_for_timeout(self, *a, **k):
+        return None
+
+    def get_by_role(self, role, name=None, exact=False):
+        needle = (name or "").lower()
+        btns = [b for b in self._current()["buttons"]
+                if b.role == role and b.visible and needle in b.text.lower()]
+        return _SLocator(self, btns, "button")
+
+    def locator(self, selector):
+        if "radio" in selector:
+            return _SLocator(self, self._current()["radios"], "radio")
+        if selector.strip() == "select":
+            return _SLocator(self, self._current()["selects"], "select")
+        return _SButtonQuery(self)
+
+    async def title(self):
+        return "Account"
+
+    async def inner_text(self, selector):
+        return "account body"
+
+    async def screenshot(self, **k):
+        return b"\x89PNG"
+
+
+def test_do_cancel_satisfies_required_radio_survey():
+    # initiate -> survey-gated step (Continue disabled until a reason is picked)
+    # -> done. The walker must select a reason and then click Continue.
+    page = _FakeSurveyCancelPage([
+        {"buttons": [_SBtn("Cancel membership")]},
+        {"buttons": [_SBtn("Continue to cancel", requires_survey=True)],
+         "radios": [_SRadio("Too expensive"),
+                    _SRadio("Not using it enough"),
+                    _SRadio("Other")]},
+        {"buttons": []},
+    ])
+    res = asyncio.run(_do_cancel(page, None, "browserbase", 45000, 4000))
+    assert res.ok, res.error
+    assert page.clicks == ["Cancel membership", "Continue to cancel"], page.clicks
+    radios = page.steps[1]["radios"]
+    assert radios[0].checked, "should select the first neutral reason"
+    assert not radios[1].checked and not radios[2].checked
+
+
+def test_do_cancel_satisfies_required_dropdown_survey():
+    # Same gating but via a <select> with a placeholder first option.
+    page = _FakeSurveyCancelPage([
+        {"buttons": [_SBtn("Cancel subscription")]},
+        {"buttons": [_SBtn("Continue to cancel", requires_survey=True)],
+         "selects": [_SSelect([_SOption("", "Select a reason"),
+                               _SOption("expensive", "Too expensive"),
+                               _SOption("other", "Other")])]},
+        {"buttons": []},
+    ])
+    res = asyncio.run(_do_cancel(page, None, "browserbase", 45000, 4000))
+    assert res.ok, res.error
+    assert page.clicks == ["Cancel subscription", "Continue to cancel"], page.clicks
+    # First *real* (non-placeholder) option chosen; placeholder "" skipped.
+    assert page.steps[1]["selects"][0].selected == "expensive"
+
+
+def test_do_cancel_survey_never_selects_keep_option():
+    # The first survey option keeps the subscription; the walker must skip it and
+    # pick a genuine reason instead, never submitting a "keep my plan" answer.
+    page = _FakeSurveyCancelPage([
+        {"buttons": [_SBtn("Cancel membership")]},
+        {"buttons": [_SBtn("Continue to cancel", requires_survey=True)],
+         "radios": [_SRadio("Actually, keep my plan"),
+                    _SRadio("Too expensive")]},
+        {"buttons": []},
+    ])
+    res = asyncio.run(_do_cancel(page, None, "browserbase", 45000, 4000))
+    assert res.ok, res.error
+    assert page.clicks == ["Cancel membership", "Continue to cancel"], page.clicks
+    radios = page.steps[1]["radios"]
+    assert not radios[0].checked, "must never select a keep/retention answer"
+    assert radios[1].checked
+
+
+def test_do_cancel_survey_gated_with_no_answerable_survey_is_honest():
+    # A disabled Continue with no radios/selects to satisfy it: the walker can't
+    # progress and must report honestly rather than loop or fake a click.
+    page = _FakeSurveyCancelPage([
+        {"buttons": [_SBtn("Cancel membership")]},
+        {"buttons": [_SBtn("Continue to cancel", requires_survey=True)]},
+    ])
+    res = asyncio.run(_do_cancel(page, None, "browserbase", 45000, 4000))
+    assert res.ok, res.error  # the initiate click still progressed
+    assert page.clicks == ["Cancel membership"], page.clicks
+
+
 def test_default_cancel_texts_cover_retention_decline_controls():
     lower = [t.lower() for t in DEFAULT_CANCEL_TEXTS]
 
@@ -478,6 +761,10 @@ def _run_all():
         test_do_cancel_never_clicks_keep_even_when_label_substring_matches,
         test_do_cancel_will_not_accept_retention_offer_when_only_keep_controls,
         test_do_cancel_honest_when_only_keep_controls_after_progressing_steps,
+        test_do_cancel_satisfies_required_radio_survey,
+        test_do_cancel_satisfies_required_dropdown_survey,
+        test_do_cancel_survey_never_selects_keep_option,
+        test_do_cancel_survey_gated_with_no_answerable_survey_is_honest,
         test_default_cancel_texts_cover_retention_decline_controls,
         test_looks_like_keep_flags_retention_controls,
         test_default_cancel_texts_cover_known_providers,
