@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 
 _DATA_DIR = Path(os.getenv("COGNEE_DATA_DIR", ".cognee_data"))
 _GRAPH_FILE = _DATA_DIR / "graph.json"
-_LOCK = threading.Lock()
+# Reentrant: add_edge() may call add_node() while already holding the lock when
+# a relation's endpoint nodes don't yet exist. A plain Lock deadlocks there.
+_LOCK = threading.RLock()
 
 
 @dataclass

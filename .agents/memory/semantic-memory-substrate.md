@@ -25,3 +25,13 @@ TF-IDF cosine similarity scores ~0.0 for "finish by Friday" vs "deadline is Mond
 
 ## Vendored library approach
 Both Cognee and Mem0 are vendored as self-contained Python modules under `src/vendors/`, not pip dependencies. This avoids adding heavy transitive deps (neo4j, qdrant, etc.) while giving full control. The trimmed implementations cover only KG store + TF-IDF query + entity extraction (Cognee) and add/search/get_all/delete + local-file fallback (Mem0).
+
+## KnowledgeGraph lock must be reentrant
+`src/vendors/cognee/graph.py` module-level `_LOCK` must be a `threading.RLock`, not a plain `Lock`. `add_edge()` calls `add_node()` for missing endpoints **while already holding the lock**, so a non-reentrant lock deadlocks.
+
+**Why:** ordinary prose often extracts relations whose endpoint entities aren't yet nodes (e.g. extractor returns relations but 0 entities). That path silently HANGS `write_claim()` / any KG ingest — not an error, a full deadlock.
+
+**How to apply:** keep `_LOCK = threading.RLock()`. If adding new public KG methods that take `_LOCK`, never assume the lock is free — internal helpers may already hold it.
+
+## Hermetic memory tests
+Set `COGNEE_DATA_DIR` and `MEM0_DATA_DIR` to a temp dir and pop `MEM0_API_KEY` **before importing** any `src.memory.*` / `src.vendors.cognee/mem0` module — those bind data-file paths at import time. See `tests/test_semantic_memory.py`. Cross-session recall is tested by writing with one `MemorySubstrate()`, dropping it, and recalling from a fresh instance (restores cache from the persisted KG JSON).
