@@ -176,6 +176,84 @@ def filter_providers_by_exec_locus(provider_keys: list, domain_exec_locus_pin: s
     return [k for k in provider_keys if get_exec_locus(k) == domain_exec_locus_pin]
 
 
+def get_exec_locus_pin() -> Optional[str]:
+    """Return the EXEC_LOCUS_PIN env override (e.g. 'local'), or None when unset.
+
+    A blank value or the literal 'any' both mean "no pin" (all loci eligible).
+    The pin hard-restricts provider selection to a single exec_locus, which is
+    how an operator forces local-only (sovereign) execution independent of the
+    cloud_shift kill switch.
+    """
+    val = (os.environ.get("EXEC_LOCUS_PIN", "") or "").strip()
+    if not val or val.lower() == "any":
+        return None
+    return val
+
+
+def provider_passes_jurisdiction(
+    locus: str,
+    exec_locus_pin: Optional[str],
+    cloud_shift_active: bool,
+) -> bool:
+    """Single source of truth for whether one provider survives the jurisdiction.
+
+    ``locus`` is the provider's exec_locus (from config/providers.toml). The two
+    gates, in order:
+      1. cloud_shift kill switch — when cloud egress is disabled, only local
+         (exec_locus=local) providers survive.
+      2. exec_locus pin — when pinned to a concrete locus, only providers whose
+         exec_locus matches survive ('local' matches exec_locus=local providers).
+
+    Both the live swarm (MultiProviderLLM) and permitted_provider_keys() route
+    through this predicate so the tested behaviour is exactly the served one.
+    """
+    is_local = locus == "local"
+    # Kill switch: no cloud egress -> only local providers survive.
+    if not cloud_shift_active and not is_local:
+        return False
+    # exec_locus pin: when pinned, only matching providers survive.
+    if exec_locus_pin not in ("any", "", None):
+        if exec_locus_pin == "local":
+            return is_local
+        return locus == exec_locus_pin
+    return True
+
+
+def permitted_provider_keys(
+    provider_keys: Optional[list] = None,
+    exec_locus_pin: Optional[str] = None,
+    cloud_shift_active: Optional[bool] = None,
+) -> list:
+    """Return the subset of provider keys permitted under the current jurisdiction.
+
+    With no arguments this reflects the live environment:
+      * ``provider_keys`` defaults to the LLM providers enabled in env_1
+        (config/providers.toml, in declared order).
+      * ``exec_locus_pin`` defaults to the EXEC_LOCUS_PIN env override.
+      * ``cloud_shift_active`` defaults to get_cloud_shift() (CLOUD_SHIFT_ENABLED
+        env / agents_home).
+
+    The result is the local_degraded safety net: when cloud_shift is off or the
+    locus is pinned to 'local', only the local providers (Ollama/MLX) remain.
+    """
+    if provider_keys is None:
+        try:
+            from src.providers.config import llm_enabled_keys
+            provider_keys = llm_enabled_keys()
+        except Exception as e:
+            logger.debug("permitted_provider_keys: could not load enabled keys (%s).", e)
+            provider_keys = []
+    if exec_locus_pin is None:
+        exec_locus_pin = get_exec_locus_pin()
+    if cloud_shift_active is None:
+        cloud_shift_active = get_cloud_shift()
+    return [
+        k
+        for k in provider_keys
+        if provider_passes_jurisdiction(get_exec_locus(k), exec_locus_pin, cloud_shift_active)
+    ]
+
+
 def _probe_local_endpoint(base_url: str, timeout: float = 0.5) -> bool:
     """Thin wrapper around the adapter TCP probe for use outside adapter instances."""
     import socket

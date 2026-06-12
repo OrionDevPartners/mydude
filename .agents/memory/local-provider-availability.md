@@ -18,10 +18,20 @@ fast TCP socket probe of its base_url host:port. Down server => not available.
 Ollama/MLX running) makes every task waste retries on connection errors.
 
 **Routing:** the swarm filters adapters through
-`src.swarm.jurisdiction.permitted_provider_keys()`:
+`src.swarm.jurisdiction.permitted_provider_keys()` — the single shared seam
+(`MultiProviderLLM._available_adapters` AND the tests both call it; per-provider
+predicate is `provider_passes_jurisdiction()`):
 - `EXEC_LOCUS_PIN` env (e.g. `local`) hard-restricts to matching exec_locus
 - `cloud_shift=false` (CLOUD_SHIFT_ENABLED env or agents_home) restricts to `local`
 - otherwise all providers allowed.
+
+**Gap (2026-06):** EXEC_LOCUS_PIN env is only honored on
+`permitted_provider_keys()`'s *default-arg* path. Live orchestrated runs call
+`apply_jurisdiction()` with the exec_locus from `jurisdiction_metadata()`, which
+derives it from cloud_shift only and NEVER reads EXEC_LOCUS_PIN — so setting
+EXEC_LOCUS_PIN=local does not yet force local on an actual task run (only
+cloud_shift=false does).
+
 The infra router (infra/mydude/routing/jurisdiction.py) `_local_provider_candidates()`
 reads the same config local providers for the local_degraded tier when there's no
 policy DB, so it degrades to local instead of refusing.

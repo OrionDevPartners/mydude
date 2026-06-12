@@ -93,21 +93,23 @@ class MultiProviderLLM:
         self.cloud_shift_active = bool(cloud_shift_active)
 
     def _passes_jurisdiction(self, adapter) -> bool:
-        from src.swarm.jurisdiction import get_exec_locus
-        locus = get_exec_locus(adapter.key)
-        is_local = locus == "local"
-        # Kill switch: no cloud egress -> only local providers survive.
-        if not self.cloud_shift_active and not is_local:
-            return False
-        # exec_locus pin: when pinned, only matching providers survive.
-        if self.exec_locus_pin not in ("any", "", None):
-            if self.exec_locus_pin == "local":
-                return is_local
-            return locus == self.exec_locus_pin
-        return True
+        from src.swarm.jurisdiction import get_exec_locus, provider_passes_jurisdiction
+        return provider_passes_jurisdiction(
+            get_exec_locus(adapter.key), self.exec_locus_pin, self.cloud_shift_active
+        )
 
     def _available_adapters(self):
-        return [a for a in self.adapters if a.is_available() and self._passes_jurisdiction(a)]
+        # permitted_provider_keys() is the single jurisdiction seam shared with
+        # the tests, so the served filtering is exactly the verified one.
+        from src.swarm.jurisdiction import permitted_provider_keys
+        allowed = set(
+            permitted_provider_keys(
+                provider_keys=[a.key for a in self.adapters],
+                exec_locus_pin=self.exec_locus_pin,
+                cloud_shift_active=self.cloud_shift_active,
+            )
+        )
+        return [a for a in self.adapters if a.is_available() and a.key in allowed]
 
     def effective_routing(self):
         """Return (fallback_tier, exec_locus, outcome) for the current state.
