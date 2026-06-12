@@ -402,13 +402,31 @@ async def api_run_task(
 
         elapsed_ms = int((time.time() - start_time) * 1000)
         result_text = json.dumps(result, indent=2, default=str)
+        # Normalize the orchestrator's structured output into the compact,
+        # display-ready shape the dashboard expects: compliance and
+        # hallucination_risk as 0..1 numbers, jurisdiction as a short string.
         scores = {}
-        if "COMPLIANCE_SCORES" in result:
-            scores["compliance"] = result["COMPLIANCE_SCORES"]
-        if "HALLUCINATION_RISK" in result:
-            scores["hallucination_risk"] = result["HALLUCINATION_RISK"]
-        if "JURISDICTION" in result:
-            scores["jurisdiction"] = result["JURISDICTION"]
+        cs_list = result.get("COMPLIANCE_SCORES")
+        if isinstance(cs_list, list) and cs_list:
+            cs_vals = [
+                c.get("score") for c in cs_list
+                if isinstance(c, dict) and isinstance(c.get("score"), (int, float))
+            ]
+            if cs_vals:
+                # Compliance scores are 0..100 ints; surface a 0..1 average.
+                scores["compliance"] = round(sum(cs_vals) / len(cs_vals) / 100.0, 3)
+        hr = result.get("HALLUCINATION_RISK")
+        if isinstance(hr, dict) and isinstance(hr.get("average"), (int, float)):
+            scores["hallucination_risk"] = round(float(hr["average"]), 3)
+        elif isinstance(hr, (int, float)):
+            scores["hallucination_risk"] = round(float(hr), 3)
+        jur = result.get("JURISDICTION")
+        if isinstance(jur, dict):
+            jur_parts = [str(jur.get(k)) for k in ("domain", "team") if jur.get(k)]
+            if jur_parts:
+                scores["jurisdiction"] = " \u00b7 ".join(jur_parts)
+        elif isinstance(jur, str) and jur.strip():
+            scores["jurisdiction"] = jur.strip()
         task_run.result = result_text
         task_run.status = "completed"
         task_run.execution_time_ms = elapsed_ms

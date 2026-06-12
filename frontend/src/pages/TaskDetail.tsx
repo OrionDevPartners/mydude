@@ -101,7 +101,7 @@ export function TaskDetail() {
           timestamp={task.execution_time_ms ? fmtMs(task.execution_time_ms) : undefined}
           badge={<span className={`badge ${statusBadge(task.status)}`}>{task.status}</span>}
         >
-          <div style={{ lineHeight: 1.75 }}>
+          <div style={{ lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>
             {mainText ?? (task.result ?? '(no output)')}
           </div>
 

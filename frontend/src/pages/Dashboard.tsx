@@ -68,7 +68,7 @@ function ResultPanel({ task, prompt }: { task: Task; prompt: string }) {
 
       {/* Main AI response */}
       <AssistantMessage timestamp={ts} badge={statusEl}>
-        <div style={{ lineHeight: 1.75 }}>
+        <div style={{ lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>
           {mainText ?? fallbackText}
         </div>
 

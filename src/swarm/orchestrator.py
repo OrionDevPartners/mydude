@@ -454,12 +454,41 @@ class WaveOrchestrator:
         except Exception as e:
             logger.warning("Effective routing resolution failed: %s", e)
 
+        syn_facts = clamp_list(handoff.facts, 10)
+        syn_decisions = clamp_list(handoff.decisions, 10)
+        syn_tasks = clamp_list(handoff.tasks, 12)
+        syn_risks = clamp_list(handoff.risks, 6)
+
+        def _bullets(items: List[str]) -> str:
+            return "\n".join(f"\u2022 {str(x).strip()}" for x in items if str(x).strip())
+
+        syn_sections: List[str] = []
+        if handoff.goal:
+            syn_sections.append(f"Goal: {handoff.goal}")
+        if syn_facts:
+            syn_sections.append("Key findings:\n" + _bullets(syn_facts))
+        if syn_decisions:
+            syn_sections.append("Decisions:\n" + _bullets(syn_decisions))
+        if syn_tasks:
+            syn_sections.append("Next steps:\n" + _bullets(syn_tasks))
+        if syn_risks:
+            syn_sections.append("Risks:\n" + _bullets(syn_risks))
+        if aborted:
+            syn_sections.append(
+                "Note: the pipeline halted early after the hallucination monitor "
+                "flagged repeated CRITICAL risk scores."
+            )
+        synthesis_text = "\n\n".join(syn_sections) or (
+            "The governed swarm completed but produced no structured findings for this prompt."
+        )
+
         final = {
+            "SYNTHESIS": synthesis_text,
             "GOAL": handoff.goal,
-            "FACTS": clamp_list(handoff.facts, 10),
-            "DECISIONS": clamp_list(handoff.decisions, 10),
-            "NEXT_TASKS": clamp_list(handoff.tasks, 12),
-            "RISKS": clamp_list(handoff.risks, 6),
+            "FACTS": syn_facts,
+            "DECISIONS": syn_decisions,
+            "NEXT_TASKS": syn_tasks,
+            "RISKS": syn_risks,
             "NEXT_NEEDS": clamp_list(handoff.next, 10),
             "CAPABILITY_LOG": [
                 {"capability": c, "params": p, "output": o[:300]}
