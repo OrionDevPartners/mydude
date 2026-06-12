@@ -10,6 +10,7 @@
 - [Local LLM provider availability](local-provider-availability.md) — Ollama/MLX stay enabled but gate availability on a TCP probe; cloud_shift/EXEC_LOCUS_PIN route to local.
 - [Semantic memory substrate](semantic-memory-substrate.md) — vendored Cognee/Mem0 wiring, route conflict pattern, and temporal contradiction gate fix.
 - [SPA vs Jinja](spa-vs-jinja.md) — live UI is the React SPA + /api router; Jinja templates/routes are legacy; dashboard features need api.ts + page + SPA rebuild.
+- [Web security test harness](web-security-test-harness.md) — test auth/abuse guards via /api with a minted cookie + no-startup TestClient; reset shared limiters; no DB needed.
 - [Outbound write endpoints](outbound-write-endpoints.md) — async endpoints with blocking outbound calls must use asyncio.to_thread; gated confirm fns then need a FOR UPDATE row lock.
 - [DevGuard broker wiring](devguard-broker-wiring.md) — dev-gated dedup alarm into live async broker + SentinelEvent inbox: gate pre-check before heavy import, fire-and-forget off hot path, name-registry not pseudo-units.
 - [DuckDB array-insert perf](duckdb-array-insert-perf.md) — row-by-row inserts into a FLOAT[N] vector column are ~0.5s/row (hang); bulk via pyarrow Arrow table (~1000x).
