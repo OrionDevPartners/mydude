@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from src.database import SessionLocal
 from src.models import ApiKey, CapabilityAuditLog
 from src.web.auth import require_auth
-from src.web.crypto import encrypt_value
+from src.web.crypto import encrypt_value, encryption_key_is_persistent
 from src.web.templating import templates
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,10 @@ _TRUTHY = ("1", "true", "yes", "on")
 
 def _flag(name: str) -> bool:
     return os.environ.get(name, "").lower() in _TRUTHY
+
+
+def _encryption_persistent() -> bool:
+    return encryption_key_is_persistent()
 
 
 def _broker():
@@ -120,6 +124,7 @@ def _context(request, result=None, result_kind=None):
         "result": result,
         "result_kind": result_kind,
         "audit": audit,
+        "encryption_persistent": _encryption_persistent(),
     }
 
 

@@ -36,6 +36,15 @@ export function Capabilities() {
       <PageHeader title="Capabilities Console" subtitle="Manage browser, SSH and email automation bridges" />
       {msg && <Alert type="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {testErr && <Alert type="error" onClose={() => setTestErr(null)}>{testErr}</Alert>}
+      {data && !data.encryption_persistent && (
+        <Alert type="error">
+          <strong>ENCRYPTION_KEY is not set.</strong> Saved credentials (Browserbase
+          keys, SSH bridge config) are encrypted with a temporary key generated for
+          this session only and will become undecryptable after a restart. Set{' '}
+          <code>ENCRYPTION_KEY</code> as a persistent deployment secret to keep them
+          across restarts.
+        </Alert>
+      )}
 
       <Tabs tabs={['Browser', 'SSH', 'Email', 'Audit']} active={tab} onChange={setTab} />
 

@@ -67,6 +67,17 @@ export function Keys() {
       {msg && <Alert type="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {(err || error) && <Alert type="error" onClose={() => setErr(null)}>{err || error}</Alert>}
 
+      {/* Encryption key persistence warning */}
+      {data && !data.encryption_persistent && (
+        <Alert type="error">
+          <AlertTriangle size={14} /> <strong>ENCRYPTION_KEY is not set.</strong> The
+          vault is using a temporary key generated for this session only — every
+          restart creates a new key, which makes previously saved credentials
+          undecryptable. Set <code>ENCRYPTION_KEY</code> as a persistent deployment
+          secret to keep your saved keys across restarts.
+        </Alert>
+      )}
+
       {/* Reminders */}
       {data?.reminders?.map((r, i) => (
         <Alert key={i} type={r.level === 'danger' ? 'error' : 'warn'}>

@@ -507,7 +507,7 @@ export interface ApiKey {
   last_used_at: string | null; created_at: string;
 }
 export interface ServiceEntry { slug: string; name: string; category: string; env_var?: string; key_url?: string; signup_url?: string; steps?: string[]; saved: boolean }
-export interface KeysData { keys: ApiKey[]; catalog: ServiceEntry[]; categories: string[]; used_categories: string[]; reminders: { level: string; text: string }[]; total_count: number }
+export interface KeysData { keys: ApiKey[]; catalog: ServiceEntry[]; categories: string[]; used_categories: string[]; reminders: { level: string; text: string }[]; total_count: number; encryption_persistent: boolean }
 export interface AddKeyPayload { provider: string; label?: string; api_key: string; category?: string; env_var?: string; notes?: string; expires_at?: string; rotation_days?: string }
 export interface AuditEntry { provider: string; label: string; action: string; actor: string | null; detail: string; created_at: string }
 export interface DirectoryData { grouped: { category: string; services: ServiceEntry[] }[] }
@@ -536,7 +536,7 @@ export interface LocalModelsData {
   providers: LocalProvider[]; reachable_count: number; total_count: number;
   registry: Record<string, unknown>[]; registry_path: string; registry_exists: boolean;
 }
-export interface CapabilitiesData { browser_enabled: boolean; ssh_enabled: boolean; email_enabled: boolean; browser_backends: unknown[]; ssh: SshStatus; email: EmailStatus; browser_domains: string[]; ssh_commands: string[]; audit: CapabilityAudit[] }
+export interface CapabilitiesData { browser_enabled: boolean; ssh_enabled: boolean; email_enabled: boolean; browser_backends: unknown[]; ssh: SshStatus; email: EmailStatus; browser_domains: string[]; ssh_commands: string[]; audit: CapabilityAudit[]; encryption_persistent: boolean }
 export interface SshStatus { configured: boolean; host: string; user: string; port: number; auth: string; host_verified: boolean }
 export interface EmailStatus { configured: boolean; host: string; user: string; port: number; mailbox: string; ssl: boolean }
 export interface CapabilityAudit { capability: string; target: string; backend: string; status: string; detail: string; source: string; created_at: string }

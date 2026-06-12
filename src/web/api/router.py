@@ -535,6 +535,7 @@ async def api_keys(request: Request, auth=Depends(require_auth)):
     finally:
         db.close()
 
+    from src.web.crypto import encryption_key_is_persistent
     resp = JSONResponse({
         "keys": key_list,
         "catalog": SERVICE_CATALOG,
@@ -542,6 +543,7 @@ async def api_keys(request: Request, auth=Depends(require_auth)):
         "used_categories": used_categories,
         "reminders": reminders,
         "total_count": len(all_keys),
+        "encryption_persistent": encryption_key_is_persistent(),
     })
     if revealed_value is not None:
         resp.headers["Cache-Control"] = "no-store"
