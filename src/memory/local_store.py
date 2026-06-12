@@ -105,13 +105,7 @@ class LocalMemoryAdapter(MemoryAdapterBase):
             cached = list(self._local_cache.values())
             if category:
                 cached = [e for e in cached if e.category == category]
-            q_words = set(query.lower().split())
-            scored = []
-            for e in cached:
-                e_words = set(e.content.lower().split())
-                overlap = len(q_words & e_words)
-                if overlap > 0:
-                    scored.append((e, overlap * e.confidence * e.decay))
+            scored = self._rank_cached(query, cached)
             scored.sort(key=lambda x: x[1], reverse=True)
             seen_ids = {e.memory_id for e in results}
             for e, _ in scored:
@@ -123,6 +117,36 @@ class LocalMemoryAdapter(MemoryAdapterBase):
         for e in results:
             e.access_count += 1
         return results[:top_k]
+
+    def _rank_cached(self, query: str, cached: List[MemoryEntry]):
+        """Score cached entries against *query*, weighted by confidence·decay.
+
+        Prefers real vector-embedding cosine (genuinely semantic — recalls
+        paraphrases that share no words); falls back to lexical word-overlap
+        when no embedding backend is available.
+        """
+        if not cached:
+            return []
+        try:
+            from src.providers.embeddings import rank_scores
+
+            sims = rank_scores(query, [e.content for e in cached])
+        except Exception:
+            sims = None
+
+        scored = []
+        if sims is not None:
+            for e, sim in zip(cached, sims):
+                if sim > 0:
+                    scored.append((e, sim * e.confidence * e.decay))
+        else:
+            q_words = set(query.lower().split())
+            for e in cached:
+                e_words = set(e.content.lower().split())
+                overlap = len(q_words & e_words)
+                if overlap > 0:
+                    scored.append((e, overlap * e.confidence * e.decay))
+        return scored
 
     def find_contradictions(self, claim: str,
                             threshold: float = 0.25) -> List[Dict]:

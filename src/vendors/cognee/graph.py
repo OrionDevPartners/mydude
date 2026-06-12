@@ -181,19 +181,47 @@ class KnowledgeGraph:
 
     def semantic_search(self, query: str, top_k: int = 5,
                         min_score: float = 0.05) -> List[Tuple[Node, float]]:
-        """Return the top_k nodes most semantically similar to *query*."""
-        corpus = [n.label + " " + n.entity_type + " " + n.source
-                  for n in self._nodes.values()]
-        q_vec = _tfidf_vector(query, corpus)
+        """Return the top_k nodes most semantically similar to *query*.
+
+        Uses real vector embeddings when an embedding backend is available
+        (genuinely semantic recall — catches paraphrases that share no terms),
+        and transparently falls back to lexical TF-IDF cosine otherwise.
+        """
+        nodes = list(self._nodes.values())
+        if not nodes:
+            return []
+        texts = [n.label + " " + n.entity_type + " " + n.source for n in nodes]
+
+        emb_scores = self._embedding_scores(query, texts)
         scored: List[Tuple[Node, float]] = []
-        for node in self._nodes.values():
-            text = node.label + " " + node.entity_type + " " + node.source
-            n_vec = _tfidf_vector(text, corpus)
-            score = _cosine(q_vec, n_vec) * node.decay * node.confidence
-            if score >= min_score:
-                scored.append((node, round(score, 4)))
+        if emb_scores is not None:
+            for node, sim in zip(nodes, emb_scores):
+                score = sim * node.decay * node.confidence
+                if score >= min_score:
+                    scored.append((node, round(score, 4)))
+        else:
+            q_vec = _tfidf_vector(query, texts)
+            for node, text in zip(nodes, texts):
+                n_vec = _tfidf_vector(text, texts)
+                score = _cosine(q_vec, n_vec) * node.decay * node.confidence
+                if score >= min_score:
+                    scored.append((node, round(score, 4)))
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:top_k]
+
+    @staticmethod
+    def _embedding_scores(query: str, texts: List[str]) -> Optional[List[float]]:
+        """Cosine similarity of *query* against *texts* using vector embeddings.
+
+        Returns None (never raises) when no embedding backend is available, so
+        :meth:`semantic_search` falls back to TF-IDF.
+        """
+        try:
+            from src.providers.embeddings import rank_scores
+
+            return rank_scores(query, texts)
+        except Exception:
+            return None
 
     def contradiction_search(self, claim: str,
                              negation_words: Optional[Set[str]] = None,

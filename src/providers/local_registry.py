@@ -94,6 +94,27 @@ def local_models_for_provider(provider: str) -> List[dict]:
     return [m for m in load_local_models() if m.get("provider") == provider]
 
 
+def embedding_models() -> List[dict]:
+    """All registered models tagged as embedding models (``kind: embedding``).
+
+    The embedding capability (src/providers/embeddings.py) reads these to find a
+    local-first embedding backend without any provider being hardwired. An entry
+    looks like::
+
+        - model_id: nomic-embed-text
+          provider: ollama
+          kind: embedding
+          # optional: base_url, api_key_env, exec_locus
+
+    Returns ``[]`` when none are registered, so embeddings degrade to TF-IDF.
+    """
+    return [
+        m
+        for m in load_local_models()
+        if str(m.get("kind", "")).lower() == "embedding"
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Writers — let operators edit the registry from the dashboard.
 #

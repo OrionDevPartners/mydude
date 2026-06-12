@@ -125,6 +125,22 @@ def _tfidf_cosine(text_a: str, text_b: str, corpus: list) -> float:
         return 0.0
 
 
+def _embedding_cosine(text_a: str, text_b: str) -> Optional[float]:
+    """Real vector-embedding cosine similarity, or None when unavailable.
+
+    This is the genuinely semantic layer: two claims worded differently but
+    meaning the same ("verify identities" / "authentication is required") score
+    high here while TF-IDF scores ~0. Returns None (never raises) when no
+    embedding backend is configured so callers fall back to TF-IDF.
+    """
+    try:
+        from src.providers.embeddings import similarity
+
+        return similarity(text_a, text_b)
+    except Exception:
+        return None
+
+
 def _temporal_conflict(text_a: str, text_b: str) -> bool:
     """
     Detect deadline/temporal conflicts that Jaccard misses entirely.
@@ -378,14 +394,18 @@ class ConsistencyChecker:
             for fact in self._verified_facts:
                 fact_keywords = fact.get("keywords", set())
 
-                # Layer 1: TF-IDF cosine (primary semantic similarity)
+                # Layer 0: real vector embeddings (primary, genuinely semantic).
+                # None when no backend is configured -> fall through to TF-IDF.
+                emb_sim = _embedding_cosine(new_claim_text, fact["text"])
+
+                # Layer 1: TF-IDF cosine (lexical semantic similarity)
                 tfidf_sim = _tfidf_cosine(new_claim_text, fact["text"], corpus)
 
                 # Layer 2: Jaccard (kept as lightweight fallback)
                 new_keywords = _extract_keywords(new_claim_text)
                 jaccard_sim = _jaccard_similarity(new_keywords, fact_keywords)
 
-                sim = max(tfidf_sim, jaccard_sim)
+                sim = max(emb_sim if emb_sim is not None else 0.0, tfidf_sim, jaccard_sim)
                 max_similarity = max(max_similarity, sim)
 
                 # Contradiction: high topic overlap + negation, OR temporal conflict
@@ -462,10 +482,13 @@ class ConsistencyChecker:
             corpus = [f["text"] for f in self._verified_facts]
             scored = []
             for fact in self._verified_facts:
-                # Use TF-IDF cosine for ranked retrieval (replaces Jaccard ranking)
-                sim = _tfidf_cosine(query, fact["text"], corpus)
+                # Primary: real vector-embedding cosine (genuinely semantic).
+                sim = _embedding_cosine(query, fact["text"])
+                if sim is None:
+                    # Fallback: TF-IDF cosine for ranked retrieval
+                    sim = _tfidf_cosine(query, fact["text"], corpus)
                 if sim == 0.0:
-                    # Fallback: Jaccard for very short texts
+                    # Last resort: Jaccard for very short texts
                     q_kw = _extract_keywords(query)
                     sim = _jaccard_similarity(q_kw, fact.get("keywords", set()))
                 scored.append((sim, fact))

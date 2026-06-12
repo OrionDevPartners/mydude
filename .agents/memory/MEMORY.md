@@ -9,6 +9,7 @@
 - [Jurisdiction routing wiring](jurisdiction-routing.md) — how exec_locus pins + cloud_shift kill switch filter the live provider swarm and record fallback tiers.
 - [Local LLM provider availability](local-provider-availability.md) — Ollama/MLX stay enabled but gate availability on a TCP probe; cloud_shift/EXEC_LOCUS_PIN route to local.
 - [Semantic memory substrate](semantic-memory-substrate.md) — vendored Cognee/Mem0 wiring, route conflict pattern, and temporal contradiction gate fix.
+- [Embedding semantic layer](embedding-semantic-layer.md) — optional cloud_shift-gated vector backend over TF-IDF; embeddings raise the similarity gate but don't alone create contradictions.
 - [SPA vs Jinja](spa-vs-jinja.md) — live UI is the React SPA + /api router; Jinja templates/routes are legacy; dashboard features need api.ts + page + SPA rebuild.
 - [Web security test harness](web-security-test-harness.md) — test auth/abuse guards via /api with a minted cookie + no-startup TestClient; reset shared limiters; no DB needed.
 - [Outbound write endpoints](outbound-write-endpoints.md) — async endpoints with blocking outbound calls must use asyncio.to_thread; gated confirm fns then need a FOR UPDATE row lock.
