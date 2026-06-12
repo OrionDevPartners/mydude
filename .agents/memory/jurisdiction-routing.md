@@ -13,10 +13,17 @@ jurisdiction_metadata() once at the start of run() and pins the swarm via
 LLM.apply_jurisdiction(). exec_locus per provider comes from config/providers.toml
 ([providers.*].exec_locus), NOT a DB.
 
-**Kill switch:** cloud_shift off (CLOUD_SHIFT_ENABLED=false or agents_home DB) drops
-every non-local provider. There are currently NO local-exec providers declared, so
-the ladder correctly resolves to refuse (tier 5) until one is added — that is honest
-behavior, not a bug.
+**Kill switch:** cloud_shift off drops every non-local provider. Operators flip it
+from /governance (Jurisdiction tab → POST /api/governance/cloud-shift, auth-gated,
+audited via AuditLog command="cloud_shift_toggle"). set_cloud_shift() writes to the
+agents_home DB (CloudShiftKillSwitch.set_enabled) when PG_AGENTS_HOME_DSN is set,
+else persists an app_settings override (key cloud_shift_override "true"/"false").
+Resolution precedence in _resolve_cloud_shift(): agents_home DB (if DSN) → app_settings
+override → CLOUD_SHIFT_ENABLED env default → true. **Why:** the operator's deliberate
+runtime action must beat the static env default, or the incident kill switch is a lie.
+The toggle invalidates the 5s cache so the badge updates immediately. There are
+currently NO local-exec providers declared, so disabling correctly resolves to refuse
+(tier 5) until one is added — that is honest behavior, not a bug.
 
 **Gotcha:** jurisdiction_metadata() prefers the agents_home router when its module
 imports successfully, even with no PG_AGENTS_HOME_DSN — in that case decide() returns

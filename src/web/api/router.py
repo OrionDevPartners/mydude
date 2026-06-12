@@ -870,6 +870,56 @@ async def api_ack_alert(alert_id: int, _=Depends(require_auth)):
     return {"ok": True}
 
 
+@router.post("/governance/cloud-shift")
+async def api_set_cloud_shift(
+    enabled: str = Form(""),
+    reason: str = Form(""),
+    auth=Depends(require_auth),
+):
+    """Flip the cloud_shift kill switch from the dashboard (auth-gated + audited).
+
+    Persists to the agents_home store when a DSN is configured, otherwise to a
+    dashboard override the runtime reads. Disabling it drops every cloud
+    provider so subsequent task runs fall through to local_degraded/refuse.
+    """
+    from src.swarm.jurisdiction import set_cloud_shift
+    on = enabled.strip().lower() in ("1", "true", "yes", "on")
+    reason = reason.strip()[:500]
+    updated_by = auth.get("username") or "operator"
+    try:
+        result = set_cloud_shift(on, reason=reason, updated_by=updated_by)
+    except Exception as e:
+        logger.warning("cloud_shift toggle failed: %s", e)
+        raise HTTPException(status_code=500, detail="Could not update the cloud_shift kill switch.")
+
+    effective = bool(result.get("effective"))
+    try:
+        from src.database import SessionLocal
+        from src.models import AuditLog
+        db = SessionLocal()
+        try:
+            db.add(AuditLog(
+                user_id=auth.get("uid") or 0,
+                command="cloud_shift_toggle",
+                args=json.dumps({"requested": on, "reason": reason, "source": result.get("source")}),
+                status="ok",
+                output_preview="cloud_shift=%s" % effective,
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.warning("cloud_shift audit log write failed", exc_info=True)
+
+    payload = {"ok": True, "cloud_shift_active": effective, "source": result.get("source")}
+    if effective != on:
+        payload["warning"] = (
+            "An environment-level override is in force; the kill switch reads %s."
+            % ("enabled" if effective else "disabled")
+        )
+    return payload
+
+
 @router.get("/provenance")
 async def api_provenance(request: Request, _=Depends(require_auth)):
     from src.database import SessionLocal

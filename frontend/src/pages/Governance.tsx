@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getGovernance, ackAlert } from '@/lib/api'
+import { getGovernance, ackAlert, setCloudShift } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, PageHeader, Empty, Badge } from '@/components/ui'
 import { fmtDate } from '@/lib/utils'
@@ -8,10 +8,33 @@ import { ShieldCheck, Bell, BarChart2, Server } from 'lucide-react'
 export function Governance() {
   const [tab, setTab] = useState('Alerts')
   const { data, loading, error, refetch } = useApi(getGovernance, [])
+  const [shiftBusy, setShiftBusy] = useState(false)
+  const [shiftMsg, setShiftMsg] = useState<string | null>(null)
+  const [shiftErr, setShiftErr] = useState<string | null>(null)
 
   async function handleAck(id: number) {
     await ackAlert(id)
     refetch()
+  }
+
+  async function handleCloudShift(enable: boolean) {
+    if (!enable && !window.confirm(
+      'Disable cloud egress? All cloud providers will be dropped and task runs will fall through to local-only (degraded) or refuse.'
+    )) return
+    setShiftBusy(true)
+    setShiftMsg(null)
+    setShiftErr(null)
+    try {
+      const res = await setCloudShift(enable)
+      setShiftMsg(res.warning || (res.cloud_shift_active
+        ? 'Cloud egress enabled.'
+        : 'Cloud egress disabled — running local-only.'))
+      await refetch()
+    } catch (e) {
+      setShiftErr(e instanceof Error ? e.message : 'Could not update the kill switch.')
+    } finally {
+      setShiftBusy(false)
+    }
   }
 
   if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}><Spinner /></div>
@@ -125,7 +148,22 @@ export function Governance() {
               <span className={`badge ${data.cloud_shift_active ? 'badge-green' : 'badge-gray'}`} style={{ marginLeft: 'auto' }}>
                 {data.cloud_shift_active ? 'enabled' : 'disabled'}
               </span>
+              {data.cloud_shift_active ? (
+                <button className="btn btn-danger btn-sm" disabled={shiftBusy} onClick={() => handleCloudShift(false)}>
+                  {shiftBusy ? 'Working…' : 'Disable cloud egress'}
+                </button>
+              ) : (
+                <button className="btn btn-primary btn-sm" disabled={shiftBusy} onClick={() => handleCloudShift(true)}>
+                  {shiftBusy ? 'Working…' : 'Re-enable cloud egress'}
+                </button>
+              )}
             </div>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>
+              Disabling drops every cloud provider during an incident — task runs fall through to local-only
+              (degraded) or refuse, with no redeploy required.
+            </p>
+            {shiftMsg && <div style={{ marginTop: 12 }}><Alert type="info">{shiftMsg}</Alert></div>}
+            {shiftErr && <div style={{ marginTop: 12 }}><Alert type="error">{shiftErr}</Alert></div>}
           </div>
           {data.exec_locus_dist.length === 0
             ? <Empty message="No exec locus data." icon={<Server size={32} />} />

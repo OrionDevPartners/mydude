@@ -31,8 +31,64 @@ _CLOUD_SHIFT_TTL = 5.0
 _cloud_shift_cache: Optional[bool] = None
 _cloud_shift_ts: float = 0.0
 
+# app_settings key holding the operator override persisted from the dashboard
+# when no agents_home DSN is configured. Value is the literal "true"/"false".
+CLOUD_SHIFT_OVERRIDE_KEY = "cloud_shift_override"
+
+
+def _agents_home_dsn() -> str:
+    return os.environ.get("PG_AGENTS_HOME_DSN", "")
+
+
+def _cloud_shift_kill_switch():
+    """Import and return a CloudShiftKillSwitch bound to the agents_home DSN.
+
+    Raises if the infra routing module cannot be imported so callers can decide
+    how to degrade.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "infra" / "mydude" / "routing"))
+    from jurisdiction import CloudShiftKillSwitch
+    return CloudShiftKillSwitch(dsn=_agents_home_dsn())
+
+
+def _read_override() -> Optional[bool]:
+    """Return the persisted dashboard override (True/False) or None if unset."""
+    try:
+        from src.web.settings_store import get_setting
+        raw = get_setting(CLOUD_SHIFT_OVERRIDE_KEY)
+    except Exception as e:
+        logger.debug("cloud_shift override read failed (%s); ignoring.", e)
+        return None
+    if raw is None:
+        return None
+    val = str(raw).strip().lower()
+    if val in ("false", "0", "no", "off"):
+        return False
+    if val in ("true", "1", "yes", "on"):
+        return True
+    return None
+
 
 def _resolve_cloud_shift() -> bool:
+    # 1. agents_home DB is the authoritative shared store when a DSN is set.
+    #    set_cloud_shift() writes here via CloudShiftKillSwitch.set_enabled(),
+    #    so a dashboard toggle is reflected on the next read.
+    if _agents_home_dsn():
+        try:
+            return _cloud_shift_kill_switch().is_enabled()
+        except Exception as e:
+            logger.debug("agents_home cloud_shift query failed (%s); falling back.", e)
+
+    # 2. Operator override persisted from the dashboard (no-DSN path). This is a
+    #    deliberate runtime kill-switch action, so it wins over the static env
+    #    default below.
+    override = _read_override()
+    if override is not None:
+        return override
+
+    # 3. Static deploy-time default.
     env_override = os.environ.get("CLOUD_SHIFT_ENABLED", "").lower()
     if env_override in ("false", "0", "no", "off"):
         logger.info("cloud_shift disabled by CLOUD_SHIFT_ENABLED env var.")
@@ -40,22 +96,16 @@ def _resolve_cloud_shift() -> bool:
     if env_override in ("true", "1", "yes", "on"):
         return True
 
-    try:
-        import sys
-        from pathlib import Path
-        sys.path.insert(0, str(Path(__file__).parent.parent.parent / "infra" / "mydude" / "routing"))
-        from jurisdiction import CloudShiftKillSwitch
-        return CloudShiftKillSwitch().is_enabled()
-    except Exception as e:
-        logger.debug("agents_home cloud_shift query failed (%s); defaulting to enabled.", e)
-        return True
+    # 4. Default: cloud egress permitted.
+    return True
 
 
 def get_cloud_shift() -> bool:
     """Return True if cloud egress is permitted (cached for _CLOUD_SHIFT_TTL).
 
-    Reads from agents_home.routing.cloud_shift when configured; falls back to
-    the CLOUD_SHIFT_ENABLED env var (default: true).
+    Resolution order: agents_home.routing.cloud_shift (when a DSN is set) →
+    the persisted dashboard override in app_settings → the CLOUD_SHIFT_ENABLED
+    env var → default (true).
     """
     global _cloud_shift_cache, _cloud_shift_ts
     now = time.monotonic()
@@ -63,6 +113,42 @@ def get_cloud_shift() -> bool:
         _cloud_shift_cache = _resolve_cloud_shift()
         _cloud_shift_ts = now
     return _cloud_shift_cache
+
+
+def invalidate_cloud_shift_cache() -> None:
+    """Drop the cached cloud_shift value so the next read re-resolves it."""
+    global _cloud_shift_cache, _cloud_shift_ts
+    _cloud_shift_cache = None
+    _cloud_shift_ts = 0.0
+
+
+def set_cloud_shift(enabled: bool, reason: str = "", updated_by: str = "operator") -> dict:
+    """Flip the cloud_shift kill switch and persist it so the runtime reads it.
+
+    When a PG_AGENTS_HOME_DSN is configured the change is written to the shared
+    agents_home store via CloudShiftKillSwitch.set_enabled(); otherwise it is
+    persisted as a dashboard override in app_settings. The in-process cache is
+    invalidated so the new state takes effect (and is reported back) immediately.
+
+    Returns a dict: {"requested", "effective", "source"}. ``effective`` is the
+    re-resolved live value — if it differs from ``requested`` an env-level
+    override is in force and the caller should surface that to the operator.
+    """
+    if _agents_home_dsn():
+        _cloud_shift_kill_switch().set_enabled(enabled, reason=reason, updated_by=updated_by)
+        source = "agents_home"
+    else:
+        from src.web.settings_store import set_setting
+        set_setting(CLOUD_SHIFT_OVERRIDE_KEY, "true" if enabled else "false")
+        source = "app_settings"
+
+    invalidate_cloud_shift_cache()
+    effective = get_cloud_shift()
+    logger.info(
+        "cloud_shift set to %s by %s via %s (effective=%s): %s",
+        enabled, updated_by, source, effective, reason or "(no reason)",
+    )
+    return {"requested": enabled, "effective": effective, "source": source}
 
 
 def get_exec_locus(provider_key: str) -> str:

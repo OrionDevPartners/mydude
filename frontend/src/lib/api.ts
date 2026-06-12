@@ -132,6 +132,13 @@ export const getConnected = () => request<ConnectedData>('/connected')
 export const getGovernance = () => request<GovernanceData>('/governance')
 export const ackAlert = (id: number) =>
   request<{ ok: boolean }>(`/governance/alerts/${id}/ack`, { method: 'POST' })
+export const setCloudShift = (enabled: boolean, reason?: string) =>
+  request<{ ok: boolean; cloud_shift_active: boolean; source: string; warning?: string }>(
+    '/governance/cloud-shift', {
+      method: 'POST',
+      body: formBody({ enabled: enabled ? 'true' : 'false', reason: reason || '' }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
 export const getProvenance = (params?: { q?: string; page?: number }) => {
   const p = new URLSearchParams()
   if (params?.q) p.set('q', params.q)
