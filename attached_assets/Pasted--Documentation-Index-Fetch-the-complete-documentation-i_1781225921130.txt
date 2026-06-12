@@ -1,0 +1,70 @@
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.replit.com/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Agent Skills
+
+> Preserve patterns, conventions, and solutions across sessions with Agent Skills.
+
+<Frame>
+  <img src="https://mintcdn.com/replit/JdEkwxWZoS1i7-FA/images/replitai/agent-customization-skill-picker.png?fit=max&auto=format&n=JdEkwxWZoS1i7-FA&q=85&s=7b1ffab08e0bcc9e60313820781a7350" alt="The skill picker opened from the + button, showing the Workspace skills group at the top above Replit skills" width="1668" height="1170" data-path="images/replitai/agent-customization-skill-picker.png" />
+</Frame>
+
+## What is a Skill?
+
+A skill is a folder. Inside it lives a file called `SKILL.md` with the instructions Agent follows, plus any supporting files you want it to reference. Skills live in your project's `/.agents/skills` directory and conform to the [Agent Skills specification](https://agentskills.io/specification) — an open standard that works across agents.
+
+Agent sees the name and description of every installed Skill, but only loads the full content when relevant to the current task. This makes skills context-efficient: you can install many without degrading Agent's output.
+
+## Pre-defined Skills
+
+Replit ships with pre-defined skills available from the **Use a skill** picker in chat and from the new-project starting-point picker. These skills work in every project without installation. For the full catalog, partner skills, and how to install them, see the [Skills directory](/references/agent/skills-directory).
+
+To add a pre-defined skill, open the **Use a skill** picker from the chat input and select a skill, or simply ask Agent to load the skill.
+
+<Frame>
+  <img src="https://mintcdn.com/replit/nQRGtMutRjcAPCLI/images/replitai/use-a-skill-picker.png?fit=max&auto=format&n=nQRGtMutRjcAPCLI&q=85&s=e46988165e01bbc69d1f865fbd2f5288" alt="Use a skill picker in chat showing pre-defined skills" width="570" height="422" data-path="images/replitai/use-a-skill-picker.png" />
+</Frame>
+
+## Skill scope
+
+Skills can be scoped at different levels:
+
+| Scope               | Availability                            | Where it lives                                                                                            |
+| ------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **Project-level**   | Specific to one project                 | Versioned with your files in `/.agents/skills`                                                            |
+| **Workspace-level** | Available to everyone in your workspace | Managed centrally in Workspace Settings                                                                   |
+| **Enterprise**      | Company-wide standards                  | Included in [custom templates](/teams/custom-templates) and [design systems](/teams/custom-design-system) |
+
+For workspace-level skills, see [Agent Customization](/references/agent/agent-customization) to set up workspace skills and custom instructions for your team.
+
+## How Agent loads skills
+
+Agent reads the metadata (name and description) of every installed skill on every chat. The full body of a skill loads only when Agent determines the skill is relevant to the current task. This keeps skill content out of the context window until needed.
+
+Installed skills persist in your project across Agent sessions and can be committed to version control for team sharing.
+
+## Working with other AI coding tools
+
+<Accordion title="Import skills from other AI coding tools">
+  If you work across multiple AI coding tools, [rulesync](https://github.com/dyoshikawa/rulesync) has Replit support and helps you maintain consistent configurations.
+
+  You can import skills from other AI coding assistants:
+
+  ```bash theme={null}
+  npx rulesync init
+  npx rulesync import --targets claudecode --features skills
+  npx rulesync generate --targets replit --features skills
+  ```
+
+  This allows you to maintain a single set of skills that work across different development environments.
+</Accordion>
+
+## Next steps
+
+* [Agent Customization](/references/agent/agent-customization) — Make skills and custom instructions available across your whole workspace
+* [Skills directory](/references/agent/skills-directory) — Browse skills built by Replit and our partners
+* [Use Agent Skills](/build/use-agent-skills) — Hands-on guide for using skills in chat or installing them in a project
+* [Agent skills](/learn/agent-skills) — When and how to use skills effectively
+* [Agent Skills specification](https://agentskills.io/specification) — Open standard for writing skills
+* **Enterprise**: include skills in [custom templates](/teams/custom-templates) and [design systems](/teams/custom-design-system) for your organization
