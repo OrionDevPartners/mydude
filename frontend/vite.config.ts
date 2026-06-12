@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -25,9 +25,9 @@ export default defineConfig({
       },
     },
   },
-  base: '/static/spa/',
+  base: command === 'serve' ? '/' : '/static/spa/',
   build: {
     outDir: '../static/spa',
     emptyOutDir: true,
   },
-})
+}))
