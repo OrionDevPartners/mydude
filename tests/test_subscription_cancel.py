@@ -223,6 +223,9 @@ def test_do_cancel_never_clicks_keep_even_when_label_substring_matches():
 def test_do_cancel_will_not_accept_retention_offer_when_only_keep_controls():
     # When the only controls left keep you subscribed (no decline path), the
     # walker must NOT click any of them; it stops rather than staying subscribed.
+    # And because it clicked only the initiate step and never confirmed, it must
+    # report an HONEST needs-you status (not an unqualified success) so the user
+    # isn't told "cancelled" while the subscription is still active.
     page = _FakeCancelPage([
         [_Btn("Cancel membership")],
         [_Btn("Keep my plan"),
@@ -233,6 +236,33 @@ def test_do_cancel_will_not_accept_retention_offer_when_only_keep_controls():
     assert page.clicks == ["Cancel membership"], page.clicks
     for keep in ("Keep my plan", "Pause membership instead", "Get the discount"):
         assert keep not in page.clicks
+    assert not res.ok, "stalling behind a retention wall must not read as success"
+    assert res.error and "retention screen" in res.error.lower(), res.error
+    # The message must be classified as needs-user upstream (contains "yourself"),
+    # so the two-phase gate leaves the record cancel_pending for a retry/finish.
+    assert "yourself" in res.error.lower(), res.error
+
+
+def test_do_cancel_honest_when_only_keep_controls_after_progressing_steps():
+    # initiate -> a real decline step -> retention wall with ONLY keep controls.
+    # The walk progresses past one interstitial but then stalls with no decline
+    # path and no confirmation, so it must report the honest retention-stall
+    # status rather than a success just because it clicked controls earlier.
+    page = _FakeCancelPage([
+        [_Btn("Cancel membership")],
+        [_Btn("Keep my membership"),
+         _Btn("No thanks, continue to cancel")],
+        # Final retention wall: only keep/pause controls, no confirm, no decline.
+        [_Btn("Stay subscribed"),
+         _Btn("Pause membership instead")],
+    ])
+    res = asyncio.run(_do_cancel(page, None, "browserbase", 45000, 4000))
+    assert page.clicks == ["Cancel membership", "No thanks, continue to cancel"], page.clicks
+    assert not res.ok, res.error
+    assert res.error and "retention screen" in res.error.lower(), res.error
+    assert "isn't confirmed" in res.error.lower() or "not confirmed" in res.error.lower(), res.error
+    # The page text still records what was clicked so the user sees how far it got.
+    assert res.text and "Clicked:" in res.text, res.text
 
 
 def test_default_cancel_texts_cover_retention_decline_controls():
@@ -420,6 +450,25 @@ def test_confirm_cancel_blocked_keeps_pending():
     assert sub.status == "cancel_pending", "a blocked cancel must stay pending for retry"
 
 
+def test_confirm_cancel_retention_stall_keeps_pending():
+    # The browser walk stalled on a retention screen, so the capability returned
+    # a needs-you ("...did not complete...") output rather than "browser_cancel ok".
+    # The gate must leave the record cancel_pending (not cancelled) so the user
+    # can retry or finish by hand.
+    sub = _FakeSub(status="cancel_pending")
+    stall = ("browser_cancel did not complete: Stopped on a retention screen — "
+             "only 'keep / pause / stay subscribed' options were found, so the "
+             "cancellation isn't confirmed. The account page is shown so you can "
+             "finish the cancellation yourself.")
+    restore = _patch_manager(sub, _Res(allowed=True, output=stall))
+    try:
+        res = asyncio.run(mgr.confirm_cancel(1))
+    finally:
+        restore()
+    assert not res["ok"], res["message"]
+    assert sub.status == "cancel_pending", "a retention stall must stay pending for retry"
+
+
 def _run_all():
     tests = [
         test_do_cancel_walks_multi_step_button_flow,
@@ -428,6 +477,7 @@ def _run_all():
         test_do_cancel_declines_retention_interstitial,
         test_do_cancel_never_clicks_keep_even_when_label_substring_matches,
         test_do_cancel_will_not_accept_retention_offer_when_only_keep_controls,
+        test_do_cancel_honest_when_only_keep_controls_after_progressing_steps,
         test_default_cancel_texts_cover_retention_decline_controls,
         test_looks_like_keep_flags_retention_controls,
         test_default_cancel_texts_cover_known_providers,
@@ -435,6 +485,7 @@ def _run_all():
         test_request_cancel_surfaces_gate_even_when_login_blocked,
         test_request_then_confirm_cancels_on_success,
         test_confirm_cancel_blocked_keeps_pending,
+        test_confirm_cancel_retention_stall_keeps_pending,
     ]
     failed = 0
     for t in tests:

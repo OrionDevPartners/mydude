@@ -282,6 +282,36 @@ def _looks_like_keep(text):
     return any(k in t for k in RETENTION_KEEP_TEXTS)
 
 
+# Controls that actually CONFIRM the cancellation (the terminal step of a flow).
+# Used to decide whether a walk truly finished cancelling vs. merely clicked an
+# initiate/progress control before stalling on a retention wall. Kept as a
+# subset of the confirmation labels in DEFAULT_CANCEL_TEXTS.
+CONFIRM_CANCEL_TEXTS = [
+    "confirm cancellation",
+    "complete cancellation",
+    "finish cancellation",
+    "confirm cancel",
+    "yes, cancel",
+    "yes, deactivate",
+    "deactivate membership",
+    "end now",
+    "end my membership",
+    "end my benefits",
+]
+
+
+def _looks_like_confirm(text):
+    """True if a control's text reads as a terminal cancel-confirmation control.
+
+    Lets the walker tell "we actually confirmed the cancellation" apart from
+    "we only clicked an initiate/progress control and then stalled".
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return any(c in t for c in CONFIRM_CANCEL_TEXTS)
+
+
 async def _safe_text(el):
     """Best-effort visible text of a Playwright element handle / locator."""
     for attr in ("inner_text", "text_content"):
@@ -547,6 +577,36 @@ async def _click_progressing_control(page, texts):
     return None
 
 
+async def _has_visible_keep_control(page):
+    """True if the current page shows a visible retention/keep/pause/offer control.
+
+    Unlike :func:`_click_progressing_control` (which scans by *cancel* labels),
+    this scans by the retention/keep labels directly, so it detects a screen that
+    offers ONLY "keep / pause / stay subscribed / accept offer" controls — i.e. a
+    retention wall with no decline path. That distinguishes "stalled behind a
+    retention screen" from "no cancel control here at all".
+    """
+    finders = (
+        lambda label: page.get_by_role("button", name=label, exact=False),
+        lambda label: page.locator("a, button, [role=button]").filter(has_text=label),
+    )
+    for finder in finders:
+        for label in RETENTION_KEEP_TEXTS:
+            try:
+                loc = finder(label)
+                n = await loc.count()
+            except Exception:
+                continue
+            for i in range(n):
+                try:
+                    el = loc.nth(i)
+                    if await el.is_visible():
+                        return True
+                except Exception:
+                    continue
+    return False
+
+
 async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
     """Click through cancel/confirm controls on the current (logged-in) page.
 
@@ -571,6 +631,7 @@ async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
     except Exception:
         await page.wait_for_timeout(1500)
     clicked = []
+    confirmed = False
     # Allow a few extra steps over the 1-3 "happy path": retention flows can
     # interpose a "pause instead" / discount / survey / "are you sure?" screen
     # between initiate and confirm, adding one or two decline steps.
@@ -579,6 +640,8 @@ async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
         if not text:
             break
         clicked.append(text)
+        if _looks_like_confirm(text):
+            confirmed = True
         await page.wait_for_timeout(2000)
     if not clicked:
         return await _snapshot(
@@ -586,6 +649,22 @@ async def _do_cancel(page, confirm_texts, backend_key, timeout_ms, max_chars):
             error="Couldn't find a cancel control automatically. The account page "
                   "is shown so you can finish the cancellation yourself.",
         )
+    # Honesty gate: we clicked an initiate/progress control but never reached a
+    # terminal confirmation, and the screen we stalled on offers only retention
+    # "keep / pause / stay subscribed / accept offer" controls (no decline path).
+    # The subscription is almost certainly still active behind the retention wall,
+    # so report a needs-you outcome instead of an unqualified success — clicking
+    # *something* earlier must not read as "cancelled".
+    if not confirmed and await _has_visible_keep_control(page):
+        snap = await _snapshot(
+            page, backend_key, page.url, max_chars, ok=False,
+            error="Stopped on a retention screen — only 'keep / pause / stay "
+                  "subscribed' options were found, so the cancellation isn't "
+                  "confirmed. The account page is shown so you can finish the "
+                  "cancellation yourself.",
+        )
+        snap.text = ("Clicked: %s\n\n%s" % (" → ".join(clicked), snap.text or ""))[:max_chars]
+        return snap
     snap = await _snapshot(page, backend_key, page.url, max_chars, ok=True)
     snap.text = ("Clicked: %s\n\n%s" % (" → ".join(clicked), snap.text or ""))[:max_chars]
     return snap

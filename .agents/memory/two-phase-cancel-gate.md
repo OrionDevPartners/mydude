@@ -29,3 +29,24 @@ the policy gate.
 phase-1 marks intent + shows the gate + honest status; phase-2 enforces
 pending-state + policy before acting. Never gate the *confirmation UI* behind a
 best-effort capability call.
+
+## Cancel-walk success must mean *confirmed*, not *clicked something*
+
+The automated cancel walker (`_do_cancel` in `src/browser/backends.py`) must not
+report success merely because it clicked one or more controls. A retention screen
+can offer ONLY keep/pause/stay/offer controls (no decline path); the walker
+correctly refuses to click them, but the subscription is still active behind the
+wall.
+
+**Rule:** `_do_cancel` returns `ok=True` only when it reached a terminal
+*confirmation* control (`_looks_like_confirm`). If it stalls on a screen whose
+only remaining controls are retention/keep (`_has_visible_keep_control`) without
+confirming, it returns `ok=False` with a needs-you message containing the word
+"yourself" (so `_finish_interactive` classifies it `needs_user`). That keeps the
+record in `cancel_pending` (confirm_cancel only flips to `cancelled` when the
+output starts with "browser_cancel ok"), so the user can retry/finish by hand.
+
+**Why:** detecting keep-only screens needs a *separate* scan by retention labels
+(`RETENTION_KEEP_TEXTS`), because keep controls don't contain cancel-label
+substrings — the cancel-label finder never sees them, so it can't tell "retention
+wall" from "no cancel control here".
