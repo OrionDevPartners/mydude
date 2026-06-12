@@ -239,9 +239,11 @@ async def test_receipts(request: Request, _=Depends(require_auth)):
             from src.subscriptions.discovery import parse_receipts
             msgs = json.loads(output)
             cands = parse_receipts(output)
-            names = ", ".join(sorted({c["name"] for c in cands})) or "none recognised"
-            output = ("Read %d recent billing email(s). Recognised services: %s."
-                      % (len(msgs), names))
+            names = ", ".join(sorted({c["name"] for c in cands if not c.get("unknown")})) or "none recognised"
+            unknown = sum(1 for c in cands if c.get("unknown"))
+            extra = (" Plus %d unrecognised billing sender(s) to review." % unknown) if unknown else ""
+            output = ("Read %d recent billing email(s). Recognised services: %s.%s"
+                      % (len(msgs), names, extra))
         except Exception:
             pass
     result = {

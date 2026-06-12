@@ -48,6 +48,31 @@ def test_match_merchant_none_for_unknown():
                           text="Thanks for your order") is None
 
 
+def test_match_merchant_new_catalog_entries():
+    # A representative slice of the expanded catalog matches by sender domain.
+    cases = {
+        "no-reply@nordvpn.com": "nordvpn",
+        "billing@chatgpt.com": "openai",
+        "receipts@claude.ai": "anthropic",
+        "no-reply@notify.doordash.com": "doordash",  # subdomain resolves
+        "team@figma.com": "figma",
+        "hello@costco.com": "costco",
+        "members@onepeloton.com": "peloton",
+    }
+    for addr, slug in cases.items():
+        entry = match_merchant(from_addr=addr, text="Your receipt")
+        assert entry and entry["slug"] == slug, (addr, entry)
+
+
+def test_match_merchant_generic_name_words_do_not_false_match():
+    # Generic words inside merchant names must not match on their own.
+    for word in ("Your subscription will renew this month",
+                 "We found a great match for you",
+                 "Read this medium article"):
+        # No sender domain + only a generic word → no match.
+        assert match_merchant(from_addr="hi@unknown.example", text=word) is None, word
+
+
 # -- receipt parsing ----------------------------------------------------------
 
 def _msg(frm, subject, body=""):
@@ -103,6 +128,64 @@ def test_parse_receipts_flags_cost_from_receipt():
     raw = json.dumps([_msg("billing@netflix.com", "Your subscription renewed")])
     c = parse_receipts(raw)[0]
     assert c["cost_from_receipt"] is False, c
+
+
+# -- unmatched ("unknown") receipt surfacing ---------------------------------
+
+def test_parse_receipts_surfaces_unknown_billing_merchant():
+    raw = json.dumps([
+        _msg("billing@cooltool.io", "Your receipt",
+             "Thanks for your payment of $9.00 this month for your subscription."),
+    ])
+    cands = parse_receipts(raw)
+    assert len(cands) == 1, cands
+    c = cands[0]
+    assert c["unknown"] is True
+    assert c["slug"] is None
+    assert c["domain"] == "cooltool.io"
+    assert c["name"] == "Cooltool"
+    assert c["source"] == "email_receipt_unknown"
+    assert c["est_cost"] == "$9.00/mo", c["est_cost"]
+
+
+def test_parse_receipts_unknown_uses_registrable_domain_and_dedups():
+    raw = json.dumps([
+        _msg("no-reply@billing.acme-saas.com", "Invoice", "You were charged $12.00."),
+        _msg("receipts@mail.acme-saas.com", "Invoice", "You were charged $12.00."),
+    ])
+    cands = parse_receipts(raw)
+    assert len(cands) == 1, cands
+    assert cands[0]["domain"] == "acme-saas.com"
+    assert cands[0]["hits"] == 2
+
+
+def test_parse_receipts_ignores_marketing_without_billing_context():
+    # A promo with a price but no billing words is not surfaced.
+    raw = json.dumps([
+        _msg("deals@shop.example", "Mega sale!", "Get a hat for just $9.99 today!"),
+    ])
+    assert parse_receipts(raw) == []
+
+
+def test_parse_receipts_ignores_personal_mailbox_senders():
+    # Forwarded from a personal Gmail — never treated as a merchant.
+    raw = json.dumps([
+        _msg("jane@gmail.com", "Re: receipt", "Here's the $20.00 subscription invoice."),
+    ])
+    assert parse_receipts(raw) == []
+
+
+def test_parse_receipts_known_takes_priority_over_unknown():
+    raw = json.dumps([
+        _msg("billing@netflix.com", "Receipt", "Charged $15.49 this month subscription."),
+        _msg("billing@cooltool.io", "Receipt", "Charged $9.00 this month subscription."),
+    ])
+    cands = parse_receipts(raw)
+    assert len(cands) == 2
+    netflix = next(c for c in cands if c["slug"] == "netflix")
+    unknown = next(c for c in cands if c.get("unknown"))
+    assert netflix["unknown"] is False
+    assert unknown["domain"] == "cooltool.io"
 
 
 # -- cross-source merge -------------------------------------------------------

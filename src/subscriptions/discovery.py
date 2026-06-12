@@ -146,6 +146,75 @@ def _cost_label(amount, cadence):
     return "%s%s" % (amount, suffix)
 
 
+# Words that, alongside a money amount, mark an email as a billing/receipt rather
+# than marketing. Used only to surface *unmatched* receipts so genuine
+# subscriptions from merchants not yet in the catalog are not silently dropped.
+_BILLING_CONTEXT_RE = re.compile(
+    r"\b(receipt|invoice|subscription|subscribe(d)?|renew(al|ed|s|ing)?|"
+    r"bill(ed|ing)?|payment|paid|charged|transaction|membership|"
+    r"auto[\s-]?renew|order\s+confirmation|your\s+(order|purchase)|"
+    r"thanks?\s+for\s+your\s+(payment|purchase|order))\b",
+    re.I,
+)
+
+# Consumer mailbox providers are *senders*, never merchants — a receipt
+# forwarded from a personal address must not be surfaced as a subscription.
+_CONSUMER_MAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "rocketmail.com",
+    "outlook.com", "hotmail.com", "live.com", "msn.com", "icloud.com",
+    "me.com", "mac.com", "aol.com", "proton.me", "protonmail.com", "pm.me",
+    "gmx.com", "gmx.net", "mail.com", "zoho.com", "yandex.com", "fastmail.com",
+}
+
+# A few second-level public suffixes so ``billing.shop.co.uk`` collapses to
+# ``shop.co.uk`` rather than ``co.uk``. Best-effort, not an exhaustive PSL.
+_TWO_LEVEL_TLDS = {
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au",
+    "co.nz", "co.jp", "co.kr", "com.br", "com.mx", "co.in", "co.za",
+}
+
+
+def _sender_domain(from_addr):
+    """Extract the lowercase domain from a ``From:`` value, or None.
+
+    Handles ``Name <user@host>`` forms and trailing punctuation. Returns None
+    when there is no usable domain (no ``@`` or no dot in the host part)."""
+    addr = (from_addr or "").strip().lower()
+    if "<" in addr and ">" in addr:
+        addr = addr[addr.find("<") + 1:addr.find(">")].strip()
+    if "@" not in addr:
+        return None
+    domain = addr.rsplit("@", 1)[-1].strip().strip(">").strip()
+    domain = domain.split()[0] if domain else domain
+    if "." not in domain:
+        return None
+    return domain
+
+
+def _registrable_domain(host):
+    """Collapse a host to its registrable domain (best-effort, no PSL dep)."""
+    parts = (host or "").split(".")
+    if len(parts) <= 2:
+        return host
+    last_two = ".".join(parts[-2:])
+    if last_two in _TWO_LEVEL_TLDS and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return last_two
+
+
+def _name_from_domain(reg_domain):
+    """Human-ish merchant name from a registrable domain (``foo.com`` -> ``Foo``)."""
+    label = (reg_domain or "").split(".")[0]
+    return label.capitalize() if label else (reg_domain or "Unknown merchant")
+
+
+def _looks_like_billing(text):
+    """True when text reads like a real receipt: a money amount + billing words."""
+    if not text:
+        return False
+    return bool(_extract_amount(text)) and bool(_BILLING_CONTEXT_RE.search(text))
+
+
 def parse_receipts(raw):
     """Parse the IMAP reader's JSON output into candidate dicts.
 
@@ -154,6 +223,13 @@ def parse_receipts(raw):
     matched to the catalog by sender domain or a distinctive service name; the
     amount and cadence are extracted best-effort. Candidates are de-duplicated by
     catalog slug, newest-first order preserved, and ``hits`` counts repeats.
+
+    Receipts that clearly read like billing (a money amount plus billing words)
+    but match no catalog entry are *not* dropped: they are surfaced as
+    ``unknown`` candidates keyed by the sender's registrable domain, so a real
+    subscription from a merchant MyDude doesn't know yet still reaches the user
+    to confirm or dismiss. ``unknown`` candidates carry ``unknown=True``, a
+    ``source`` of ``email_receipt_unknown`` and no login/account URLs.
     """
     try:
         messages = json.loads(raw) if isinstance(raw, str) else (raw or [])
@@ -171,27 +247,56 @@ def parse_receipts(raw):
         body = msg.get("body") or ""
         blob = "%s\n%s" % (subject, body)
         entry = match_merchant(from_addr=from_addr, text=blob)
-        if not entry:
-            continue
-        slug = entry["slug"]
-        if slug in candidates:
-            candidates[slug]["hits"] += 1
-            continue
         amount = _extract_amount(subject) or _extract_amount(body)
         cadence = _extract_cadence(subject) or _extract_cadence(body)
         receipt_cost = _cost_label(amount, cadence)
-        candidates[slug] = {
-            "slug": slug,
-            "name": entry["name"],
-            "domain": entry["domains"][0],
-            "login_url": entry["login_url"],
-            "account_url": entry["account_url"],
-            "est_cost": receipt_cost or entry.get("est_cost"),
+        if entry:
+            slug = entry["slug"]
+            if slug in candidates:
+                candidates[slug]["hits"] += 1
+                continue
+            candidates[slug] = {
+                "slug": slug,
+                "name": entry["name"],
+                "domain": entry["domains"][0],
+                "login_url": entry["login_url"],
+                "account_url": entry["account_url"],
+                "est_cost": receipt_cost or entry.get("est_cost"),
+                "cadence": cadence,
+                # True only when the cost/cadence came from the receipt itself (not a
+                # catalog default), so the confirm flow can prefer it over a guess.
+                "cost_from_receipt": bool(receipt_cost),
+                "source": "email_receipt",
+                "unknown": False,
+                "hits": 1,
+            }
+            continue
+
+        # No catalog match — surface it only if it really looks like a receipt
+        # and comes from a real merchant domain (not a personal mailbox).
+        if not _looks_like_billing(blob):
+            continue
+        host = _sender_domain(from_addr)
+        if not host:
+            continue
+        reg = _registrable_domain(host)
+        if not reg or reg in _CONSUMER_MAIL_DOMAINS:
+            continue
+        key = "unknown:%s" % reg
+        if key in candidates:
+            candidates[key]["hits"] += 1
+            continue
+        candidates[key] = {
+            "slug": None,
+            "name": _name_from_domain(reg),
+            "domain": reg,
+            "login_url": None,
+            "account_url": None,
+            "est_cost": receipt_cost,
             "cadence": cadence,
-            # True only when the cost/cadence came from the receipt itself (not a
-            # catalog default), so the confirm flow can prefer it over a guess.
             "cost_from_receipt": bool(receipt_cost),
-            "source": "email_receipt",
+            "source": "email_receipt_unknown",
+            "unknown": True,
             "hits": 1,
         }
     return list(candidates.values())
@@ -225,9 +330,16 @@ async def discover_from_email(broker, limit=50, lookback_days=365):
             "services. This is best-effort — MyDude can only match known merchants, "
             "so add anything it missed manually."
         )
+    unknown = [c for c in candidates if c.get("unknown")]
+    note = ""
+    if unknown:
+        note = (
+            " %d look like billing from merchant(s) MyDude doesn't recognise yet — "
+            "review and add or dismiss them." % len(unknown)
+        )
     return candidates, (
         "Found %d candidate subscription(s) from your email receipts. Confirm the "
-        "ones you actually pay for." % len(candidates)
+        "ones you actually pay for.%s" % (len(candidates), note)
     )
 
 
