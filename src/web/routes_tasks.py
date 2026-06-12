@@ -94,6 +94,7 @@ async def dashboard(request: Request, _=Depends(require_auth)):
             pass
         finally:
             db.close()
+    from src.swarm.jurisdiction import JURISDICTION_DOMAINS
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "recent_tasks": recent,
@@ -101,12 +102,22 @@ async def dashboard(request: Request, _=Depends(require_auth)):
         "result_data": result_data,
         "parsed": _parse_result(result_data),
         "err": request.query_params.get("err"),
+        "domains": list(JURISDICTION_DOMAINS),
     })
 
 
 @router.post("/tasks/run")
-async def run_task(request: Request, prompt: str = Form(""), _=Depends(require_auth)):
+async def run_task(
+    request: Request,
+    prompt: str = Form(""),
+    domain: str = Form("general"),
+    team: str = Form("default"),
+    _=Depends(require_auth),
+):
+    from src.swarm.jurisdiction import normalize_domain, normalize_team
     prompt = prompt.strip()
+    domain = normalize_domain(domain)
+    team = normalize_team(team)
     if not prompt:
         return RedirectResponse(url="/?err=" + _flash("Please enter a prompt"), status_code=303)
 
@@ -177,7 +188,7 @@ async def run_task(request: Request, prompt: str = Form(""), _=Depends(require_a
         integrations = Integrations()
         broker = CapabilityBroker(policy, integrations)
         orchestrator = WaveOrchestrator(broker)
-        result = await orchestrator.run(prompt, task_run_id=task_id)
+        result = await orchestrator.run(prompt, domain=domain, team=team, task_run_id=task_id)
 
         elapsed_ms = int((time.time() - start_time) * 1000)
         result_text = json.dumps(result, indent=2, default=str)

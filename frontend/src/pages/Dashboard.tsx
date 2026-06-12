@@ -10,7 +10,7 @@ import {
   UserMessage, AssistantMessage, ReasoningMessage,
   SourcesMessage, CodeBlock, ThinkingIndicator, ScoreBar, MessageThread,
 } from '@/components/ai-elements'
-import { ChevronRight, Clock, Key } from 'lucide-react'
+import { ChevronRight, Clock, Key, MapPin } from 'lucide-react'
 
 function riskColor(v: number): string {
   if (v < 0.35) return '#34d399'
@@ -101,13 +101,20 @@ function ResultPanel({ task, prompt }: { task: Task; prompt: string }) {
   )
 }
 
+function domainLabel(d: string): string {
+  return d.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+}
+
 export function Dashboard() {
   const { data, loading, error, refetch } = useApi(getDashboard, [])
   const [prompt, setPrompt] = useState('')
+  const [domain, setDomain] = useState('general')
   const [submittedPrompt, setSubmittedPrompt] = useState('')
   const [running, setRunning] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
   const [currentTask, setCurrentTask] = useState<Task | null>(null)
+
+  const domains = data?.domains?.length ? data.domains : ['general']
 
   async function handleRun(e: FormEvent) {
     e.preventDefault()
@@ -119,7 +126,7 @@ export function Dashboard() {
     setSubmittedPrompt(p)
 
     try {
-      const { task_id } = await runTask(p)
+      const { task_id } = await runTask(p, domain)
       // Poll for completion
       const iv = setInterval(async () => {
         try {
@@ -168,6 +175,21 @@ export function Dashboard() {
               />
             </PromptInputBody>
             <PromptInputActions>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+                <MapPin size={13} />
+                <select
+                  className="form-input"
+                  value={domain}
+                  onChange={e => setDomain(e.target.value)}
+                  disabled={running}
+                  title="Route this request to a jurisdiction domain"
+                  style={{ padding: '4px 8px', fontSize: 12, height: 'auto', width: 'auto' }}
+                >
+                  {domains.map(d => (
+                    <option key={d} value={d}>{domainLabel(d)}</option>
+                  ))}
+                </select>
+              </label>
               <PromptInputActionSend />
             </PromptInputActions>
           </PromptInput>

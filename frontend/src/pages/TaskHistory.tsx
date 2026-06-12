@@ -5,6 +5,16 @@ import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Empty } from '@/components/ui'
 import { fmtDate, fmtMs, statusBadge, truncate } from '@/lib/utils'
 import { Clock, ChevronRight, ChevronLeft, History } from 'lucide-react'
+import type { Task } from '@/lib/api'
+
+function taskDomain(task: Task): string | null {
+  const jur = task.scores?.jurisdiction
+  if (jur && typeof jur === 'object' && 'domain' in jur) {
+    const d = (jur as Record<string, unknown>).domain
+    return d ? String(d) : null
+  }
+  return null
+}
 
 export function TaskHistory() {
   const [page, setPage] = useState(1)
@@ -28,6 +38,7 @@ export function TaskHistory() {
                   <tr>
                     <th>#</th>
                     <th>Prompt</th>
+                    <th>Domain</th>
                     <th>Status</th>
                     <th>Duration</th>
                     <th>Created</th>
@@ -40,6 +51,11 @@ export function TaskHistory() {
                       <td style={{ color: 'var(--text-muted)', fontSize: 12 }}>#{task.id}</td>
                       <td style={{ maxWidth: 320 }}>
                         <span style={{ fontSize: 13.5 }}>{truncate(task.prompt, 70)}</span>
+                      </td>
+                      <td>
+                        {taskDomain(task)
+                          ? <span className="badge badge-gray">{taskDomain(task)}</span>
+                          : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>}
                       </td>
                       <td><span className={`badge ${statusBadge(task.status)}`}>{task.status}</span></td>
                       <td style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{fmtMs(task.execution_time_ms)}</td>

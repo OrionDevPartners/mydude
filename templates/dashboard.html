@@ -49,6 +49,14 @@
                 <label for="prompt">Enter your task prompt</label>
                 <textarea id="prompt" name="prompt" rows="6" placeholder="Describe the task you want the AI swarm to work on...&#10;&#10;Example: Analyze the security posture of a Node.js API and recommend improvements." required>{{ request.query_params.get('prompt', '') }}</textarea>
             </div>
+            <div class="form-group">
+                <label for="domain">Jurisdiction domain</label>
+                <select id="domain" name="domain">
+                    {% for d in domains %}
+                    <option value="{{ d }}">{{ d.replace('_', ' ')|title }}</option>
+                    {% endfor %}
+                </select>
+            </div>
             <p class="meta form-hint">Runs a governed multi-provider swarm with compliance scoring, hallucination-risk control, and full provenance tracking.</p>
             <button type="submit" class="btn btn-primary" {% if not has_keys %}disabled{% endif %} onclick="this.disabled=true;this.innerHTML='<span class=spinner></span>Running...';this.form.submit();">
                 Run Task

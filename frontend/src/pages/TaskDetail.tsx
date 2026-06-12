@@ -40,6 +40,17 @@ export function TaskDetail() {
 
   const hasScores = scores.hallucination_risk != null || scores.compliance != null || scores.jurisdiction != null
 
+  const jur = (scores.jurisdiction && typeof scores.jurisdiction === 'object')
+    ? scores.jurisdiction as Record<string, unknown>
+    : null
+  const jurText = jur
+    ? [
+        jur.domain ? `domain: ${String(jur.domain)}` : null,
+        jur.exec_locus ? `exec: ${String(jur.exec_locus)}` : null,
+        jur.fallback_tier != null ? `tier ${String(jur.fallback_tier)}` : null,
+      ].filter(Boolean).join(' · ')
+    : (scores.jurisdiction != null ? String(scores.jurisdiction) : null)
+
   return (
     <div>
       <div style={{ marginBottom: 20 }}>
@@ -60,9 +71,9 @@ export function TaskDetail() {
             <Clock size={12} /> {fmtMs(task.execution_time_ms)}
           </div>
         )}
-        {scores.jurisdiction && (
+        {jurText && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)' }}>
-            <MapPin size={12} /> {String(scores.jurisdiction)}
+            <MapPin size={12} /> {jurText}
           </div>
         )}
       </div>

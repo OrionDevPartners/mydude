@@ -332,21 +332,32 @@ async def api_dashboard(request: Request, _=Depends(require_auth)):
         has_keys = db.query(ApiKey).filter(ApiKey.is_active == True).count() > 0
     finally:
         db.close()
+    from src.swarm.jurisdiction import JURISDICTION_DOMAINS
     return {
         "recent_tasks": [_parse_task(t) for t in recent],
         "has_keys": has_keys,
+        "domains": list(JURISDICTION_DOMAINS),
     }
 
 
 @router.post("/tasks/run")
-async def api_run_task(request: Request, prompt: str = Form(""), _=Depends(require_auth)):
+async def api_run_task(
+    request: Request,
+    prompt: str = Form(""),
+    domain: str = Form("general"),
+    team: str = Form("default"),
+    _=Depends(require_auth),
+):
     import time
     from src.database import SessionLocal
     from src.models import TaskRun, ApiKey
     from src.web.ratelimit import RateLimiter, ConcurrencyGuard
+    from src.swarm.jurisdiction import normalize_domain, normalize_team
 
     MAX_PROMPT_LEN = 8000
     prompt = prompt.strip()
+    domain = normalize_domain(domain)
+    team = normalize_team(team)
     if not prompt:
         raise HTTPException(status_code=400, detail="Please enter a prompt")
     if len(prompt) > MAX_PROMPT_LEN:
@@ -387,7 +398,7 @@ async def api_run_task(request: Request, prompt: str = Form(""), _=Depends(requi
         integrations = Integrations()
         broker = CapabilityBroker(policy, integrations)
         orchestrator = WaveOrchestrator(broker)
-        result = await orchestrator.run(prompt)
+        result = await orchestrator.run(prompt, domain=domain, team=team, task_run_id=task_id)
 
         elapsed_ms = int((time.time() - start_time) * 1000)
         result_text = json.dumps(result, indent=2, default=str)

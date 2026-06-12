@@ -22,6 +22,44 @@ from typing import Optional
 
 logger = logging.getLogger("mydude.swarm.jurisdiction")
 
+# Curated set of request domains operators can route to. Each domain can be
+# pinned to a stricter exec_locus / model team via policy.model_team_policy in
+# agents_home; "general" is the default (cheapest cloud). The list is the single
+# source of truth shared by the web UI and the run endpoints — extend it here
+# when a new governed domain is onboarded.
+JURISDICTION_DOMAINS = [
+    "general",
+    "legal",
+    "finance",
+    "medical",
+    "engineering",
+    "marketing",
+    "customer_service",
+    "hr",
+]
+
+
+def normalize_domain(value: Optional[str]) -> str:
+    """Coerce arbitrary user input into a safe domain slug.
+
+    Lower-cased, whitespace/spaces collapsed to underscores, bounded length.
+    Falls back to "general" when empty. The value is intentionally not
+    constrained to JURISDICTION_DOMAINS — agents_home policy is data-driven and
+    operators may configure additional domains beyond the curated UI list.
+    """
+    if not value:
+        return "general"
+    slug = "_".join(str(value).strip().lower().split())
+    return slug[:100] or "general"
+
+
+def normalize_team(value: Optional[str]) -> str:
+    """Coerce arbitrary user input into a safe team slug (defaults to "default")."""
+    if not value:
+        return "default"
+    slug = "_".join(str(value).strip().lower().split())
+    return slug[:100] or "default"
+
 # Short TTL cache for the cloud_shift lookup. The swarm consults cloud_shift on
 # every provider fanout (several times per task); without this, an
 # agents_home-backed deployment would open a synchronous DB connection in the

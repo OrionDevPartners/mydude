@@ -89,10 +89,10 @@ export const deleteUser = (id: number) =>
 
 // Dashboard / Tasks
 export const getDashboard = () => request<DashboardData>('/dashboard')
-export const runTask = (prompt: string) =>
+export const runTask = (prompt: string, domain = 'general', team = 'default') =>
   request<{ ok: boolean; task_id: number }>('/tasks/run', {
     method: 'POST',
-    body: formBody({ prompt }),
+    body: formBody({ prompt, domain, team }),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 export const getTaskHistory = (page = 1) => request<TaskHistoryData>(`/tasks/history?page=${page}`)
@@ -505,7 +505,7 @@ export interface Task {
   execution_time_ms: number | null
   created_at: string
 }
-export interface DashboardData { recent_tasks: Task[]; has_keys: boolean }
+export interface DashboardData { recent_tasks: Task[]; has_keys: boolean; domains: string[] }
 export interface TaskHistoryData { tasks: Task[]; page: number; total_pages: number; total: number }
 export interface ApiKey {
   id: number; provider: string; name: string; label: string; category: string;

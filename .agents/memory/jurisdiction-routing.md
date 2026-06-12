@@ -35,3 +35,14 @@ on / tier 4 off) only runs if the infra module import fails.
 **Where it surfaces:** result["JURISDICTION"] → persisted into
 TaskRun.provider_scores; shown on /governance (cloud_shift + exec_locus distribution)
 and in the task-detail report macro.
+
+**Per-request domain selection:** the run endpoints (`/api/tasks/run` and the legacy
+Jinja `/tasks/run`) accept `domain`/`team` form fields and thread them into
+`orchestrator.run(domain=, team=)`. The curated domain list + `normalize_domain`/
+`normalize_team` slug sanitizers are the single source of truth in
+`src/swarm/jurisdiction.py` (`JURISDICTION_DOMAINS`); the dashboard payload exposes
+it so the SPA selector renders from the backend list (not a hardcoded UI copy).
+Domains are intentionally NOT enum-validated — model_team_policy is data-driven, so
+operators may configure domains beyond the curated list. The exec_locus/tier only
+*visibly* differs per domain when an agents_home model_team_policy is reachable;
+without PG_AGENTS_HOME_DSN every domain resolves to the same env fallback.
