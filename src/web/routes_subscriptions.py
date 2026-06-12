@@ -99,26 +99,74 @@ async def subscriptions_page(request: Request, _=Depends(require_auth)):
     return templates.TemplateResponse("subscriptions.html", _context(request))
 
 
+def _merge_sources(existing, incoming):
+    """Union two ``+``-joined source attributions, preserving first-seen order.
+
+    e.g. ``("browser_history", "email_receipt")`` -> ``"browser_history+email_receipt"``.
+    A bare ``"discovery"`` placeholder is dropped once a real source is known.
+    """
+    tokens = []
+    for blob in (existing, incoming):
+        for tok in (blob or "").split("+"):
+            tok = tok.strip()
+            if tok and tok not in tokens:
+                tokens.append(tok)
+    real = [t for t in tokens if t != "discovery"]
+    tokens = real or tokens
+    return "+".join(tokens)
+
+
 def _insert_candidates(candidates):
     """Insert discovered candidates as ``candidate`` rows, de-duped by domain.
 
-    A candidate whose domain already exists (from any source) is skipped, so the
-    two discovery sources naturally merge into one tracked set. Returns the count
-    of newly-added rows.
+    A candidate whose domain already exists (from any source) is *merged* into
+    the existing row rather than dropped:
+
+    * its source attribution is unioned into the existing one, so a service seen
+      in both browser history and email receipts is recorded as
+      ``browser_history+email_receipt`` (the "both" case);
+    * any cost/cadence the receipt parser actually extracted backfills a row that
+      had none — and upgrades a not-yet-confirmed candidate's catalog estimate —
+      so the user can confirm it in one click without re-typing the amount;
+    * missing login/account URLs are filled in.
+
+    Returns ``(added, updated)`` — newly inserted vs. enriched existing rows.
     """
     added = 0
+    updated = 0
     db = SessionLocal()
     try:
         for cand in candidates:
             domain = cand.get("domain")
-            if domain:
-                exists = (
-                    db.query(Subscription)
-                    .filter(Subscription.domain == domain)
-                    .first()
+            cand_source = cand.get("source") or "discovery"
+            existing = (
+                db.query(Subscription).filter(Subscription.domain == domain).first()
+                if domain else None
+            )
+            if existing:
+                changed = False
+                merged_source = _merge_sources(existing.source, cand_source)
+                if merged_source != (existing.source or ""):
+                    existing.source = merged_source
+                    changed = True
+                cand_cost = cand.get("est_cost")
+                # Backfill a missing cost, or upgrade a still-unconfirmed
+                # candidate's estimate with a cost the receipt parser actually
+                # extracted (the user's real amount beats a catalog default).
+                prefer_receipt = (
+                    existing.status == "candidate" and cand.get("cost_from_receipt")
                 )
-                if exists:
-                    continue
+                if cand_cost and (not existing.est_cost or prefer_receipt) \
+                        and cand_cost != existing.est_cost:
+                    existing.est_cost = cand_cost
+                    changed = True
+                for field in ("login_url", "account_url"):
+                    if not getattr(existing, field) and cand.get(field):
+                        setattr(existing, field, cand.get(field))
+                        changed = True
+                if changed:
+                    updated += 1
+                continue
             db.add(Subscription(
                 name=cand["name"],
                 domain=domain,
@@ -126,24 +174,28 @@ def _insert_candidates(candidates):
                 account_url=cand.get("account_url"),
                 est_cost=cand.get("est_cost"),
                 status="candidate",
-                source=cand.get("source") or "discovery",
+                source=cand_source,
             ))
             added += 1
         db.commit()
     finally:
         db.close()
-    return added
+    return added, updated
 
 
-def _discover_result(message, candidates, added):
+def _discover_result(message, candidates, added, updated=0):
+    bits = []
+    if added:
+        bits.append("Added %d new candidate(s)." % added)
+    if updated:
+        bits.append("Enriched %d existing (merged source/cost)." % updated)
+    if not bits and candidates:
+        bits.append("No changes (already tracked).")
+    suffix = (" " + " ".join(bits)) if bits else ""
     return {
         "kind": "discover",
         "ok": bool(candidates),
-        "message": "%s%s" % (
-            message,
-            (" Added %d new candidate(s)." % added) if added else
-            (" No new candidates (already tracked)." if candidates else ""),
-        ),
+        "message": "%s%s" % (message, suffix),
     }
 
 
@@ -153,8 +205,8 @@ async def discover(request: Request, browser: str = Form("chrome"), _=Depends(re
 
     broker = _broker()
     candidates, message = await discover_from_history(broker, browser=browser, limit=200)
-    added = _insert_candidates(candidates)
-    result = _discover_result(message, candidates, added)
+    added, updated = _insert_candidates(candidates)
+    result = _discover_result(message, candidates, added, updated)
     return templates.TemplateResponse("subscriptions.html", _context(request, result=result))
 
 
@@ -164,8 +216,8 @@ async def discover_email(request: Request, _=Depends(require_auth)):
 
     broker = _broker()
     candidates, message = await discover_from_email(broker, limit=50, lookback_days=365)
-    added = _insert_candidates(candidates)
-    result = _discover_result(message, candidates, added)
+    added, updated = _insert_candidates(candidates)
+    result = _discover_result(message, candidates, added, updated)
     return templates.TemplateResponse("subscriptions.html", _context(request, result=result))
 
 

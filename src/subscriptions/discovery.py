@@ -179,14 +179,18 @@ def parse_receipts(raw):
             continue
         amount = _extract_amount(subject) or _extract_amount(body)
         cadence = _extract_cadence(subject) or _extract_cadence(body)
+        receipt_cost = _cost_label(amount, cadence)
         candidates[slug] = {
             "slug": slug,
             "name": entry["name"],
             "domain": entry["domains"][0],
             "login_url": entry["login_url"],
             "account_url": entry["account_url"],
-            "est_cost": _cost_label(amount, cadence) or entry.get("est_cost"),
+            "est_cost": receipt_cost or entry.get("est_cost"),
             "cadence": cadence,
+            # True only when the cost/cadence came from the receipt itself (not a
+            # catalog default), so the confirm flow can prefer it over a guess.
+            "cost_from_receipt": bool(receipt_cost),
             "source": "email_receipt",
             "hits": 1,
         }

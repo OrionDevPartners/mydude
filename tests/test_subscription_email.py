@@ -93,6 +93,18 @@ def test_parse_receipts_handles_bad_input():
     assert parse_receipts(json.dumps([])) == []
 
 
+def test_parse_receipts_flags_cost_from_receipt():
+    # A receipt with a real amount -> cost_from_receipt True.
+    raw = json.dumps([_msg("billing@netflix.com", "Your receipt — $15.49 this month")])
+    c = parse_receipts(raw)[0]
+    assert c["cost_from_receipt"] is True, c
+    # A receipt the parser can't price falls back to the catalog estimate and is
+    # NOT flagged as receipt-extracted (so it never overwrites a real amount).
+    raw = json.dumps([_msg("billing@netflix.com", "Your subscription renewed")])
+    c = parse_receipts(raw)[0]
+    assert c["cost_from_receipt"] is False, c
+
+
 # -- cross-source merge -------------------------------------------------------
 
 def test_merge_candidates_dedups_by_domain():
@@ -111,6 +123,102 @@ def test_merge_candidates_dedups_by_domain():
     assert netflix["est_cost"] == "$15.49/mo"
     assert netflix["source"] == "browser_history+email_receipt", netflix["source"]
     assert netflix["hits"] == 2
+
+
+# -- source attribution + result messaging (pure) ----------------------------
+
+from src.web.routes_subscriptions import _merge_sources, _discover_result
+
+
+def test_merge_sources_unions_and_dedups():
+    assert _merge_sources("browser_history", "email_receipt") == "browser_history+email_receipt"
+    # Order preserved, no duplicates when the same source repeats.
+    assert _merge_sources("email_receipt", "email_receipt") == "email_receipt"
+    assert _merge_sources("browser_history+email_receipt", "browser_history") == \
+        "browser_history+email_receipt"
+
+
+def test_merge_sources_drops_placeholder_once_real_source_known():
+    assert _merge_sources("discovery", "email_receipt") == "email_receipt"
+    assert _merge_sources(None, "discovery") == "discovery"
+    assert _merge_sources("", "browser_history") == "browser_history"
+
+
+def test_discover_result_reports_added_and_updated():
+    r = _discover_result("Found 2.", [{}, {}], added=1, updated=1)
+    assert r["ok"] is True
+    assert "Added 1 new candidate(s)." in r["message"]
+    assert "Enriched 1 existing" in r["message"]
+    # Nothing changed but candidates existed -> honest "already tracked".
+    r = _discover_result("Found 1.", [{}], added=0, updated=0)
+    assert "already tracked" in r["message"].lower()
+
+
+# -- one-click confirm: merge into the tracked set (DB-backed) ----------------
+
+def _db_or_skip():
+    """Return a live session, or None if no DB is reachable (test then skips)."""
+    if not os.environ.get("DATABASE_URL"):
+        return None
+    try:
+        from src.database import SessionLocal, init_db
+        init_db()
+        return SessionLocal
+    except Exception:
+        return None
+
+
+def test_insert_candidates_merges_source_and_backfills_cost():
+    SessionLocal = _db_or_skip()
+    if SessionLocal is None:
+        print("   (skipped: no DATABASE_URL)")
+        return
+    from src.models import Subscription, SubscriptionAction
+    from src.web.routes_subscriptions import _insert_candidates
+
+    domain = "merge-test-%d.example" % os.getpid()
+    db = SessionLocal()
+    try:
+        # Pre-clean any stragglers from a prior run.
+        for s in db.query(Subscription).filter(Subscription.domain == domain).all():
+            db.query(SubscriptionAction).filter(
+                SubscriptionAction.subscription_id == s.id).delete()
+            db.delete(s)
+        db.commit()
+
+        # 1) Browser history finds it first, with no receipt cost.
+        added, updated = _insert_candidates([
+            {"name": "MergeTest", "domain": domain, "source": "browser_history"},
+        ])
+        assert (added, updated) == (1, 0), (added, updated)
+
+        # 2) Email discovery later finds the same domain WITH a receipt cost.
+        added, updated = _insert_candidates([
+            {"name": "MergeTest", "domain": domain, "source": "email_receipt",
+             "est_cost": "$9.99/mo", "cadence": "monthly", "cost_from_receipt": True},
+        ])
+        assert (added, updated) == (0, 1), (added, updated)
+
+        # The single tracked row now records BOTH sources and the receipt cost,
+        # so the user can confirm it in one click without re-typing anything.
+        row = db.query(Subscription).filter(Subscription.domain == domain).one()
+        assert row.source == "browser_history+email_receipt", row.source
+        assert row.est_cost == "$9.99/mo", row.est_cost
+        assert row.status == "candidate"
+
+        # 3) Re-running the same email scan is idempotent (no spurious updates).
+        added, updated = _insert_candidates([
+            {"name": "MergeTest", "domain": domain, "source": "email_receipt",
+             "est_cost": "$9.99/mo", "cost_from_receipt": True},
+        ])
+        assert (added, updated) == (0, 0), (added, updated)
+    finally:
+        for s in db.query(Subscription).filter(Subscription.domain == domain).all():
+            db.query(SubscriptionAction).filter(
+                SubscriptionAction.subscription_id == s.id).delete()
+            db.delete(s)
+        db.commit()
+        db.close()
 
 
 # -- governance gate ----------------------------------------------------------

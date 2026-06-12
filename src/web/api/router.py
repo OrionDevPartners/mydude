@@ -1260,8 +1260,8 @@ async def api_discover(request: Request, browser: str = Form("chrome"), _=Depend
     from src.web.routes_subscriptions import _broker, _insert_candidates, _discover_result
     broker = _broker()
     candidates, message = await discover_from_history(broker, browser=browser, limit=200)
-    added = _insert_candidates(candidates)
-    return _discover_result(message, candidates, added)
+    added, updated = _insert_candidates(candidates)
+    return _discover_result(message, candidates, added, updated)
 
 
 @router.post("/subscriptions/discover/email")
@@ -1270,8 +1270,8 @@ async def api_discover_email(request: Request, _=Depends(require_auth)):
     from src.web.routes_subscriptions import _broker, _insert_candidates, _discover_result
     broker = _broker()
     candidates, message = await discover_from_email(broker, limit=50, lookback_days=365)
-    added = _insert_candidates(candidates)
-    return _discover_result(message, candidates, added)
+    added, updated = _insert_candidates(candidates)
+    return _discover_result(message, candidates, added, updated)
 
 
 @router.post("/subscriptions/add")

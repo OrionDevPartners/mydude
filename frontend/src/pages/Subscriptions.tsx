@@ -14,6 +14,16 @@ const STATUS_COLOR: Record<string, string> = {
   dismissed: 'badge-gray', cancelled: 'badge-gray', cancel_pending: 'badge-yellow',
 }
 
+const SOURCE_LABEL: Record<string, string> = {
+  browser_history: 'Browser history', email_receipt: 'Email receipt',
+  manual: 'Manual', discovery: 'Discovery',
+}
+
+function formatSource(source: string): string {
+  if (!source) return ''
+  return source.split('+').map(s => SOURCE_LABEL[s] || s).filter(Boolean).join(' + ')
+}
+
 export function Subscriptions() {
   const [tab, setTab] = useState('Subscriptions')
   const { data, loading, error, refetch } = useApi(getSubscriptions, [])
@@ -67,7 +77,7 @@ export function Subscriptions() {
                         <span className={`badge ${STATUS_COLOR[sub.status] || 'badge-gray'}`}>{sub.status}</span>
                       </div>
                       <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                        {sub.domain} {sub.est_cost && `· ${sub.est_cost}`} {sub.login_username && `· ${sub.login_username}`}
+                        {sub.domain} {sub.est_cost && `· ${sub.est_cost}`} {sub.login_username && `· ${sub.login_username}`} {sub.source && `· ${formatSource(sub.source)}`}
                       </p>
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
