@@ -1,8 +1,11 @@
 import { useState } from 'react'
-import { getLocalModels, addLocalModel, updateLocalModel, removeLocalModel, LocalProvider } from '@/lib/api'
+import {
+  getLocalModels, addLocalModel, updateLocalModel, removeLocalModel, LocalProvider,
+  getLocalNodes, updateLocalNodes, testLocalNode, LocalNode, LocalNodeProbe,
+} from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Badge, Empty } from '@/components/ui'
-import { Cpu, ExternalLink, RefreshCw, CheckCircle, XCircle, Copy, Check, Database, Plus, Trash2, Pencil, X } from 'lucide-react'
+import { Cpu, ExternalLink, RefreshCw, CheckCircle, XCircle, Copy, Check, Database, Plus, Trash2, Pencil, X, Network, Wifi, Save } from 'lucide-react'
 
 export function LocalModels() {
   const { data, loading, error, refetch } = useApi(getLocalModels, [])
@@ -39,6 +42,8 @@ export function LocalModels() {
       {data.providers.length === 0
         ? <Empty message="No local providers configured." icon={<Cpu size={28} />} />
         : data.providers.map(p => <ProviderCard key={p.key} p={p} />)}
+
+      <NodeEndpointsPanel onSaved={refetch} />
 
       <RegistryPanel
         registry={data.registry}
@@ -146,6 +151,172 @@ function ProviderCard({ p }: { p: LocalProvider }) {
       )}
     </Card>
   )
+}
+
+function NodeEndpointsPanel({ onSaved }: { onSaved: () => void }) {
+  const { data, loading, error, refetch } = useApi(getLocalNodes, [])
+
+  if (loading) return <Card style={{ padding: '18px 20px', marginTop: 6, marginBottom: 16 }}><Spinner /></Card>
+  if (error) return <Card style={{ padding: '18px 20px', marginTop: 6, marginBottom: 16 }}><Alert type="error">{error}</Alert></Card>
+  if (!data || data.nodes.length === 0) return null
+
+  return <NodeEndpointsForm data={data} onSaved={() => { refetch(); onSaved() }} />
+}
+
+function NodeEndpointsForm({ data, onSaved }: {
+  data: import('@/lib/api').LocalNodesData; onSaved: () => void
+}) {
+  // env-var -> value, seeded from the resolved configuration.
+  const seed = (): Record<string, string> => {
+    const v: Record<string, string> = {}
+    v[data.shared_probe_timeout_env] = data.shared_probe_timeout
+    for (const n of data.nodes) {
+      if (n.base_url_env) v[n.base_url_env] = n.base_url
+      v[n.probe_timeout_env] = n.probe_timeout
+    }
+    return v
+  }
+  const [vals, setVals] = useState<Record<string, string>>(seed)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [probes, setProbes] = useState<Record<string, LocalNodeProbe | 'testing'>>({})
+
+  function set(key: string, value: string) {
+    setVals(v => ({ ...v, [key]: value }))
+  }
+
+  function effectiveTimeout(n: LocalNode): string {
+    const own = (vals[n.probe_timeout_env] || '').trim()
+    if (own) return own
+    const shared = (vals[data.shared_probe_timeout_env] || '').trim()
+    if (shared) return shared
+    return String(data.default_probe_timeout)
+  }
+
+  async function test(n: LocalNode) {
+    const url = (vals[n.base_url_env] || '').trim()
+    if (!url) { setProbes(p => ({ ...p, [n.key]: { ok: false, server_up: false, error: 'Enter an endpoint URL first.', timeout: 0 } })); return }
+    setProbes(p => ({ ...p, [n.key]: 'testing' }))
+    try {
+      const res = await testLocalNode(url, effectiveTimeout(n))
+      setProbes(p => ({ ...p, [n.key]: res }))
+    } catch (e) {
+      setProbes(p => ({ ...p, [n.key]: { ok: false, server_up: false, error: e instanceof Error ? e.message : 'Probe failed.', timeout: 0 } }))
+    }
+  }
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault()
+    setErr(null); setMsg(null); setBusy(true)
+    const payload: Record<string, string> = {}
+    for (const [k, v] of Object.entries(vals)) payload[k] = (v || '').trim()
+    try {
+      await updateLocalNodes(payload)
+      setMsg('Endpoint configuration saved — the swarm picks it up immediately.')
+      onSaved()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not save the configuration.')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <Card style={{ padding: '18px 20px', marginTop: 6, marginBottom: 16 }}>
+      <p style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Network size={16} /> Mesh node endpoints
+      </p>
+      <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginBottom: 14, maxWidth: 660 }}>
+        Point each local provider at its server. Use <code>http://localhost:…</code> for a server on this
+        box, or a Cloudflare Mesh IP (e.g. <code>http://100.96.0.1:11434/v1</code>) for a remote node.
+        Changes persist and apply immediately — no restart, no editing Secrets. Raise the probe timeout for
+        Mesh hops (localhost is fast; cross-network needs more headroom).
+      </p>
+
+      {err && <Alert type="error">{err}</Alert>}
+      {msg && <Alert type="success">{msg}</Alert>}
+
+      <form onSubmit={save}>
+        {data.nodes.map(n => {
+          const probe = probes[n.key]
+          return (
+            <div key={n.key} className="glass-card" style={{ padding: 14, marginBottom: 12 }}>
+              <p style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+                {n.label}
+                {n.is_default && <span className="badge badge-gray">default endpoint</span>}
+              </p>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div style={{ flex: '2 1 300px' }}>
+                  <label style={fieldLabel}>Endpoint URL <code style={envHint}>{n.base_url_env}</code></label>
+                  <input
+                    className="input"
+                    placeholder={n.default_base_url}
+                    value={vals[n.base_url_env] ?? ''}
+                    onChange={e => set(n.base_url_env, e.target.value)}
+                    style={{ width: '100%', fontFamily: 'monospace' }}
+                  />
+                </div>
+                <div style={{ flex: '1 1 130px' }}>
+                  <label style={fieldLabel}>Probe timeout (s) <code style={envHint}>{n.probe_timeout_env}</code></label>
+                  <input
+                    className="input"
+                    placeholder={`shared / ${data.default_probe_timeout}`}
+                    value={vals[n.probe_timeout_env] ?? ''}
+                    onChange={e => set(n.probe_timeout_env, e.target.value)}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => test(n)}
+                  disabled={probe === 'testing'}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}
+                >
+                  <Wifi size={14} /> {probe === 'testing' ? 'Testing…' : 'Test connection'}
+                </button>
+              </div>
+              {probe && probe !== 'testing' && (
+                <div style={{ marginTop: 10 }}>
+                  {probe.server_up
+                    ? <span style={{ fontSize: 12.5, color: '#34d399', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <CheckCircle size={14} /> Reachable — {probe.host}:{probe.port} responded in {probe.latency_ms} ms
+                      </span>
+                    : <span style={{ fontSize: 12.5, color: '#f87171', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <XCircle size={14} /> Unreachable{probe.host ? ` — ${probe.host}:${probe.port}` : ''}{probe.error ? ` (${probe.error})` : ''}
+                      </span>}
+                </div>
+              )}
+            </div>
+          )
+        })}
+
+        <div className="glass-card" style={{ padding: 14, marginBottom: 14 }}>
+          <div style={{ flex: '1 1 200px', maxWidth: 280 }}>
+            <label style={fieldLabel}>Shared probe timeout (s) <code style={envHint}>{data.shared_probe_timeout_env}</code></label>
+            <input
+              className="input"
+              placeholder={String(data.default_probe_timeout)}
+              value={vals[data.shared_probe_timeout_env] ?? ''}
+              onChange={e => set(data.shared_probe_timeout_env, e.target.value)}
+              style={{ width: '100%' }}
+            />
+          </div>
+          <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 8 }}>
+            Fallback timeout for any provider without its own override. Leave a field blank to revert it to
+            the default ({data.default_probe_timeout}s).
+          </p>
+        </div>
+
+        <button type="submit" className="btn btn-primary btn-sm" disabled={busy} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <Save size={14} /> {busy ? 'Saving…' : 'Save endpoints'}
+        </button>
+      </form>
+    </Card>
+  )
+}
+
+const envHint: React.CSSProperties = {
+  fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'monospace', marginLeft: 4,
 }
 
 function RegistryPanel({ registry, path, exists, providerKeys, onChange }: {

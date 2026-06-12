@@ -1133,6 +1133,62 @@ async def api_local_models_registry_remove(
 
 
 # ---------------------------------------------------------------------------
+# Local model nodes — Mesh / localhost endpoint config + connectivity probe
+# ---------------------------------------------------------------------------
+
+@router.get("/local-nodes")
+async def api_local_nodes(_=Depends(require_auth)):
+    from src.web.local_nodes import node_settings
+    return node_settings()
+
+
+@router.post("/local-nodes")
+async def api_local_nodes_update(request: Request, _=Depends(require_auth)):
+    from src.web.local_nodes import update_node_settings
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "Expected a JSON body.")
+    settings = data.get("settings") if isinstance(data, dict) else None
+    if not isinstance(settings, dict):
+        raise HTTPException(400, "Expected a 'settings' object of name/value pairs.")
+    try:
+        applied = update_node_settings(settings)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("Failed to update local node settings: %s", e)
+        raise HTTPException(500, "Could not save local node settings.")
+    return {"ok": True, "applied": applied}
+
+
+@router.post("/local-nodes/test")
+async def api_local_nodes_test(
+    base_url: str = Form(""),
+    timeout: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.web.local_nodes import (
+        DEFAULT_PROBE_TIMEOUT, probe_endpoint, validate_timeout, validate_url,
+    )
+    url = base_url.strip()
+    if not url:
+        raise HTTPException(400, "An endpoint URL is required to test.")
+    try:
+        validate_url(url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    t = DEFAULT_PROBE_TIMEOUT
+    if timeout.strip():
+        try:
+            t = validate_timeout(timeout.strip())
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    result = await probe_endpoint(url, t)
+    return {"ok": True, "timeout": t, **result}
+
+
+# ---------------------------------------------------------------------------
 # Capabilities
 # ---------------------------------------------------------------------------
 

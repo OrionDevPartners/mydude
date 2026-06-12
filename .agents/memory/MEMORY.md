@@ -26,3 +26,4 @@
 - [Prompt-opt live-provider runs](promptopt-real-provider-runs.md) — MIPRO/GEPA vs a real LLM: bounded timeout+fail-loud, deepcopy-safe LM, noisy small valsets, completion-only persistence, budget levers.
 - [Vault->env secret sync](vault-env-secret-sync.md) — key-sync must never delete env/connector-sourced secrets it doesn't own, or it wipes the live provider credential.
 - [Secret/env staleness](secret-env-staleness.md) — agent bash snapshots env; read live secret from workflow /proc/PID/environ, compare SHA fingerprints; Gemini disabled-API gotcha.
+- [Non-secret settings → env mirror](settings-env-mirror.md) — app_settings values mirrored to os.environ on write+boot so swarm picks them up restart-free; patch settings_store.SessionLocal to test.

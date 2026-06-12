@@ -180,6 +180,21 @@ export const removeLocalModel = (model_id: string, provider: string) =>
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 
+// Local model nodes — Mesh / localhost endpoint config + connectivity probe
+export const getLocalNodes = () => request<LocalNodesData>('/local-nodes')
+export const updateLocalNodes = (settings: Record<string, string>) =>
+  request<{ ok: boolean; applied: Record<string, string> }>('/local-nodes', {
+    method: 'POST',
+    body: JSON.stringify({ settings }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+export const testLocalNode = (base_url: string, timeout?: string) =>
+  request<LocalNodeProbe>('/local-nodes/test', {
+    method: 'POST',
+    body: formBody({ base_url, timeout: timeout || '' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+
 // Capabilities
 export const getCapabilities = () => request<CapabilitiesData>('/capabilities')
 export const toggleCapability = (capability: string, enabled: boolean) =>
@@ -542,6 +557,19 @@ export interface LocalProvider {
 export interface LocalModelsData {
   providers: LocalProvider[]; reachable_count: number; total_count: number;
   registry: Record<string, unknown>[]; registry_path: string; registry_exists: boolean;
+}
+export interface LocalNode {
+  key: string; label: string; base_url_env: string; base_url: string;
+  default_base_url: string; is_default: boolean; probe_timeout_env: string;
+  probe_timeout: string; effective_timeout: number;
+}
+export interface LocalNodesData {
+  nodes: LocalNode[]; shared_probe_timeout_env: string; shared_probe_timeout: string;
+  default_probe_timeout: number; min_timeout: number; max_timeout: number;
+}
+export interface LocalNodeProbe {
+  ok: boolean; server_up: boolean; latency_ms?: number; host?: string;
+  port?: number; error?: string; timeout: number;
 }
 export interface CapabilitiesData { browser_enabled: boolean; ssh_enabled: boolean; email_enabled: boolean; browser_backends: unknown[]; ssh: SshStatus; email: EmailStatus; browser_domains: string[]; ssh_commands: string[]; audit: CapabilityAudit[]; encryption_persistent: boolean }
 export interface SshStatus { configured: boolean; host: string; user: string; port: number; auth: string; host_verified: boolean }
