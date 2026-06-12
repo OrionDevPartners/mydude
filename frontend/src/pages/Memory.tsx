@@ -3,16 +3,53 @@ import { getMemory } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Empty } from '@/components/ui'
 import { fmtDate } from '@/lib/utils'
-import { Search, Brain } from 'lucide-react'
+import { Search, Brain, Database } from 'lucide-react'
+
+function num(v: unknown): number | null {
+  return typeof v === 'number' ? v : null
+}
 
 export function Memory() {
   const [q, setQ] = useState('')
   const [layer, setLayer] = useState('')
   const { data, loading, error } = useApi(() => getMemory({ q: q || undefined, layer: layer || undefined }), [q, layer])
 
+  const sub = data?.substrate
+  const localEntries = num(sub?.local?.cache_entries)
+  const cloudEntries = num(sub?.cloud?.cache_entries)
+  const events = data?.substrate_events ?? []
+
   return (
     <div>
       <PageHeader title="Memory Explorer" subtitle={`${data?.total ?? 0} memory layers stored`} />
+
+      {sub && (localEntries !== null || cloudEntries !== null) && (
+        <Card style={{ padding: '14px 18px', marginBottom: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <Database size={14} style={{ color: 'var(--text-muted)' }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Durable Long-Term Memory</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>persisted in the database — survives restarts</span>
+          </div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <div><div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>{localEntries ?? '—'}</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Local KG entries</div></div>
+            <div><div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>{cloudEntries ?? '—'}</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Cloud entries</div></div>
+          </div>
+          {events.length > 0 && (
+            <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>Recent activity</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {events.slice(0, 8).map((ev, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                    <span className="badge badge-purple" style={{ fontSize: 10 }}>{ev.type}</span>
+                    <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.detail}</span>
+                    <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{ev.timestamp ? fmtDate(new Date(ev.timestamp * 1000).toISOString()) : ''}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 18 }}>
         <div style={{ position: 'relative', flex: 1 }}>

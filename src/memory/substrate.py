@@ -47,6 +47,26 @@ class MemorySubstrate:
         self._audit: Deque[MemoryEvent] = deque(maxlen=_AUDIT_MAXLEN)
         self._last_sync: Optional[float] = None
         self._lock = threading.Lock()
+        # Hydrate the in-process audit ring from the durable DB log so recent
+        # history survives restarts and the dashboard shows it immediately.
+        self._hydrate_audit_from_db()
+
+    def _hydrate_audit_from_db(self) -> None:
+        try:
+            from . import db_store
+            for ev in db_store.load_audit_events(limit=_AUDIT_MAXLEN):
+                self._audit.append(ev)
+        except Exception as e:
+            logger.warning("MemorySubstrate audit hydrate from DB failed: %s", e)
+
+    def _record_event(self, event: MemoryEvent) -> None:
+        """Append an audit event to the in-process ring and the durable DB log."""
+        self._audit.append(event)
+        try:
+            from . import db_store
+            db_store.append_audit_event(event)
+        except Exception as e:
+            logger.warning("MemorySubstrate audit DB persist failed: %s", e)
 
     def write_claim(
         self,
@@ -90,7 +110,7 @@ class MemorySubstrate:
             detail=f"Persisted [{category}] ({scope}, conf={confidence:.2f}, verified={verified}): {content[:100]}",
             memory_ids=[entry.memory_id],
         )
-        self._audit.append(event)
+        self._record_event(event)
         logger.info(event.to_log_str())
         return entry
 
@@ -118,7 +138,7 @@ class MemorySubstrate:
             detail=f"Forgot {deleted} memory node(s) (Private-Mode purge)",
             memory_ids=list(memory_ids)[:5],
         )
-        self._audit.append(event)
+        self._record_event(event)
         logger.info(event.to_log_str())
         return deleted
 
@@ -156,7 +176,7 @@ class MemorySubstrate:
                 detail=f"Recalled {len(results)} memories for query: {query[:80]}",
                 memory_ids=[e.memory_id for e in results],
             )
-            self._audit.append(event)
+            self._record_event(event)
             logger.info(event.to_log_str())
 
         return results
@@ -212,7 +232,7 @@ class MemorySubstrate:
         report = self._bridge.sync(direction=direction, min_confidence=min_confidence)  # type: ignore[arg-type]
         self._last_sync = time.time()
         for ev in report.events:
-            self._audit.append(ev)
+            self._record_event(ev)
         return report
 
     def persist_handoff(

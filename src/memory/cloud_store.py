@@ -28,32 +28,44 @@ class CloudMemoryAdapter(MemoryAdapterBase):
             self._store = None
             self._available = False
 
+        # Durable DB-backed cache so cloud-side entries survive process restarts
+        # even when the Mem0 store is the ephemeral local-file fallback.
+        self._cache: Dict[str, MemoryEntry] = {}
+        self._restore_cache_from_db()
+
     def add(self, entry: MemoryEntry) -> MemoryEntry:
-        if not self._available or not self._store:
-            return entry
+        if self._available and self._store:
+            try:
+                record = self._store.add(
+                    content=entry.content,
+                    category=entry.category,
+                    confidence=entry.confidence,
+                    source=entry.source,
+                    metadata={
+                        "memory_id": entry.memory_id,
+                        "verified": entry.verified,
+                        "confidence": entry.confidence,
+                        "category": entry.category,
+                        "source": entry.source,
+                        "created_at": entry.created_at,
+                        "updated_at": entry.updated_at,
+                        "decay": entry.decay,
+                    },
+                )
+                # Always adopt the store-assigned id so the bridge can delete by the
+                # correct id on subsequent merge operations.
+                if record.memory_id:
+                    entry.memory_id = record.memory_id
+            except Exception as e:
+                logger.warning("CloudMemoryAdapter.add failed: %s", e)
+
+        # Cache + flush to the durable DB store (keyed by the final memory_id).
+        self._cache[entry.memory_id] = entry
         try:
-            record = self._store.add(
-                content=entry.content,
-                category=entry.category,
-                confidence=entry.confidence,
-                source=entry.source,
-                metadata={
-                    "memory_id": entry.memory_id,
-                    "verified": entry.verified,
-                    "confidence": entry.confidence,
-                    "category": entry.category,
-                    "source": entry.source,
-                    "created_at": entry.created_at,
-                    "updated_at": entry.updated_at,
-                    "decay": entry.decay,
-                },
-            )
-            # Always adopt the store-assigned id so the bridge can delete by the
-            # correct id on subsequent merge operations.
-            if record.memory_id:
-                entry.memory_id = record.memory_id
+            from . import db_store
+            db_store.upsert_entry("cloud", entry)
         except Exception as e:
-            logger.warning("CloudMemoryAdapter.add failed: %s", e)
+            logger.warning("CloudMemoryAdapter.add DB persist failed: %s", e)
         return entry
 
     def search(self, query: str, top_k: int = 5,
@@ -68,22 +80,46 @@ class CloudMemoryAdapter(MemoryAdapterBase):
             return []
 
     def get_all(self) -> List[MemoryEntry]:
-        if not self._available or not self._store:
-            return []
-        try:
-            return [self._record_to_entry(r) for r in self._store.get_all()]
-        except Exception as e:
-            logger.warning("CloudMemoryAdapter.get_all failed: %s", e)
-            return []
+        # Union the live store with the durable DB-backed cache (cache wins on
+        # id collisions) so entries persisted before a restart are never lost.
+        merged: Dict[str, MemoryEntry] = {}
+        if self._available and self._store:
+            try:
+                for r in self._store.get_all():
+                    e = self._record_to_entry(r)
+                    merged[e.memory_id] = e
+            except Exception as e:
+                logger.warning("CloudMemoryAdapter.get_all failed: %s", e)
+        for mid, entry in self._cache.items():
+            merged[mid] = entry
+        return list(merged.values())
 
     def delete(self, memory_id: str) -> bool:
-        if not self._available or not self._store:
-            return False
+        deleted = False
+        if self._available and self._store:
+            try:
+                deleted = bool(self._store.delete(memory_id))
+            except Exception as e:
+                logger.warning("CloudMemoryAdapter.delete failed: %s", e)
+        if memory_id in self._cache:
+            self._cache.pop(memory_id, None)
+            deleted = True
         try:
-            return self._store.delete(memory_id)
+            from . import db_store
+            if db_store.delete_entry("cloud", memory_id):
+                deleted = True
         except Exception as e:
-            logger.warning("CloudMemoryAdapter.delete failed: %s", e)
-            return False
+            logger.warning("CloudMemoryAdapter.delete DB remove failed: %s", e)
+        return deleted
+
+    def _restore_cache_from_db(self) -> None:
+        """Load the durable cloud-side entries from the DB on startup."""
+        try:
+            from . import db_store
+            for entry in db_store.load_entries("cloud"):
+                self._cache[entry.memory_id] = entry
+        except Exception as e:
+            logger.warning("CloudMemoryAdapter cache restore from DB failed: %s", e)
 
     def apply_decay(self) -> None:
         if not self._available or not self._store:
@@ -94,7 +130,11 @@ class CloudMemoryAdapter(MemoryAdapterBase):
             logger.warning("CloudMemoryAdapter.apply_decay failed: %s", e)
 
     def stats(self) -> Dict:
-        base = {"adapter": "mem0_cloud", "available": self._available}
+        base = {
+            "adapter": "mem0_cloud",
+            "available": self._available,
+            "cache_entries": len(self._cache),
+        }
         if self._available and self._store:
             try:
                 base.update(self._store.stats())

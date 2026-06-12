@@ -35,6 +35,9 @@ class LocalMemoryAdapter(MemoryAdapterBase):
         # durable local state across process restarts — not just in-memory.
         self._local_cache: Dict[str, MemoryEntry] = {}
         self._restore_cache_from_graph()
+        # The DB is the durable source of truth; overlay it last so its
+        # fully-attributed entries win over reconstructed KG nodes.
+        self._restore_cache_from_db()
 
     def add(self, entry: MemoryEntry) -> MemoryEntry:
         if not entry.memory_id:
@@ -62,6 +65,13 @@ class LocalMemoryAdapter(MemoryAdapterBase):
                     pass
             except Exception as e:
                 logger.warning("LocalMemoryAdapter.add KG ingest failed: %s", e)
+
+        # Flush to the durable DB store so the entry survives process restarts.
+        try:
+            from . import db_store
+            db_store.upsert_entry("local", entry)
+        except Exception as e:
+            logger.warning("LocalMemoryAdapter.add DB persist failed: %s", e)
 
         return entry
 
@@ -178,6 +188,12 @@ class LocalMemoryAdapter(MemoryAdapterBase):
                     )
             except Exception as exc:
                 logger.warning("LocalMemoryAdapter.delete KG remove failed: %s", exc)
+        # Remove the durable DB row so deletes converge across restarts.
+        try:
+            from . import db_store
+            db_store.delete_entry("local", memory_id)
+        except Exception as exc:
+            logger.warning("LocalMemoryAdapter.delete DB remove failed: %s", exc)
         return True
 
     def _restore_cache_from_graph(self) -> None:
@@ -210,6 +226,20 @@ class LocalMemoryAdapter(MemoryAdapterBase):
                     )
         except Exception as e:
             logger.warning("LocalMemoryAdapter cache restore from graph failed: %s", e)
+
+    def _restore_cache_from_db(self) -> None:
+        """Overlay the durable DB store onto the cache on startup.
+
+        The DB is the durable source of truth for which entries exist, so its
+        rows (which carry full metadata written by add()) take precedence over
+        entries reconstructed from raw KG nodes.
+        """
+        try:
+            from . import db_store
+            for entry in db_store.load_entries("local"):
+                self._local_cache[entry.memory_id] = entry
+        except Exception as e:
+            logger.warning("LocalMemoryAdapter cache restore from DB failed: %s", e)
 
     def apply_decay(self) -> None:
         if self._available and self._graph:

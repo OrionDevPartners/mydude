@@ -1103,6 +1103,60 @@ class EvolutionCycleLog(Base):
 
 
 
+class MemoryEntryRecord(Base):
+    """Durable persistence of a substrate MemoryEntry.
+
+    Mirrors the ``MemoryEntry`` dataclass (src/memory/adapter.py) so the local
+    (Cognee) and cloud (Mem0) adapter caches survive process restarts and
+    redeploys. The Cognee KG is JSON-persisted to disk and Mem0 has a local-file
+    fallback, but those are process/host-local; this table is the durable source
+    of truth for "which entries exist" across the whole stack.
+
+    ``adapter`` discriminates which side wrote the row ("local" | "cloud"); the
+    same logical entry can exist on both sides keyed by the same ``memory_id``,
+    so uniqueness is on the (memory_id, adapter) pair. Timestamps mirror the
+    dataclass's float epoch fields exactly so values round-trip without drift.
+    """
+    __tablename__ = "memory_entries"
+    __table_args__ = (
+        UniqueConstraint("memory_id", "adapter", name="uq_memory_entry_id_adapter"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    memory_id = Column(String(64), nullable=False, index=True)
+    adapter = Column(String(20), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    category = Column(String(60), nullable=True)
+    confidence = Column(Float, default=1.0)
+    source = Column(Text, nullable=True)
+    entry_created_at = Column(Float, nullable=True)
+    entry_updated_at = Column(Float, nullable=True)
+    access_count = Column(Integer, default=0)
+    decay = Column(Float, default=1.0)
+    verified = Column(Boolean, default=False)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MemoryAuditLog(Base):
+    """Durable audit trail of substrate MemoryEvents.
+
+    Mirrors the ``MemoryEvent`` dataclass (src/memory/adapter.py). The substrate
+    keeps a bounded in-process deque for fast dashboard reads; this table makes
+    the audit trail durable so recall/persist/sync/consolidate history survives
+    restarts and is permanently queryable.
+    """
+    __tablename__ = "memory_audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(String(20), nullable=False, index=True)
+    detail = Column(Text, nullable=True)
+    memory_ids_json = Column(Text, nullable=True)
+    event_ts = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class User(Base):
     """An individual operator account.
 

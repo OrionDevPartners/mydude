@@ -570,8 +570,10 @@ export interface LedgerEntry { id: number; agent_role: string; provider: string;
 export interface MetricRow { provider: string; calls: number; avg_latency: number; success_rate: number; avg_rating: number | null }
 export interface ProvenanceData { records: ProvenanceRecord[]; q: string; page: number; total_pages: number; total: number }
 export interface ProvenanceRecord { id: number; claim_text: string; origin_role: string; origin_provider: string; confidence: number; verified: boolean; created_at: string }
-export interface MemoryData { layers: MemoryLayer[]; layer_types: string[]; q: string; layer: string; total: number }
+export interface MemoryData { layers: MemoryLayer[]; layer_types: string[]; q: string; layer: string; total: number; substrate?: SubstrateStatus; substrate_events?: SubstrateEvent[] }
 export interface MemoryLayer { id: number; layer_type: string; topic: string; summary: string; content: string; created_at: string }
+export interface SubstrateStatus { local?: Record<string, unknown>; cloud?: Record<string, unknown>; last_sync?: number | null; audit_events?: number }
+export interface SubstrateEvent { type: string; detail: string; memory_ids: string[]; timestamp: number; log: string }
 export interface SystemData { results: Record<string, unknown>; error: string | null }
 export interface LocalModelGuidance {
   install_url: string | null; models_url: string | null; install_note: string | null;

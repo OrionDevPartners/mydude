@@ -21,7 +21,8 @@ TF-IDF cosine similarity scores ~0.0 for "finish by Friday" vs "deadline is Mond
 - `src/vendors/cognee/` — local KG (JSON file on disk, TF-IDF indexed)
 - `src/vendors/mem0/` — cloud store (Mem0 API when MEM0_API_KEY set, local-file fallback otherwise)
 - `src/memory/substrate.py` — process-wide singleton via `get_substrate()`; call `write_claim()` and `recall()` only through this
-- The `_local_cache` in LocalMemoryAdapter is process-local and lost on restart; DB persistence is a known gap (follow-up task)
+- DB persistence is the durable source of truth: both adapters + the audit ring now load from / flush to PostgreSQL via `src/memory/db_store.py` (`memory_entries` + `memory_audit_logs`). Entries are keyed by (memory_id, adapter="local"|"cloud"); adapters rehydrate caches on init so memory survives restarts. db_store degrades safely (logs, never crashes) when the DB is down.
+- KG ingest pitfall: `LocalMemoryAdapter.add()` → `_query.ingest()` → `KnowledgeGraph.add_node()._save()` is SLOW (rewrites the whole KG JSON per node) and can appear to hang in this container — it is pre-existing and unrelated to DB persistence. To test the DB/cache path fast, toggle the adapter's KG off (`_available=False; _query=None; _graph=None`) so `add()` only does cache + db_store.
 
 ## Vendored library approach
 Both Cognee and Mem0 are vendored as self-contained Python modules under `src/vendors/`, not pip dependencies. This avoids adding heavy transitive deps (neo4j, qdrant, etc.) while giving full control. The trimmed implementations cover only KG store + TF-IDF query + entity extraction (Cognee) and add/search/get_all/delete + local-file fallback (Mem0).

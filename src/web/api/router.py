@@ -1027,7 +1027,27 @@ async def api_memory(request: Request, _=Depends(require_auth)):
         } for l in layers]
     finally:
         db.close()
-    return {"layers": rows, "layer_types": layer_types, "q": q, "layer": layer, "total": total}
+
+    # Durable substrate status + recent audit trail (now DB-backed, so these
+    # survive process restarts). Best-effort: never break the page if the
+    # substrate is unavailable.
+    substrate_status: dict = {}
+    substrate_events: list = []
+    try:
+        from src.memory import get_substrate
+        substrate = get_substrate()
+        if substrate is not None:
+            substrate_status = substrate.status()
+            substrate_events = substrate.audit_events(limit=20)
+    except Exception as e:
+        logger.warning("api_memory substrate status failed: %s", e)
+
+    return {
+        "layers": rows, "layer_types": layer_types, "q": q, "layer": layer,
+        "total": total,
+        "substrate": substrate_status,
+        "substrate_events": substrate_events,
+    }
 
 
 @router.post("/memory/sync")
