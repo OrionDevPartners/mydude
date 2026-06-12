@@ -864,6 +864,27 @@ async def api_governance(request: Request, _=Depends(require_auth)):
     }
 
 
+@router.get("/governance/epistemic-trend")
+async def api_epistemic_trend(window: str = "30", _=Depends(require_auth)):
+    """Epistemic-label trend + windowed summary totals for the Governance page.
+
+    ``window`` is a run-count ("10"/"30"/"100") or date-range ("24h"/"7d"/"30d")
+    key; unknown keys fall back to the default window. Both the per-run trend and
+    the summary ratios recompute for the chosen window.
+    """
+    from src.database import SessionLocal
+    from src.web.routes_governance import _epistemic_trend
+    db = SessionLocal()
+    try:
+        trend = _epistemic_trend(db, window=window)
+    finally:
+        db.close()
+    trend["points"] = [
+        {**p, "created_at": _dt(p["created_at"])} for p in trend["points"]
+    ]
+    return trend
+
+
 @router.post("/governance/alerts/{alert_id}/ack")
 async def api_ack_alert(alert_id: int, _=Depends(require_auth)):
     from src.database import SessionLocal

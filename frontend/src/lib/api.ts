@@ -150,6 +150,11 @@ export const setCloudShift = (enabled: boolean, reason?: string) =>
       body: formBody({ enabled: enabled ? 'true' : 'false', reason: reason || '' }),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
+export const getEpistemicTrend = (window?: string) => {
+  const p = new URLSearchParams()
+  if (window) p.set('window', window)
+  return request<EpistemicTrendData>(`/governance/epistemic-trend?${p}`)
+}
 export const getProvenance = (params?: { q?: string; page?: number }) => {
   const p = new URLSearchParams()
   if (params?.q) p.set('q', params.q)
@@ -548,6 +553,19 @@ export interface ConnectedData { rows: ConnectedRow[]; proxy_available: boolean;
 export interface ConnectedRow { name: string; category: string; connector: string; connected: boolean; created_at: string | null; description?: string }
 export interface GovernanceData { alerts: Alert[]; open_alerts: number; ledger: LedgerEntry[]; metrics: MetricRow[]; total_metrics: number; cloud_shift_active: boolean; exec_locus_dist: unknown[] }
 export interface Alert { id: number; rule: string; severity: string; detail: string; acknowledged: boolean; created_at: string }
+export interface EpistemicPoint { run_id: string; created_at: string | null; counts: Record<string, number>; total: number; pct: Record<string, number>; aborted: boolean }
+export interface EpistemicWindowOption { key: string; label: string }
+export interface EpistemicTrendData {
+  points: EpistemicPoint[]
+  totals: Record<string, number>
+  grand_total: number
+  verified_ratio: number
+  unknown_ratio: number
+  run_count: number
+  window: string
+  window_label: string
+  windows: EpistemicWindowOption[]
+}
 export interface LedgerEntry { id: number; agent_role: string; provider: string; score: number; detail: string; created_at: string }
 export interface MetricRow { provider: string; calls: number; avg_latency: number; success_rate: number; avg_rating: number | null }
 export interface ProvenanceData { records: ProvenanceRecord[]; q: string; page: number; total_pages: number; total: number }

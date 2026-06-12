@@ -9,17 +9,24 @@
 <div class="card">
     <div class="card-header">
         <h3>🧪 Epistemic Label Trend</h3>
-        <span class="meta">last {{ epistemic_trend.run_count }} run{{ 's' if epistemic_trend.run_count != 1 else '' }}</span>
+        <span class="meta">{{ epistemic_trend.window_label }} · {{ epistemic_trend.run_count }} run{{ 's' if epistemic_trend.run_count != 1 else '' }}</span>
     </div>
     <div class="card-body">
+        <div class="ep-window-selector" style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-bottom:0.9rem;">
+            {% for w in epistemic_trend.windows %}
+            <a href="?window={{ w.key }}"
+               class="status-badge {{ 'sev-low' if w.key == epistemic_trend.window else '' }}"
+               style="text-decoration:none;{% if w.key != epistemic_trend.window %}opacity:0.6;{% endif %}">{{ w.label }}</a>
+            {% endfor %}
+        </div>
         <div class="ep-summary-grid">
             <div class="ep-stat">
                 <div class="ep-stat-value" style="color:var(--ep-verified);">{{ epistemic_trend.verified_ratio }}%</div>
-                <div class="ep-stat-label">Verified (global)</div>
+                <div class="ep-stat-label">Verified (window)</div>
             </div>
             <div class="ep-stat">
                 <div class="ep-stat-value" style="color:var(--ep-unknown);">{{ epistemic_trend.unknown_ratio }}%</div>
-                <div class="ep-stat-label">Unknown (global)</div>
+                <div class="ep-stat-label">Unknown (window)</div>
             </div>
             <div class="ep-stat">
                 <div class="ep-stat-value">{{ epistemic_trend.grand_total }}</div>

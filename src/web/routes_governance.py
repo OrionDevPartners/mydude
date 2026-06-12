@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Request, Depends, Form
 from fastapi.responses import RedirectResponse, HTMLResponse
 from sqlalchemy import func, Integer
@@ -23,6 +24,30 @@ from src.web.templating import templates
 
 EPISTEMIC_LABELS = ("verified", "derived", "hypothesis", "unknown")
 
+# Selectable windows for the epistemic-label trend. "count" windows take the most
+# recent N indexed runs; "range" windows take every run within a rolling period.
+# Order here drives the order of the selector control in the UI.
+EPISTEMIC_WINDOWS = [
+    {"key": "10", "label": "Last 10 runs", "mode": "count", "count": 10},
+    {"key": "30", "label": "Last 30 runs", "mode": "count", "count": 30},
+    {"key": "100", "label": "Last 100 runs", "mode": "count", "count": 100},
+    {"key": "24h", "label": "Last 24 hours", "mode": "range", "hours": 24},
+    {"key": "7d", "label": "Last 7 days", "mode": "range", "hours": 24 * 7},
+    {"key": "30d", "label": "Last 30 days", "mode": "range", "hours": 24 * 30},
+]
+DEFAULT_EPISTEMIC_WINDOW = "30"
+
+
+def _resolve_window(window):
+    """Return the window spec for a key, falling back to the default if unknown."""
+    for w in EPISTEMIC_WINDOWS:
+        if w["key"] == window:
+            return w
+    for w in EPISTEMIC_WINDOWS:
+        if w["key"] == DEFAULT_EPISTEMIC_WINDOW:
+            return w
+    return EPISTEMIC_WINDOWS[0]
+
 
 def _parse_epistemic(raw):
     """Parse an epistemic_summary_json blob into a {label: count} dict."""
@@ -42,23 +67,33 @@ def _parse_epistemic(raw):
     return out
 
 
-def _epistemic_trend(db, limit=30):
-    """Build epistemic-label trend + global totals across indexed swarm runs.
+def _epistemic_trend(db, window=DEFAULT_EPISTEMIC_WINDOW):
+    """Build epistemic-label trend + totals for a selectable run/time window.
+
+    ``window`` is a key from ``EPISTEMIC_WINDOWS`` (e.g. "10"/"30"/"100" runs or
+    "24h"/"7d"/"30d" date ranges). Unknown keys fall back to the default. Both the
+    per-run trend AND the summary totals/ratios are computed over the SAME windowed
+    set, so the summary cards recompute when the operator changes the window.
 
     Returns a dict with:
       - points: chronological list of {created_at, total, counts{label:n}, pct{label:n}}
-      - totals: global sum per label across ALL indexed runs
-      - grand_total: sum of all label counts
-      - verified_ratio / unknown_ratio: global share of verified vs. unknown
-      - run_count: number of runs in the trend window
+      - totals: sum per label across the windowed runs
+      - grand_total: sum of all label counts in the window
+      - verified_ratio / unknown_ratio: windowed share of verified vs. unknown
+      - run_count: number of runs in the window
+      - window / window_label: the resolved window key and human label
+      - windows: the full list of selectable windows ({key, label})
     """
-    recent = (
-        db.query(SwarmRunIndex)
-        .order_by(SwarmRunIndex.created_at.desc())
-        .limit(limit)
-        .all()
-    )
+    spec = _resolve_window(window)
+    query = db.query(SwarmRunIndex).order_by(SwarmRunIndex.created_at.desc())
+    if spec["mode"] == "range":
+        cutoff = datetime.utcnow() - timedelta(hours=spec["hours"])
+        recent = query.filter(SwarmRunIndex.created_at >= cutoff).all()
+    else:
+        recent = query.limit(spec["count"]).all()
+
     points = []
+    totals = {label: 0 for label in EPISTEMIC_LABELS}
     for r in reversed(recent):
         counts = _parse_epistemic(r.epistemic_summary_json)
         total = sum(counts.values())
@@ -74,12 +109,9 @@ def _epistemic_trend(db, limit=30):
             "pct": pct,
             "aborted": r.aborted,
         })
-
-    totals = {label: 0 for label in EPISTEMIC_LABELS}
-    for r in db.query(SwarmRunIndex.epistemic_summary_json).all():
-        counts = _parse_epistemic(r[0])
         for label in EPISTEMIC_LABELS:
             totals[label] += counts[label]
+
     grand_total = sum(totals.values())
     verified_ratio = round(totals["verified"] / grand_total * 100, 1) if grand_total else 0
     unknown_ratio = round(totals["unknown"] / grand_total * 100, 1) if grand_total else 0
@@ -91,6 +123,9 @@ def _epistemic_trend(db, limit=30):
         "verified_ratio": verified_ratio,
         "unknown_ratio": unknown_ratio,
         "run_count": len(points),
+        "window": spec["key"],
+        "window_label": spec["label"],
+        "windows": [{"key": w["key"], "label": w["label"]} for w in EPISTEMIC_WINDOWS],
     }
 
 
@@ -169,7 +204,8 @@ async def governance(request: Request, _=Depends(require_auth)):
             .all()
         )
 
-        epistemic_trend = _epistemic_trend(db, limit=30)
+        epistemic_window = request.query_params.get("window", DEFAULT_EPISTEMIC_WINDOW)
+        epistemic_trend = _epistemic_trend(db, window=epistemic_window)
     finally:
         db.close()
 

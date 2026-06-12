@@ -1,16 +1,35 @@
 import { useState } from 'react'
-import { getGovernance, ackAlert, setCloudShift } from '@/lib/api'
+import { useSearchParams } from 'react-router-dom'
+import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
-import { Card, Spinner, Alert, Tabs, PageHeader, Empty, Badge } from '@/components/ui'
+import { Spinner, Alert, Tabs, PageHeader, Empty } from '@/components/ui'
 import { fmtDate } from '@/lib/utils'
-import { ShieldCheck, Bell, BarChart2, Server } from 'lucide-react'
+import { ShieldCheck, Bell, BarChart2, Server, FlaskConical } from 'lucide-react'
+
+const EP_COLORS: Record<string, string> = {
+  verified: '#34d399',
+  derived: '#60a5fa',
+  hypothesis: '#fbbf24',
+  unknown: '#f87171',
+}
+const EP_LABELS = ['verified', 'derived', 'hypothesis', 'unknown'] as const
 
 export function Governance() {
-  const [tab, setTab] = useState('Alerts')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const epWindow = searchParams.get('window') || '30'
+  const [tab, setTab] = useState(searchParams.get('window') ? 'Epistemic' : 'Alerts')
   const { data, loading, error, refetch } = useApi(getGovernance, [])
+  const { data: trend, loading: trendLoading, error: trendError } =
+    useApi(() => getEpistemicTrend(epWindow), [epWindow])
   const [shiftBusy, setShiftBusy] = useState(false)
   const [shiftMsg, setShiftMsg] = useState<string | null>(null)
   const [shiftErr, setShiftErr] = useState<string | null>(null)
+
+  function setWindow(w: string) {
+    const next = new URLSearchParams(searchParams)
+    next.set('window', w)
+    setSearchParams(next, { replace: true })
+  }
 
   async function handleAck(id: number) {
     await ackAlert(id)
@@ -50,7 +69,7 @@ export function Governance() {
         ) : undefined}
       />
 
-      <Tabs tabs={['Alerts', 'Ledger', 'Metrics', 'Jurisdiction']} active={tab} onChange={setTab} />
+      <Tabs tabs={['Alerts', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction']} active={tab} onChange={setTab} />
 
       {tab === 'Alerts' && data && (
         data.alerts.length === 0
@@ -135,6 +154,99 @@ export function Governance() {
           )
       )}
 
+      {tab === 'Epistemic' && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', marginRight: 4 }}>Window:</span>
+            {(trend?.windows ?? [
+              { key: '10', label: 'Last 10 runs' },
+              { key: '30', label: 'Last 30 runs' },
+              { key: '100', label: 'Last 100 runs' },
+              { key: '24h', label: 'Last 24 hours' },
+              { key: '7d', label: 'Last 7 days' },
+              { key: '30d', label: 'Last 30 days' },
+            ]).map(w => (
+              <button
+                key={w.key}
+                className={`btn btn-sm ${epWindow === w.key ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setWindow(w.key)}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+
+          {trendLoading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
+          {trendError && <Alert type="error">{trendError}</Alert>}
+
+          {trend && (
+            <>
+              <div className="glass-card" style={{ padding: 18, marginBottom: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 14 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)' }}>Epistemic Label Trend</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    {trend.window_label} · {trend.run_count} run{trend.run_count === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12 }}>
+                  <Stat value={`${trend.verified_ratio}%`} label="Verified (window)" color={EP_COLORS.verified} />
+                  <Stat value={`${trend.unknown_ratio}%`} label="Unknown (window)" color={EP_COLORS.unknown} />
+                  <Stat value={String(trend.grand_total)} label="Claims in window" />
+                  <Stat
+                    value={trend.grand_total === 0 ? '—' : (trend.unknown_ratio > trend.verified_ratio ? '⚠ Unverified drift' : '✓ Verified-led')}
+                    label="Verified vs. unknown"
+                    color={trend.grand_total === 0 ? undefined : (trend.unknown_ratio > trend.verified_ratio ? EP_COLORS.unknown : EP_COLORS.verified)}
+                  />
+                </div>
+              </div>
+
+              <div className="glass-card" style={{ padding: 18 }}>
+                <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
+                  {EP_LABELS.map(label => (
+                    <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
+                      <span style={{ width: 11, height: 11, borderRadius: 2, background: EP_COLORS[label] }} />
+                      {label}
+                    </span>
+                  ))}
+                </div>
+                {trend.points.length === 0 ? (
+                  <Empty
+                    message="No indexed runs in this window. Try a wider window or run more tasks."
+                    icon={<FlaskConical size={32} />}
+                  />
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 160, overflowX: 'auto', paddingBottom: 4 }}>
+                      {trend.points.map(pt => (
+                        <div
+                          key={pt.run_id}
+                          title={`${pt.created_at ? fmtDate(pt.created_at) : ''} — ${EP_LABELS.map(l => `${l}: ${pt.counts[l] ?? 0}`).join('  ')}`}
+                          style={{
+                            display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
+                            minWidth: 8, flex: '1 0 8px', height: '100%',
+                            background: pt.total === 0 ? 'var(--surface-2, rgba(255,255,255,0.04))' : 'transparent',
+                            borderRadius: 2,
+                          }}
+                        >
+                          {EP_LABELS.map(label => (
+                            pt.pct[label] > 0 ? (
+                              <div key={label} style={{ height: `${pt.pct[label]}%`, background: EP_COLORS[label] }} />
+                            ) : null
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                    <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 10 }}>
+                      Each bar is one run (oldest → newest), showing the share of each epistemic label in that run's claim ledger.
+                    </p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {tab === 'Jurisdiction' && data && (
         <div>
           <div className="glass-card" style={{ padding: 20, marginBottom: 16 }}>
@@ -179,4 +291,13 @@ function scoreColor(score: number): string {
   if (score >= 0.8) return '#34d399'
   if (score >= 0.5) return '#fbbf24'
   return '#f87171'
+}
+
+function Stat({ value, label, color }: { value: string; label: string; color?: string }) {
+  return (
+    <div style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: 20, fontWeight: 700, color: color || 'var(--text-primary)' }}>{value}</div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>{label}</div>
+    </div>
+  )
 }
