@@ -49,9 +49,10 @@ def _make_backend():
     backend = BrowserbaseBackend(spec)
 
     async def _fake_connect():
-        # (pw, browser, page) — page is never touched because we patch the
-        # module-level _do_login/_do_cancel that would drive it.
-        return _FakeClosable(), _FakeClosable(), object()
+        # (pw, browser, page, cleanup) — page is never touched because we patch
+        # the module-level _do_login/_do_cancel that would drive it. cleanup is
+        # None (Browserbase ends its session when the CDP connection closes).
+        return _FakeClosable(), _FakeClosable(), object(), None
 
     backend._connect = _fake_connect  # type: ignore[assignment]
     return backend

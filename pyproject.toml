@@ -6,6 +6,7 @@ requires-python = ">=3.11,<3.13"
 dependencies = [
     "anthropic>=0.79.0",
     "bcrypt>=4.0.0",
+    "boto3>=1.43.27",
     "cryptography>=46.0.7",
     "dspy>=3.2.1",
     "fastapi>=0.134.0",

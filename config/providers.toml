@@ -180,18 +180,18 @@ adapter = "apify"
 cost = 20
 label = "Apify"
 secrets = ["APIFY_API_TOKEN"]
-notes = "Config-ready stub — wire the Apify implementation to enable."
+notes = "Apify web-scraper Actor via REST (run-sync). Open-page only (non-interactive); enforces the redirect allow-list on requested + final URL; no screenshots."
 
 [browserbackends.agentcore]
 adapter = "agentcore"
 cost = 30
 label = "AWS Bedrock AgentCore Browser"
 secrets = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
-notes = "Config-ready stub — wire the AgentCore implementation to enable."
+notes = "Managed cloud Chromium over a SigV4-signed CDP WebSocket (bedrock-agentcore). Fully interactive; region via settings.region or AWS_REGION (default us-west-2)."
 
 [browserbackends.azure]
 adapter = "azure"
 cost = 40
 label = "Azure Playwright Testing"
 secrets = ["AZURE_PLAYWRIGHT_ACCESS_TOKEN", "PLAYWRIGHT_SERVICE_URL"]
-notes = "Config-ready stub — wire the Azure implementation to enable."
+notes = "Azure Playwright Workspaces cloud Chromium over WebSocket (Bearer access token). Fully interactive; api-version/os overridable via settings."

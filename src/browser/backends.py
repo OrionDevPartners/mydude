@@ -15,12 +15,23 @@ import re
 from pathlib import Path
 
 from src.browser.base import BrowserBackend, BrowserResult
-from src.providers.secrets import get_secret, get_env
+from src.providers.secrets import get_secret, get_env, require_secret
 
 
 def _playwright_importable() -> bool:
     try:
         import playwright  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _boto3_importable() -> bool:
+    """True if the AWS SDK (boto3 + botocore) is importable — required to start
+    and SigV4-sign an AgentCore browser session."""
+    try:
+        import boto3  # noqa: F401
+        import botocore  # noqa: F401
         return True
     except Exception:
         return False
@@ -758,7 +769,73 @@ async def _teardown(browser, pw):
             pass
 
 
-class BrowserbaseBackend(BrowserBackend):
+class _CDPConnectBackend(BrowserBackend):
+    """Base for backends that expose a remote Chromium over a CDP/WebSocket
+    endpoint driven by Playwright.
+
+    Subclasses implement:
+      * ``_available()`` — deps/secrets readiness (must not raise).
+      * ``_connect()`` — open a remote session and return
+        ``(pw, browser, page, cleanup)`` where ``cleanup`` is an optional
+        zero-arg async callable run after the browser is closed (e.g. to stop a
+        billed remote session), or ``None``.
+
+    Because every CDP-driven backend reuses the same ``_extract_page`` /
+    ``_do_login`` / ``_do_cancel`` helpers, they all inherit the identical
+    governance the local backend has: the redirect allow-list route interceptor
+    (SSRF/redirect safety), the "needs you" handling (CAPTCHA, OTP, no password
+    field), and the retention-offer-aware cancel walker.
+    """
+
+    async def _connect(self):
+        raise NotImplementedError
+
+    async def _run(self, body):
+        """Open a session, run ``body(page)``, and always tear down the session."""
+        pw = None
+        browser = None
+        cleanup = None
+        try:
+            pw, browser, page, cleanup = await self._connect()
+            return await body(page)
+        finally:
+            await _teardown(browser, pw)
+            if cleanup is not None:
+                try:
+                    await cleanup()
+                except Exception:
+                    pass
+
+    async def open_page(self, url, *, timeout_ms=30000, screenshot=True, max_chars=4000, allow_host=None):
+        async def body(page):
+            return await _extract_page(
+                page, url, self.key, timeout_ms, screenshot, max_chars, allow_host
+            )
+        return await self._run(body)
+
+    async def login_page(self, login_url, account_url, username, password, *,
+                         otp=None, timeout_ms=45000, max_chars=4000, allow_host=None):
+        async def body(page):
+            err = await _do_login(page, login_url, account_url, username, password,
+                                  otp, self.key, timeout_ms, max_chars, allow_host)
+            if err is not None:
+                return err
+            return await _snapshot(page, self.key, account_url or page.url, max_chars)
+        return await self._run(body)
+
+    async def cancel_action(self, login_url, account_url, username, password, *,
+                            otp=None, confirm_texts=None, timeout_ms=45000,
+                            max_chars=4000, allow_host=None):
+        async def body(page):
+            err = await _do_login(page, login_url, account_url, username, password,
+                                  otp, self.key, timeout_ms, max_chars, allow_host)
+            if err is not None:
+                return err
+            return await _do_cancel(page, confirm_texts, self.key, timeout_ms, max_chars)
+        return await self._run(body)
+
+
+class BrowserbaseBackend(_CDPConnectBackend):
     """Cloud Chromium via Browserbase. Reliable in deployment. Creates a
     session over the REST API then drives it with Playwright over CDP."""
 
@@ -788,7 +865,11 @@ class BrowserbaseBackend(BrowserBackend):
         return connect_url
 
     async def _connect(self):
-        """Open a remote Browserbase session and return (pw, browser, page)."""
+        """Open a remote Browserbase session and return (pw, browser, page, None).
+
+        Browserbase ends the session automatically when the CDP connection
+        closes, so no explicit cleanup callable is needed.
+        """
         import asyncio
 
         from playwright.async_api import async_playwright
@@ -798,82 +879,278 @@ class BrowserbaseBackend(BrowserBackend):
         browser = await pw.chromium.connect_over_cdp(connect_url)
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         page = context.pages[0] if context.pages else await context.new_page()
-        return pw, browser, page
-
-    async def open_page(self, url, *, timeout_ms=30000, screenshot=True, max_chars=4000, allow_host=None):
-        pw = None
-        browser = None
-        try:
-            pw, browser, page = await self._connect()
-            return await _extract_page(
-                page, url, self.key, timeout_ms, screenshot, max_chars, allow_host
-            )
-        finally:
-            await _teardown(browser, pw)
-
-    async def login_page(self, login_url, account_url, username, password, *,
-                         otp=None, timeout_ms=45000, max_chars=4000, allow_host=None):
-        pw = None
-        browser = None
-        try:
-            pw, browser, page = await self._connect()
-            err = await _do_login(page, login_url, account_url, username, password,
-                                  otp, self.key, timeout_ms, max_chars, allow_host)
-            if err is not None:
-                return err
-            return await _snapshot(page, self.key, account_url or page.url, max_chars)
-        finally:
-            await _teardown(browser, pw)
-
-    async def cancel_action(self, login_url, account_url, username, password, *,
-                            otp=None, confirm_texts=None, timeout_ms=45000,
-                            max_chars=4000, allow_host=None):
-        pw = None
-        browser = None
-        try:
-            pw, browser, page = await self._connect()
-            err = await _do_login(page, login_url, account_url, username, password,
-                                  otp, self.key, timeout_ms, max_chars, allow_host)
-            if err is not None:
-                return err
-            return await _do_cancel(page, confirm_texts, self.key, timeout_ms, max_chars)
-        finally:
-            await _teardown(browser, pw)
+        return pw, browser, page, None
 
 
-class _ConfigReadyStub(BrowserBackend):
-    """A backend that is wired into config + selection but not yet implemented.
+class ApifyBackend(BrowserBackend):
+    """Apify cloud scraping. Runs the ``apify/web-scraper`` Actor synchronously
+    over the REST API and returns the page title + visible text.
 
-    It reports unavailable (so the engine fails over past it) and returns a
-    clear, honest message rather than pretending to browse.
+    Apify executes the navigation entirely in its own cloud and does not hand a
+    CDP session back to us, so this backend is intentionally non-interactive:
+    only ``open_page`` is implemented. ``login_page`` / ``cancel_action`` fall
+    through to the base "does not support" result, and the engine fails over to
+    an interactive backend (local / Browserbase / AgentCore / Azure).
+
+    Redirect safety: because the Actor runs remotely we cannot install the
+    in-browser allow-list route interceptor the CDP backends use. We instead
+    enforce ``allow_host`` at both observable ends — the requested URL's host is
+    checked before the run, and the Actor reports the final (post-redirect) URL
+    via ``page.url()``, whose host is re-checked before any content is returned.
+    A run that lands off-list yields a ``blocked`` result with no page content,
+    so an off-list redirect can never exfiltrate page data through this backend.
+    Apify cannot return a screenshot through the dataset, so screenshots are not
+    available on this backend (``screenshot_b64`` is always None) — honest by
+    omission rather than faked.
     """
 
-    vendor = "this backend"
+    API_BASE = "https://api.apify.com/v2"
+    DEFAULT_ACTOR = "apify~web-scraper"
 
     def _available(self) -> bool:
-        return False
+        # requests is a core dependency; secrets_present() (the API token) is
+        # checked by base.available().
+        return True
+
+    def _actor(self) -> str:
+        return self.spec.settings.get("actor") or self.DEFAULT_ACTOR
+
+    def _run_actor(self, url, timeout_ms):
+        """Blocking: run the scraper Actor for a single page and return its item."""
+        import requests
+
+        token = require_secret("APIFY_API_TOKEN")
+        page_function = (
+            "async function pageFunction(context) {"
+            "  const { page, request } = context;"
+            "  const title = await page.title();"
+            "  let text = '';"
+            "  try {"
+            "    text = await page.evaluate(() => document.body ? document.body.innerText : '');"
+            "  } catch (e) {}"
+            "  return { url: request.url, finalUrl: page.url(), title: title, text: text };"
+            "}"
+        )
+        body = {
+            "startUrls": [{"url": url}],
+            "pageFunction": page_function,
+            "proxyConfiguration": {"useApifyProxy": True},
+            "maxRequestRetries": 1,
+            "maxPagesPerCrawl": 1,
+        }
+        # Allow the synchronous Actor run a little longer than the page timeout
+        # to cover cold-start; cap the HTTP read so we never hang forever.
+        timeout_s = max(60, int(timeout_ms / 1000) + 30)
+        r = requests.post(
+            "%s/acts/%s/run-sync-get-dataset-items" % (self.API_BASE, self._actor()),
+            headers={"Authorization": "Bearer %s" % token,
+                     "Content-Type": "application/json"},
+            json=body,
+            timeout=timeout_s,
+        )
+        r.raise_for_status()
+        items = r.json()
+        return items[0] if isinstance(items, list) and items else {}
 
     async def open_page(self, url, *, timeout_ms=30000, screenshot=True, max_chars=4000, allow_host=None):
+        import asyncio
+
+        if allow_host is not None and not allow_host(_host_of(url)):
+            return BrowserResult(
+                ok=False, backend=self.key, url=url, final_url=url, blocked=True,
+                error="Navigation blocked: '%s' is not in the browse allow-list."
+                      % (_host_of(url) or url),
+                attempts=[self.key],
+            )
+
+        item = await asyncio.to_thread(self._run_actor, url, timeout_ms)
+        final_url = item.get("finalUrl") or item.get("url") or url
+
+        if allow_host is not None and not allow_host(_host_of(final_url)):
+            return BrowserResult(
+                ok=False, backend=self.key, url=url, final_url=final_url, blocked=True,
+                error="Navigation blocked: final host '%s' is not in the browse "
+                      "allow-list." % (_host_of(final_url) or final_url),
+                attempts=[self.key],
+            )
+
+        if not item:
+            return BrowserResult(
+                ok=False, backend=self.key, url=url, final_url=final_url,
+                error="Apify returned no result for this URL.",
+                attempts=[self.key],
+            )
+
         return BrowserResult(
-            ok=False,
-            backend=self.key,
-            url=url,
-            error=(
-                "Backend '%s' (%s) is config-ready but not yet implemented. "
-                "Add its credentials and an implementation to enable it."
-                % (self.key, self.vendor)
-            ),
+            ok=True, backend=self.key, url=url, final_url=final_url,
+            title=item.get("title"),
+            text=(item.get("text") or "").strip()[:max_chars],
+            screenshot_b64=None,
             attempts=[self.key],
         )
 
 
-class ApifyBackend(_ConfigReadyStub):
-    vendor = "Apify"
+class AgentCoreBackend(_CDPConnectBackend):
+    """AWS Bedrock AgentCore Browser — a managed, isolated cloud Chromium reached
+    over a SigV4-signed CDP WebSocket.
+
+    Flow: start a browser session on the ``bedrock-agentcore`` data plane, build
+    the automation-stream ``wss://`` URL, SigV4-sign the WebSocket upgrade with
+    the caller's AWS credentials, drive it with Playwright over CDP (so every
+    redirect-safety and interactive helper applies), then stop the session on
+    teardown so we never leak a billed session.
+
+    Region resolves from the backend ``settings.region`` then ``AWS_REGION`` /
+    ``AWS_DEFAULT_REGION`` (default us-west-2); the browser identifier and
+    session timeout are overridable via ``settings``. Credentials are read by
+    boto3 from the environment (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, plus
+    an optional session token) — never hand-handled here.
+    """
+
+    DEFAULT_IDENTIFIER = "aws.browser.v1"
+    DEFAULT_REGION = "us-west-2"
+    DEFAULT_SESSION_TIMEOUT = 3600
+
+    def _available(self) -> bool:
+        return _playwright_importable() and _boto3_importable()
+
+    def _region(self) -> str:
+        return (self.spec.settings.get("region")
+                or get_env("AWS_REGION")
+                or get_env("AWS_DEFAULT_REGION")
+                or self.DEFAULT_REGION)
+
+    def _identifier(self) -> str:
+        return self.spec.settings.get("browser_identifier") or self.DEFAULT_IDENTIFIER
+
+    def _session_timeout(self) -> int:
+        try:
+            return int(self.spec.settings.get("session_timeout_seconds")
+                       or self.DEFAULT_SESSION_TIMEOUT)
+        except (TypeError, ValueError):
+            return self.DEFAULT_SESSION_TIMEOUT
+
+    def _start_session(self):
+        """Blocking: start a session, returning (ws_url, headers, stop_callable).
+
+        Mirrors the official bedrock-agentcore SDK's session start + SigV4
+        WebSocket signing, implemented directly on boto3/botocore so no extra
+        SDK is required.
+        """
+        import base64 as _b64
+        import datetime as _dt
+        import secrets as _secrets
+        import uuid as _uuid
+
+        import boto3
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        region = self._region()
+        client = boto3.client("bedrock-agentcore", region_name=region)
+        resp = client.start_browser_session(
+            browserIdentifier=self._identifier(),
+            name="mydude-%s" % _uuid.uuid4().hex[:8],
+            sessionTimeoutSeconds=self._session_timeout(),
+        )
+        identifier = resp["browserIdentifier"]
+        session_id = resp["sessionId"]
+
+        host = "bedrock-agentcore.%s.amazonaws.com" % region
+        path = "/browser-streams/%s/sessions/%s/automation" % (identifier, session_id)
+        ws_url = "wss://%s%s" % (host, path)
+
+        creds = boto3.Session().get_credentials()
+        if creds is None:
+            raise RuntimeError("No AWS credentials found for the AgentCore browser.")
+        frozen = creds.get_frozen_credentials()
+        amz_date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        sign_req = AWSRequest(
+            method="GET",
+            url="https://%s%s" % (host, path),
+            headers={"host": host, "x-amz-date": amz_date},
+        )
+        SigV4Auth(frozen, "bedrock-agentcore", region).add_auth(sign_req)
+        headers = {
+            "Host": host,
+            "X-Amz-Date": sign_req.headers["x-amz-date"],
+            "Authorization": sign_req.headers["Authorization"],
+            "Upgrade": "websocket",
+            "Connection": "Upgrade",
+            "Sec-WebSocket-Version": "13",
+            "Sec-WebSocket-Key": _b64.b64encode(_secrets.token_bytes(16)).decode(),
+            "User-Agent": "MyDude-AgentCoreBrowser/1.0 (Session: %s)" % session_id,
+        }
+        if frozen.token:
+            headers["X-Amz-Security-Token"] = frozen.token
+
+        def stop():
+            try:
+                client.stop_browser_session(
+                    browserIdentifier=identifier, sessionId=session_id
+                )
+            except Exception:
+                pass
+
+        return ws_url, headers, stop
+
+    async def _connect(self):
+        import asyncio
+
+        from playwright.async_api import async_playwright
+
+        ws_url, headers, stop = await asyncio.to_thread(self._start_session)
+        pw = await async_playwright().start()
+        browser = await pw.chromium.connect_over_cdp(ws_url, headers=headers)
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        async def cleanup():
+            await asyncio.to_thread(stop)
+
+        return pw, browser, page, cleanup
 
 
-class AgentCoreBackend(_ConfigReadyStub):
-    vendor = "AWS Bedrock AgentCore Browser"
+class AzureBackend(_CDPConnectBackend):
+    """Azure Playwright Workspaces (formerly Microsoft Playwright Testing) — a
+    managed cloud Chromium reached over a WebSocket.
 
+    We connect Playwright to the workspace service URL (``PLAYWRIGHT_SERVICE_URL``)
+    with the workspace access token as a Bearer header; the required
+    ``api-version`` / ``os`` query parameters (and a per-run ``runId``) are
+    appended. All redirect-safety and interactive helpers apply once connected.
+    The token is read via the secrets layer — never hand-handled here.
+    """
 
-class AzureBackend(_ConfigReadyStub):
-    vendor = "Azure Playwright Testing"
+    DEFAULT_API_VERSION = "2024-12-01"
+    DEFAULT_OS = "linux"
+
+    def _available(self) -> bool:
+        return _playwright_importable()
+
+    def _ws_endpoint(self) -> str:
+        from urllib.parse import urlencode, urlsplit
+        import uuid as _uuid
+
+        base = require_secret("PLAYWRIGHT_SERVICE_URL")
+        params = {
+            "api-version": self.spec.settings.get("api_version") or self.DEFAULT_API_VERSION,
+            "os": self.spec.settings.get("os") or self.DEFAULT_OS,
+            "runId": get_env("PLAYWRIGHT_SERVICE_RUN_ID") or ("mydude-%s" % _uuid.uuid4().hex[:8]),
+        }
+        sep = "&" if urlsplit(base).query else "?"
+        return base + sep + urlencode(params)
+
+    async def _connect(self):
+        from playwright.async_api import async_playwright
+
+        token = require_secret("AZURE_PLAYWRIGHT_ACCESS_TOKEN")
+        ws_endpoint = self._ws_endpoint()
+        pw = await async_playwright().start()
+        browser = await pw.chromium.connect(
+            ws_endpoint,
+            headers={"Authorization": "Bearer %s" % token},
+        )
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = context.pages[0] if context.pages else await context.new_page()
+        return pw, browser, page, None
