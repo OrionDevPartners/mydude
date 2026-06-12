@@ -33,12 +33,18 @@ const NAV: NavItem[] = [
 ]
 
 function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
-  const { branding, user } = useAuth()
+  const { branding, user, refetch } = useAuth()
   const navigate = useNavigate()
 
   async function handleLogout() {
-    await logout()
-    navigate('/login')
+    try {
+      await logout()
+    } finally {
+      // Re-sync auth state so the router actually treats us as signed out;
+      // without this the stale authenticated=true bounces /login back to "/".
+      await refetch()
+      navigate('/login')
+    }
   }
 
   const nav: NavItem[] = user?.is_admin

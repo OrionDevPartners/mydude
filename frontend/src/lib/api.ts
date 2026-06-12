@@ -3,6 +3,15 @@
 
 const BASE = '/api'
 
+// Global handler invoked whenever any request comes back 401 (no/expired
+// session). The AuthProvider registers this so a session that lapses mid-use
+// flips the app back to unauthenticated and the router redirects to /login,
+// instead of leaving the user on a page whose data silently fails to load.
+let onUnauthorized: (() => void) | null = null
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     credentials: 'include',
@@ -10,6 +19,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   })
   if (!res.ok) {
+    if (res.status === 401 && onUnauthorized) onUnauthorized()
     let detail = `HTTP ${res.status}`
     try { detail = (await res.json()).detail || detail } catch {}
     throw new ApiError(res.status, detail)
@@ -43,6 +53,7 @@ async function requestBlob(path: string, options?: RequestInit): Promise<string>
     ...options,
   })
   if (!res.ok) {
+    if (res.status === 401 && onUnauthorized) onUnauthorized()
     let detail = `HTTP ${res.status}`
     try { detail = (await res.json()).detail || detail } catch {}
     throw new ApiError(res.status, detail)

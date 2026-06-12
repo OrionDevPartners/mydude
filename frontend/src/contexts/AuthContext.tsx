@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
-import { getMe, getBranding, ApiError } from '@/lib/api'
+import { getMe, getBranding, ApiError, setUnauthorizedHandler } from '@/lib/api'
 
 interface Branding { name: string; short_name: string; tagline: string }
 interface CurrentUser { username: string | null; is_admin: boolean; dev_bypass: boolean }
@@ -39,8 +39,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
+    setUnauthorizedHandler(() => setAuthenticated(false))
     check()
     getBranding().then(setBranding).catch(() => {})
+    return () => setUnauthorizedHandler(null)
   }, [])
 
   return (
