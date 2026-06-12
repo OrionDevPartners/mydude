@@ -220,6 +220,36 @@ class ClaimLedger:
         return ledger
 
 
+_LEDGER_LINE_RE = re.compile(
+    r"^\s*\[CLM-[^\]]+\]\s+(\w+)\s+c=",
+    re.MULTILINE,
+)
+
+
+def count_epistemic_labels(ledger_summary: str) -> Dict[str, int]:
+    """
+    Count epistemic labels from structured claim-ledger entries.
+
+    The ledger summary is composed of per-claim lines in the form
+    ``[CLM-NNN] <label> c=<confidence>: <text>``.  We parse each line's
+    structured label token and tally only valid EpistemicCategory values.
+
+    This replaces naive substring counting (``text.lower().count(label)``),
+    which over-counts ("unverified" contains "verified") and inflates totals
+    with words that merely appear in the claim prose.  Returns a count for
+    every category (defaulting to 0) so the shape stays stable for the
+    trend charts.
+    """
+    counts: Dict[str, int] = {cat.value: 0 for cat in EpistemicCategory}
+    if not ledger_summary or not isinstance(ledger_summary, str):
+        return counts
+    for match in _LEDGER_LINE_RE.finditer(ledger_summary):
+        label = match.group(1).lower()
+        if label in counts:
+            counts[label] += 1
+    return counts
+
+
 class ReasoningMode(Enum):
     ANALYTIC = "analytic"
     EXPLORATORY = "exploratory"

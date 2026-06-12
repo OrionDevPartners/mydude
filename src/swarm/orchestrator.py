@@ -15,7 +15,7 @@ try:
 except Exception:
     jurisdiction_metadata = None
 
-from src.swarm.constitution import ClaimLedger, CONSTITUTION_RULES, validate_language, StopCondition, IntentBinding
+from src.swarm.constitution import ClaimLedger, CONSTITUTION_RULES, validate_language, StopCondition, IntentBinding, count_epistemic_labels
 from src.swarm.compliance import analyze_agent_output, compute_effective_weight, generate_correction_patch, ComplianceTier
 from src.swarm.hallucination import (
     build_features_from_compliance, compute_hallucination_risk, get_control_action,
@@ -616,11 +616,10 @@ class WaveOrchestrator:
             if isinstance(hr_data, dict) and hr_data.get("average") is not None:
                 avg_hr = hr_data["average"]
 
-            epistemic_summary = {}
-            claim_ledger_text = final.get("CLAIM_LEDGER", "")
-            if claim_ledger_text and isinstance(claim_ledger_text, str):
-                for label in ("verified", "derived", "hypothesis", "unknown"):
-                    epistemic_summary[label] = claim_ledger_text.lower().count(label)
+            # Count epistemic labels from the structured per-claim ledger
+            # entries ([CLM-NNN] <label> c=...), not naive substring matching
+            # over the prose (which over-counts, e.g. "unverified" → "verified").
+            epistemic_summary = count_epistemic_labels(final.get("CLAIM_LEDGER", ""))
 
             provenance_summary = final.get("PROVENANCE_SUMMARY", "")
 
