@@ -1,16 +1,20 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   getFleetStatus, listBots, createBot, startBot, stopBot, deleteBot,
   listTeams, createTeam, startTeam, stopTeam, deleteTeam, scaleTeam,
   listProvisioning, planProvision, approveProvision,
+  setSalesConfig, getSalesBookingStatus,
+  startSalesConversation, postSalesMessage,
   FleetBot, FleetTeam, ProvisioningJob, ProvisionedResource,
+  SalesConfig, SalesConversation,
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, PageHeader, Badge, Empty } from '@/components/ui'
 import { fmtDate } from '@/lib/utils'
 import {
   Bot, Users, Server, Play, Square, Trash2, Plus, ChevronDown, ChevronRight,
-  CheckCircle, AlertCircle, Clock, Zap, Package, GitBranch, Cpu, TrendingUp
+  CheckCircle, AlertCircle, Clock, Zap, Package, GitBranch, Cpu, TrendingUp,
+  MessageSquare, Send, Calendar, ShieldCheck
 } from 'lucide-react'
 
 const LIFECYCLE_COLOR: Record<string, string> = {
@@ -301,7 +305,259 @@ function ProvisionPanel({ onDone }: { onDone: () => void }) {
   )
 }
 
-// ---- Bot Card ----
+// ---- Sales: config editor ----
+function SalesConfigForm({ bot, onSaved }: { bot: FleetBot; onSaved: () => void }) {
+  const c = bot.sales_config
+  const [opener, setOpener] = useState(c?.opener || '')
+  const [questions, setQuestions] = useState((c?.qualification_questions || []).join('\n'))
+  const [closing, setClosing] = useState(c?.closing_prompt || '')
+  const [disclosure, setDisclosure] = useState(c?.disclosure || '')
+  const [maxQ, setMaxQ] = useState(c?.max_questions ? String(c.max_questions) : '')
+  const [threshold, setThreshold] = useState(c?.qualify_threshold ? String(c.qualify_threshold) : '')
+  const [product, setProduct] = useState(c?.product || '')
+  const [tone, setTone] = useState(c?.tone || '')
+  const [eventUri, setEventUri] = useState(c?.event_type_uri || '')
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [ok, setOk] = useState<string | null>(null)
+
+  async function save() {
+    setLoading(true); setErr(null); setOk(null)
+    try {
+      const qList = questions.split('\n').map(s => s.trim()).filter(Boolean)
+      const cfg: SalesConfig = {
+        opener: opener.trim(),
+        qualification_questions: qList,
+        closing_prompt: closing.trim(),
+        ...(disclosure.trim() ? { disclosure: disclosure.trim() } : {}),
+        ...(maxQ.trim() ? { max_questions: Number(maxQ) } : {}),
+        ...(threshold.trim() ? { qualify_threshold: Number(threshold) } : {}),
+        ...(product.trim() ? { product: product.trim() } : {}),
+        ...(tone.trim() ? { tone: tone.trim() } : {}),
+        ...(eventUri.trim() ? { event_type_uri: eventUri.trim() } : {}),
+      }
+      await setSalesConfig(bot.id, cfg)
+      setOk('Sales script saved.')
+      onSaved()
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : 'Error') }
+    finally { setLoading(false) }
+  }
+
+  async function clearMode() {
+    if (!confirm('Disable sales mode for this bot? The saved script will be removed.')) return
+    setLoading(true); setErr(null); setOk(null)
+    try { await setSalesConfig(bot.id, {}); setOk('Sales mode disabled.'); onSaved() }
+    catch (e: unknown) { setErr(e instanceof Error ? e.message : 'Error') }
+    finally { setLoading(false) }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {err && <Alert type="error" onClose={() => setErr(null)}>{err}</Alert>}
+      {ok && <Alert type="success" onClose={() => setOk(null)}>{ok}</Alert>}
+      <div>
+        <p className="form-label" style={{ marginBottom: 3 }}>Opener script *</p>
+        <textarea className="form-input" rows={2} style={{ fontSize: 12, width: '100%' }}
+          value={opener} onChange={e => setOpener(e.target.value)}
+          placeholder="Hi! Thanks for your interest in MyDude.io…" />
+      </div>
+      <div>
+        <p className="form-label" style={{ marginBottom: 3 }}>Qualification questions * (one per line)</p>
+        <textarea className="form-input" rows={4} style={{ fontSize: 12, width: '100%' }}
+          value={questions} onChange={e => setQuestions(e.target.value)}
+          placeholder={'What problem are you trying to solve?\nWhat is your team size?\nWhat is your timeline?'} />
+      </div>
+      <div>
+        <p className="form-label" style={{ marginBottom: 3 }}>Closing prompt *</p>
+        <textarea className="form-input" rows={2} style={{ fontSize: 12, width: '100%' }}
+          value={closing} onChange={e => setClosing(e.target.value)}
+          placeholder="Sounds like we can help — let's get a quick call booked." />
+      </div>
+      <div>
+        <p className="form-label" style={{ marginBottom: 3 }}>AI disclosure (used verbatim when asked if you're a bot)</p>
+        <textarea className="form-input" rows={2} style={{ fontSize: 12, width: '100%' }}
+          value={disclosure} onChange={e => setDisclosure(e.target.value)}
+          placeholder="Leave blank to use the platform default disclosure." />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <div>
+          <p className="form-label" style={{ marginBottom: 3 }}>Max questions</p>
+          <input className="form-input" style={{ fontSize: 12 }} value={maxQ}
+            onChange={e => setMaxQ(e.target.value)} placeholder="defaults to # of questions" />
+        </div>
+        <div>
+          <p className="form-label" style={{ marginBottom: 3 }}>Qualify threshold</p>
+          <input className="form-input" style={{ fontSize: 12 }} value={threshold}
+            onChange={e => setThreshold(e.target.value)} placeholder="positive answers to qualify" />
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <div>
+          <p className="form-label" style={{ marginBottom: 3 }}>Tone</p>
+          <input className="form-input" style={{ fontSize: 12 }} value={tone}
+            onChange={e => setTone(e.target.value)} placeholder="warm, concise, professional" />
+        </div>
+        <div>
+          <p className="form-label" style={{ marginBottom: 3 }}>Product / offer context</p>
+          <input className="form-input" style={{ fontSize: 12 }} value={product}
+            onChange={e => setProduct(e.target.value)} placeholder="optional context for phrasing" />
+        </div>
+      </div>
+      <div>
+        <p className="form-label" style={{ marginBottom: 3 }}>Calendly event type URI (optional override)</p>
+        <input className="form-input" style={{ fontSize: 12 }} value={eventUri}
+          onChange={e => setEventUri(e.target.value)} placeholder="https://api.calendly.com/event_types/…" />
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+        <button className="btn btn-primary btn-sm" disabled={loading} onClick={save} style={{ gap: 5 }}>
+          {loading ? <Spinner size={14} /> : <><CheckCircle size={13} /> Save script</>}
+        </button>
+        {bot.sales_enabled && (
+          <button className="btn btn-ghost btn-sm" disabled={loading} onClick={clearMode}
+            style={{ color: 'var(--text-muted)' }}>Disable sales mode</button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---- Sales: conversation simulator ----
+function SalesSimulator({ bot }: { bot: FleetBot }) {
+  const [conv, setConv] = useState<SalesConversation | null>(null)
+  const [prospectName, setProspectName] = useState('')
+  const [message, setMessage] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function start() {
+    setLoading(true); setErr(null)
+    try {
+      const r = await startSalesConversation(bot.id, prospectName)
+      setConv(r.conversation)
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : 'Error') }
+    finally { setLoading(false) }
+  }
+
+  async function send() {
+    if (!conv || !message.trim()) return
+    setLoading(true); setErr(null)
+    const text = message.trim()
+    setMessage('')
+    try {
+      const r = await postSalesMessage(conv.id, text)
+      setConv(r.conversation)
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : 'Error') }
+    finally { setLoading(false) }
+  }
+
+  if (!conv) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {err && <Alert type="error" onClose={() => setErr(null)}>{err}</Alert>}
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          Start a test conversation to walk a prospect through this bot's governed sales flow.
+        </p>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input className="form-input" style={{ flex: 1, fontSize: 12 }} value={prospectName}
+            onChange={e => setProspectName(e.target.value)} placeholder="Prospect name (optional)" />
+          <button className="btn btn-primary btn-sm" disabled={loading} onClick={start} style={{ gap: 5 }}>
+            {loading ? <Spinner size={14} /> : <><MessageSquare size={13} /> Start</>}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const ended = conv.status !== 'active'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {err && <Alert type="error" onClose={() => setErr(null)}>{err}</Alert>}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Badge color="blue">phase: {conv.phase}</Badge>
+        <Badge color={conv.status === 'booked' ? 'green' : conv.status === 'disqualified' ? 'orange' : 'gray'}>{conv.status}</Badge>
+        {conv.qualified && <Badge color="green">qualified</Badge>}
+        {conv.disclosed_ai && <Badge color="purple"><ShieldCheck size={10} style={{ marginRight: 3 }} />AI disclosed</Badge>}
+        <Badge color="gray">{conv.questions_asked} asked</Badge>
+      </div>
+      <div style={{ maxHeight: 280, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
+        padding: 8, background: 'var(--surface-2)', borderRadius: 8 }}>
+        {conv.transcript.map((t, i) => (
+          <div key={i} style={{ alignSelf: t.role === 'prospect' ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
+            <div style={{
+              fontSize: 12, padding: '6px 10px', borderRadius: 8,
+              background: t.role === 'prospect' ? 'var(--accent)' : 'var(--surface)',
+              color: t.role === 'prospect' ? '#fff' : 'var(--text-primary)',
+              border: t.role === 'prospect' ? 'none' : '1px solid var(--border)',
+            }}>{t.text}</div>
+            <div style={{ fontSize: 9.5, color: 'var(--text-muted)', marginTop: 2, textAlign: t.role === 'prospect' ? 'right' : 'left' }}>
+              {t.role}{t.phase ? ` · ${t.phase}` : ''}{t.degraded ? ' · degraded' : ''}{t.governance ? ' · governed' : ''}
+            </div>
+          </div>
+        ))}
+      </div>
+      {conv.booking_url && (
+        <Alert type="success">
+          <Calendar size={12} style={{ marginRight: 4 }} />
+          Meeting link: <a href={conv.booking_url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{conv.booking_url}</a>
+        </Alert>
+      )}
+      {!ended && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input className="form-input" style={{ flex: 1, fontSize: 12 }} value={message}
+            onChange={e => setMessage(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !loading) send() }}
+            placeholder="Type the prospect's reply…" />
+          <button className="btn btn-primary btn-sm" disabled={loading || !message.trim()} onClick={send} style={{ gap: 5 }}>
+            {loading ? <Spinner size={14} /> : <Send size={13} />}
+          </button>
+        </div>
+      )}
+      <button className="btn btn-ghost btn-sm" onClick={() => setConv(null)} style={{ alignSelf: 'flex-start', color: 'var(--text-muted)' }}>
+        New conversation
+      </button>
+    </div>
+  )
+}
+
+// ---- Sales: panel combining config + simulator ----
+function SalesPanel({ bot, onAction }: { bot: FleetBot; onAction: () => void }) {
+  const [tab, setTab] = useState<'config' | 'simulate'>(bot.sales_enabled ? 'simulate' : 'config')
+  const [booking, setBooking] = useState<{ connected: boolean; source: string | null; detail?: string } | null>(null)
+
+  useEffect(() => {
+    getSalesBookingStatus().then(setBooking).catch(() => setBooking(null))
+  }, [])
+
+  return (
+    <div style={{ marginTop: 10, padding: 12, background: 'var(--surface-2)', borderRadius: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        <MessageSquare size={14} style={{ color: 'var(--accent)' }} />
+        <span style={{ fontSize: 12.5, fontWeight: 700 }}>Sales mode</span>
+        {bot.sales_enabled ? <Badge color="green">configured</Badge> : <Badge color="gray">not configured</Badge>}
+        {booking && (
+          <Badge color={booking.connected ? 'green' : 'orange'}>
+            <Calendar size={10} style={{ marginRight: 3 }} />
+            Calendly: {booking.connected ? 'connected' : 'not connected'}
+          </Badge>
+        )}
+      </div>
+      {booking && !booking.connected && (
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+          {booking.detail || 'Calendly isn\u2019t connected.'} Qualified prospects will be told a team member will follow up until you add a Calendly token (connector or CALENDLY_API_TOKEN).
+        </p>
+      )}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        <button className={`btn btn-sm ${tab === 'config' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('config')}>Script</button>
+        <button className={`btn btn-sm ${tab === 'simulate' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setTab('simulate')} disabled={!bot.sales_enabled}>Conversation</button>
+      </div>
+      {tab === 'config'
+        ? <SalesConfigForm bot={bot} onSaved={onAction} />
+        : <SalesSimulator bot={bot} />}
+    </div>
+  )
+}
+
 function BotCard({ bot, onAction }: { bot: FleetBot; onAction: () => void }) {
   const [expanded, setExpanded] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -409,6 +665,7 @@ function BotCard({ bot, onAction }: { bot: FleetBot; onAction: () => void }) {
               {bot.last_task_run_id && <> · Task #{bot.last_task_run_id}</>}
             </p>
           )}
+          <SalesPanel bot={bot} onAction={onAction} />
         </div>
       )}
     </Card>

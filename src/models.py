@@ -653,9 +653,44 @@ class Bot(Base):
     goal = Column(Text, nullable=True)
     protocols = Column(JSON, nullable=True)
     allowed_caps = Column(JSON, nullable=True)
+    # Operator-configured sales-mode script (opener, qualification questions,
+    # closing prompt, question cap, AI-disclosure text, qualification threshold).
+    # Null when the bot is not configured for sales conversations.
+    sales_config = Column(JSON, nullable=True)
     lifecycle = Column(String(30), default="defined", index=True)
     last_run_at = Column(DateTime, nullable=True)
     last_task_run_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SalesConversation(Base):
+    """A governed sales conversation conducted by a bot in sales mode.
+
+    A deterministic phase engine (opener → qualify → close → booked/ended)
+    drives the flow; bot phrasing is governed by the LLM swarm (compliance /
+    hallucination scored, with the operator's pre-approved script as the
+    fail-safe). The number of qualification questions is hard-capped and the
+    bot ALWAYS discloses it is an AI when asked.
+
+    phase      — opener | qualify | close | booked | ended
+    status     — active | booked | disqualified | ended
+    transcript — JSON list of {role, text, phase, governance, degraded, ts}
+    """
+    __tablename__ = "sales_conversations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
+    prospect_name = Column(String(200), nullable=True)
+    prospect_contact = Column(String(255), nullable=True)
+    phase = Column(String(20), default="opener", index=True)
+    status = Column(String(20), default="active", index=True)
+    qualified = Column(Boolean, default=False)
+    questions_asked = Column(Integer, default=0)
+    disclosed_ai = Column(Boolean, default=False)
+    transcript = Column(JSON, nullable=True)
+    booking_url = Column(String(1000), nullable=True)
+    booking_ref = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -232,6 +232,24 @@ class PolicyEngine:
         if capability == "fleet_provision_approve":
             return self._evaluate_fleet_provision_approve(params)
 
+        if capability == "calendly_book":
+            return self._evaluate_calendly_book(params)
+
+        return PolicyDecision(True, "Allowed by policy.")
+
+    def _evaluate_calendly_book(self, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for booking a meeting via Calendly from a sales conversation.
+
+        Enabled by default so sales mode is usable out of the box; operators can
+        hard-disable all outbound sales actions via ENABLE_SALES_CAPABILITY=false.
+        Credential presence (Calendly connected) is enforced downstream and fails
+        loud — never mocked.
+        """
+        if not _env_flag("ENABLE_SALES_CAPABILITY", default=True):
+            return PolicyDecision(
+                False,
+                "Sales capability is disabled. Set ENABLE_SALES_CAPABILITY=true to enable it.",
+            )
         return PolicyDecision(True, "Allowed by policy.")
 
     def _evaluate_bot_spawn(self, params: Dict[str, Any]) -> PolicyDecision:

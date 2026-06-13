@@ -543,6 +543,36 @@ export const planProvision = (data: { resource_type: string; config: string; bot
 export const approveProvision = (jobId: number) =>
   request<{ ok: boolean; job_id: number; resource_id: string; output: string; status: string }>(`/fleet/provision/${jobId}/approve`, { method: 'POST' })
 
+// Sales conversations
+export const getSalesBookingStatus = () =>
+  request<{ connected: boolean; source: string | null; detail?: string }>('/fleet/sales/booking-status')
+export const getSalesConfig = (botId: number) =>
+  request<{ bot_id: number; sales_config: SalesConfig | null }>(`/fleet/bots/${botId}/sales-config`)
+export const setSalesConfig = (botId: number, config: SalesConfig | Record<string, never>) =>
+  request<{ ok: boolean; bot: FleetBot }>(`/fleet/bots/${botId}/sales-config`, {
+    method: 'POST',
+    body: formBody({ config: JSON.stringify(config) }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const startSalesConversation = (botId: number, prospectName?: string, prospectContact?: string) =>
+  request<{ ok: boolean; conversation: SalesConversation }>('/fleet/sales/conversations', {
+    method: 'POST',
+    body: formBody({ bot_id: String(botId), prospect_name: prospectName || '', prospect_contact: prospectContact || '' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const postSalesMessage = (conversationId: number, message: string) =>
+  request<{ ok: boolean; state: Record<string, unknown>; conversation: SalesConversation }>(
+    `/fleet/sales/conversations/${conversationId}/message`, {
+    method: 'POST',
+    body: formBody({ message }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const listSalesConversations = (botId?: number) =>
+  request<{ conversations: SalesConversation[] }>(
+    `/fleet/sales/conversations${botId ? `?bot_id=${botId}` : ''}`)
+export const getSalesConversation = (conversationId: number) =>
+  request<{ conversation: SalesConversation }>(`/fleet/sales/conversations/${conversationId}`)
+
 // ---- Types ----
 export interface Task {
   id: number
@@ -751,10 +781,29 @@ export interface AvatarSessionStartResult {
 }
 
 // Fleet
+export interface SalesConfig {
+  opener: string;
+  qualification_questions: string[];
+  closing_prompt: string;
+  max_questions?: number;
+  qualify_threshold?: number;
+  disclosure?: string;
+  event_type_uri?: string;
+  product?: string;
+  tone?: string;
+}
+export interface SalesConversation {
+  id: number; bot_id: number; prospect_name: string | null; prospect_contact: string | null;
+  phase: string; status: string; qualified: boolean; questions_asked: number; disclosed_ai: boolean;
+  booking_url: string | null; booking_ref: string | null;
+  transcript: { role: string; text: string; phase?: string; ts?: string; governance?: Record<string, unknown> | null; degraded?: boolean }[];
+  created_at: string; updated_at: string;
+}
 export interface FleetBot {
   id: number; name: string; description: string | null; team_id: number | null; spawned_by_id: number | null;
   identity_schema: Record<string, string>; prompt_cards: string[]; goal: string | null; protocols: string[];
-  allowed_caps: string[]; lifecycle: string; last_run_at: string | null; last_task_run_id: number | null;
+  allowed_caps: string[]; sales_config: SalesConfig | null; sales_enabled: boolean;
+  lifecycle: string; last_run_at: string | null; last_task_run_id: number | null;
   created_at: string; updated_at: string;
 }
 export interface FleetTeam {

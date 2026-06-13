@@ -364,6 +364,41 @@ class Integrations:
         )
         return json.dumps(result)
 
+    async def calendly_book(self, params: Dict[str, Any]) -> str:
+        """Governed meeting booking via Calendly. Called only by the broker after
+        contract+policy validation. Mints a single-use scheduling link for a
+        qualified prospect; the booking action is recorded in the capability
+        audit trail. Provider errors fail loud (no mock link)."""
+        import asyncio
+        import json
+        from src.sales.booking import (
+            book_meeting, SalesNotConfigured, SalesAuthError, SalesProviderError,
+        )
+        source = params.get("source")
+        target = str(params.get("conversation_id") or params.get("prospect") or "")
+        try:
+            # book_meeting does blocking httpx I/O — keep the event loop free.
+            result = await asyncio.to_thread(book_meeting, params)
+            audit_capability(
+                "calendly_book",
+                target=target or None,
+                backend="calendly",
+                status="ok",
+                detail=f"booking_url issued (source={result.get('source')})",
+                source=source,
+            )
+            return json.dumps(result)
+        except (SalesNotConfigured, SalesAuthError, SalesProviderError) as e:
+            audit_capability(
+                "calendly_book",
+                target=target or None,
+                backend="calendly",
+                status="error",
+                detail=str(e)[:500],
+                source=source,
+            )
+            return json.dumps({"ok": False, "error": str(e)})
+
     async def fleet_provision_plan(self, params: Dict[str, Any]) -> str:
         """Governed provisioning plan. Called only by broker after contract+policy validation."""
         import json

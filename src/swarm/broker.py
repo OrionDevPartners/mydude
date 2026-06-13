@@ -18,6 +18,7 @@ _AUDITED_CAPABILITIES = {
     "ssh_run", "ssh_read_history", "ssh_fetch_code",
     "imap_read_receipts", "gmail_fetch_code",
     "bot_spawn", "fleet_provision_plan", "fleet_provision_approve",
+    "calendly_book",
 }
 
 
@@ -162,6 +163,10 @@ class CapabilityBroker:
 
         if capability == "fleet_provision_approve":
             out = await self.integrations.fleet_provision_approve(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "calendly_book":
+            out = await self.integrations.calendly_book(params)
             return BrokerResult(True, decision, out)
 
         # A genuinely-new (unimplemented) capability is being requested.

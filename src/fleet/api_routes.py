@@ -65,6 +65,8 @@ def _bot_row(b) -> Dict[str, Any]:
         "goal": b.goal,
         "protocols": b.protocols or [],
         "allowed_caps": b.allowed_caps or [],
+        "sales_config": b.sales_config or None,
+        "sales_enabled": bool(b.sales_config),
         "lifecycle": b.lifecycle,
         "last_run_at": _dt(b.last_run_at),
         "last_task_run_id": b.last_task_run_id,
@@ -615,6 +617,192 @@ async def get_provisioning_job(job_id: int, _=Depends(require_auth)):
             "job": _job_row(job),
             "resource": _resource_row(resource) if resource else None,
         }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Sales-conversation endpoints
+# ---------------------------------------------------------------------------
+
+def _conversation_row(c) -> Dict[str, Any]:
+    return {
+        "id": c.id,
+        "bot_id": c.bot_id,
+        "prospect_name": c.prospect_name,
+        "prospect_contact": c.prospect_contact,
+        "phase": c.phase,
+        "status": c.status,
+        "qualified": bool(c.qualified),
+        "questions_asked": c.questions_asked,
+        "disclosed_ai": bool(c.disclosed_ai),
+        "booking_url": c.booking_url,
+        "booking_ref": c.booking_ref,
+        "transcript": c.transcript or [],
+        "created_at": _dt(c.created_at),
+        "updated_at": _dt(c.updated_at),
+    }
+
+
+@router.get("/sales/booking-status")
+async def sales_booking_status(_=Depends(require_auth)):
+    """Live Calendly connection status for the operator (never raises)."""
+    from src.sales.booking import calendly_status
+    return calendly_status()
+
+
+@router.get("/bots/{bot_id}/sales-config")
+async def get_sales_config(bot_id: int, _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.models import Bot
+    db = SessionLocal()
+    try:
+        bot = db.query(Bot).filter(Bot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(404, "Bot not found.")
+        return {"bot_id": bot.id, "sales_config": bot.sales_config or None}
+    finally:
+        db.close()
+
+
+@router.post("/bots/{bot_id}/sales-config")
+async def set_sales_config(
+    bot_id: int,
+    config: str = Form(...),
+    _=Depends(require_auth),
+):
+    """Set (or clear) a bot's operator-configured sales script.
+
+    ``config`` is a JSON object: {opener, qualification_questions[],
+    closing_prompt, max_questions?, qualify_threshold?, disclosure?,
+    event_type_uri?, product?, tone?}. An empty object clears sales mode.
+    The script is validated before it is saved (fail loud on bad config).
+    """
+    from src.database import SessionLocal
+    from src.models import Bot
+    from src.sales.conversation import load_sales_config, SalesConfigError
+
+    parsed = _parse_json_field(config, None)
+    if parsed is None or not isinstance(parsed, dict):
+        raise HTTPException(400, "config must be a JSON object.")
+
+    db = SessionLocal()
+    try:
+        bot = db.query(Bot).filter(Bot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(404, "Bot not found.")
+
+        if not parsed:
+            bot.sales_config = None
+            db.commit()
+            db.refresh(bot)
+            return {"ok": True, "bot": _bot_row(bot)}
+
+        # Validate by attempting to load the normalized config off a throwaway
+        # holder so we never persist a script the engine can't run.
+        class _Holder:
+            sales_config = parsed
+        try:
+            load_sales_config(_Holder())
+        except SalesConfigError as e:
+            raise HTTPException(400, str(e))
+
+        bot.sales_config = parsed
+        db.commit()
+        db.refresh(bot)
+        return {"ok": True, "bot": _bot_row(bot)}
+    finally:
+        db.close()
+
+
+@router.post("/sales/conversations")
+async def start_sales_conversation(
+    bot_id: int = Form(...),
+    prospect_name: str = Form(""),
+    prospect_contact: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.models import Bot
+    from src.sales.conversation import start_conversation, SalesConfigError
+
+    db = SessionLocal()
+    try:
+        bot = db.query(Bot).filter(Bot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(404, "Bot not found.")
+        try:
+            conv = await start_conversation(db, bot, prospect_name, prospect_contact)
+        except SalesConfigError as e:
+            raise HTTPException(400, str(e))
+        db.commit()
+        db.refresh(conv)
+        return {"ok": True, "conversation": _conversation_row(conv)}
+    finally:
+        db.close()
+
+
+@router.post("/sales/conversations/{conversation_id}/message")
+async def post_sales_message(
+    conversation_id: int,
+    message: str = Form(...),
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.models import Bot, SalesConversation
+    from src.sales.conversation import (
+        handle_message, SalesConfigError, SalesConversationError,
+    )
+
+    db = SessionLocal()
+    try:
+        conv = db.query(SalesConversation).filter(
+            SalesConversation.id == conversation_id).first()
+        if not conv:
+            raise HTTPException(404, "Conversation not found.")
+        bot = db.query(Bot).filter(Bot.id == conv.bot_id).first()
+        if not bot:
+            raise HTTPException(404, "Bot for this conversation not found.")
+        try:
+            state = await handle_message(db, conv, bot, message)
+        except (SalesConfigError, SalesConversationError) as e:
+            raise HTTPException(400, str(e))
+        db.commit()
+        db.refresh(conv)
+        return {"ok": True, "state": state, "conversation": _conversation_row(conv)}
+    finally:
+        db.close()
+
+
+@router.get("/sales/conversations")
+async def list_sales_conversations(
+    bot_id: Optional[str] = None,
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.models import SalesConversation
+    db = SessionLocal()
+    try:
+        q = db.query(SalesConversation)
+        if bot_id and bot_id.strip().isdigit():
+            q = q.filter(SalesConversation.bot_id == int(bot_id))
+        convs = q.order_by(SalesConversation.created_at.desc()).limit(200).all()
+        return {"conversations": [_conversation_row(c) for c in convs]}
+    finally:
+        db.close()
+
+
+@router.get("/sales/conversations/{conversation_id}")
+async def get_sales_conversation(conversation_id: int, _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.models import SalesConversation
+    db = SessionLocal()
+    try:
+        conv = db.query(SalesConversation).filter(
+            SalesConversation.id == conversation_id).first()
+        if not conv:
+            raise HTTPException(404, "Conversation not found.")
+        return {"conversation": _conversation_row(conv)}
     finally:
         db.close()
 

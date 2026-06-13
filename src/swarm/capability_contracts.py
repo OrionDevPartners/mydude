@@ -371,6 +371,23 @@ _CONTRACTS: Dict[str, CapabilityContract] = {
         ],
         enforced_preconditions=[],
     ),
+    "calendly_book": CapabilityContract(
+        capability="calendly_book",
+        category=CapabilityCategory.TOOL,
+        description="Mint a single-use Calendly scheduling link for a qualified sales prospect.",
+        required_fields=["conversation_id"],
+        optional_fields=["event_type_uri", "prospect", "source", "domain", "team"],
+        input_schema={"conversation_id": "int", "event_type_uri": "str",
+                      "prospect": "str", "source": "str"},
+        output_schema={"ok": "bool", "booking_url": "str", "booking_ref": "str",
+                       "event_type": "str", "owner": "str", "source": "str"},
+        epistemic_preconditions=[
+            "The prospect must have been qualified by the conversation engine",
+            "Calendly must be connected (connector proxy) or CALENDLY_API_TOKEN set",
+            "ENABLE_SALES_CAPABILITY must not be set to false",
+        ],
+        enforced_preconditions=[],
+    ),
     "read_secret_raw": CapabilityContract(
         capability="read_secret_raw",
         category=CapabilityCategory.TOOL,
