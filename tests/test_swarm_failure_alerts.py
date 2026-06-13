@@ -26,8 +26,9 @@ from contextlib import contextmanager
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 import src.swarm.error_metrics as em
 from src.models import Base, AppSetting, SentinelEvent
@@ -39,10 +40,27 @@ def _fresh_db():
 
     File-backed (not :memory:) so the many short-lived sessions the module opens
     all see the same data. Restores the real SessionLocal afterwards.
+
+    Configured to faithfully model concurrent multi-worker access (as Postgres
+    sees in production): ``NullPool`` + ``check_same_thread=False`` lets every
+    thread open its own real connection to the shared file, and a ``busy_timeout``
+    makes a connection wait for the write lock instead of erroring out — so the
+    per-key lock in ``record_failure`` can actually serialize the racing writers.
     """
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(
+        f"sqlite:///{path}",
+        connect_args={"check_same_thread": False},
+        poolclass=NullPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _set_busy_timeout(dbapi_connection, _record):
+        cur = dbapi_connection.cursor()
+        cur.execute("PRAGMA busy_timeout=10000")  # wait up to 10s for the write lock
+        cur.close()
+
     Base.metadata.create_all(engine)
     TestSession = sessionmaker(bind=engine, expire_on_commit=False)
     original = em.SessionLocal
@@ -228,6 +246,51 @@ def test_unknown_counter_never_alerts():
             em.record_failure("metric_some_other_counter")
         assert _alerts() == [], "only known failure counters raise spike alerts"
         assert em.get_metric("metric_some_other_counter") == 10
+
+
+def test_concurrent_failures_alert_at_most_once():
+    """Many failures crossing the threshold at the same instant must produce
+    exactly one alert and lose no increments.
+
+    This is the multi-worker race the per-key lock guards against: without atomic
+    window state, concurrent threshold crossings can double-fire the alert or
+    drop a window/counter increment. The barrier releases every thread together
+    to maximize contention; the file-backed SQLite DB with busy_timeout models
+    the separate connections real parallel workers use.
+    """
+    import threading
+
+    n_workers = 16  # well above the threshold, all firing together
+    with _fresh_db(), _env(
+        SWARM_FAILURE_ALERT_THRESHOLD=5,
+        SWARM_FAILURE_ALERT_WINDOW_SECONDS=300,
+        SWARM_FAILURE_ALERT_COOLDOWN_SECONDS=900,
+    ):
+        barrier = threading.Barrier(n_workers)
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait()  # release all threads at once for max contention
+                em.record_failure(KEY)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(n_workers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"workers raised: {errors}"
+        assert em.get_metric(KEY) == n_workers, (
+            f"every concurrent failure must be counted, got {em.get_metric(KEY)}"
+        )
+        alerts = _alerts()
+        assert len(alerts) == 1, (
+            f"exactly one alert despite {n_workers} concurrent threshold crossings, "
+            f"got {len(alerts)}"
+        )
 
 
 def _main():

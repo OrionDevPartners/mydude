@@ -33,3 +33,18 @@ fixed-window counter + cooldown.
 - **No new API/UI needed:** `/api/governance` already maps `SentinelEvent`
   (`alert_type->rule`, `description(+recommended_action)->detail`), so new
   alert_type values surface in the React Governance feed automatically.
+- **Window/cooldown read-modify-write must be atomic under parallel workers.**
+  The burst counter + cooldown + cumulative bump for an alerting key all happen
+  in ONE transaction guarded by a per-key row lock, or concurrent threshold
+  crossings double-fire or lose an increment. The lock is a cross-dialect
+  "UPDATE the anchor row as the first statement" mutex: on Postgres that takes a
+  row lock held to COMMIT; on SQLite the first DML takes the DB write lock
+  (concurrent writers wait on busy_timeout). Anchor row created best-effort up
+  front, tolerating the unique-key create race. `reset_metric` takes the same
+  lock so a racing failure can't re-arm the window it just cleared.
+  **Why:** strict "at most one alert per cooldown" under autoscale/multi-worker.
+  **How to test on SQLite:** file-backed DB + NullPool + check_same_thread=False
+  + PRAGMA busy_timeout so each thread gets a real connection that *waits* for
+  the lock (models multiple Postgres workers); a threading.Barrier maximizes the
+  race. Neutralizing `_acquire_lock` makes the test fail (lost increments), which
+  proves it's exercising the race.

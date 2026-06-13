@@ -20,6 +20,9 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
 from src.database import SessionLocal
 from src.models import AppSetting, SentinelEvent
 
@@ -55,6 +58,7 @@ _RESET_AT_SUFFIX = "__reset_at"
 _WIN_START_SUFFIX = "__alert_win_start"   # epoch seconds the current window opened
 _WIN_COUNT_SUFFIX = "__alert_win_count"   # failures counted in the current window
 _LAST_ALERT_SUFFIX = "__alert_last_at"    # epoch seconds of the last spike alert
+_LOCK_SUFFIX = "__alert_lock"             # anchor row taken as a per-key mutex
 
 # Defaults are overridable per the governance pillar (configurable, not
 # hardwired). app_settings values are mirrored into os.environ at boot/write,
@@ -136,12 +140,20 @@ def reset_metric(key: str, operator: str = "") -> bool:
     once an operator has investigated and reset, a *fresh* outage can alert again
     immediately instead of being suppressed by a stale cooldown.
     """
+    is_alerting = key in _METRIC_ALERT_META
+    if is_alerting:
+        _ensure_anchor(key + _LOCK_SUFFIX)
     db = SessionLocal()
     try:
+        if is_alerting:
+            # Take the per-key lock so the reset (counter zero + spike-state
+            # clear) is atomic against a concurrent record_failure — otherwise a
+            # racing failure could re-arm the window the reset just cleared.
+            _acquire_lock(db, key + _LOCK_SUFFIX)
         _set_setting(db, key, "0")
         _set_setting(db, key + _RESET_BY_SUFFIX, (operator or "operator")[:120])
         _set_setting(db, key + _RESET_AT_SUFFIX, datetime.now(timezone.utc).isoformat())
-        if key in _METRIC_ALERT_META:
+        if is_alerting:
             _set_setting(db, key + _WIN_START_SUFFIX, "0")
             _set_setting(db, key + _WIN_COUNT_SUFFIX, "0")
             _set_setting(db, key + _LAST_ALERT_SUFFIX, "0")
@@ -189,25 +201,80 @@ def get_last_reset(keys=RESETTABLE_METRICS):
         db.close()
 
 
+def _bump_counter(db, key: str, amount: int) -> None:
+    """Read-modify-write a single integer counter within an existing session.
+
+    The caller owns the transaction (and any row lock that serializes it); this
+    just does the tolerant int-or-zero arithmetic in one place so the standalone
+    ``increment_metric`` and the locked ``record_failure`` path stay identical.
+    """
+    row = db.query(AppSetting).filter(AppSetting.key == key).first()
+    if row is None:
+        db.add(AppSetting(key=key, value=str(amount)))
+    else:
+        try:
+            current = int(row.value or 0)
+        except (ValueError, TypeError):
+            current = 0
+        row.value = str(current + amount)
+
+
 def increment_metric(key: str, amount: int = 1) -> None:
-    """Atomically bump an integer counter stored in app_settings."""
+    """Bump an integer counter stored in app_settings.
+
+    Best-effort read-modify-write. Used for non-alerting counters; alerting
+    counters are bumped inside ``record_failure``'s locked transaction so the
+    cumulative count and the burst-window state stay mutually consistent and
+    concurrency-safe.
+    """
     db = SessionLocal()
     try:
-        row = db.query(AppSetting).filter(AppSetting.key == key).first()
-        if row is None:
-            db.add(AppSetting(key=key, value=str(amount)))
-        else:
-            try:
-                current = int(row.value or 0)
-            except (ValueError, TypeError):
-                current = 0
-            row.value = str(current + amount)
+        _bump_counter(db, key, amount)
         db.commit()
     except Exception as e:
         db.rollback()
         logger.warning("increment_metric(%s) failed: %s", key, e)
     finally:
         db.close()
+
+
+def _ensure_anchor(lock_key: str) -> None:
+    """Best-effort create the per-key lock-anchor row so ``_acquire_lock`` has a
+    row to lock. Tolerates the create race between concurrent first failures
+    (the unique constraint on ``app_settings.key`` rejects the loser, which is
+    fine — the row now exists either way).
+    """
+    db = SessionLocal()
+    try:
+        if db.query(AppSetting).filter(AppSetting.key == lock_key).first() is None:
+            db.add(AppSetting(key=lock_key, value="lock"))
+            db.commit()
+    except IntegrityError:
+        db.rollback()  # another worker created it first — that's the desired state
+    except Exception as e:
+        db.rollback()
+        logger.warning("_ensure_anchor(%s) failed: %s", lock_key, e)
+    finally:
+        db.close()
+
+
+def _acquire_lock(db, lock_key: str) -> bool:
+    """Take a cross-dialect exclusive lock for a metric by writing the anchor row
+    as the first statement of the transaction.
+
+    On PostgreSQL the UPDATE takes a row-level lock held until COMMIT, so
+    concurrent failures for the same key block here and run their
+    read-modify-write strictly serially. On SQLite the first DML takes the
+    database write lock with the same effect (concurrent writers wait on
+    busy_timeout). Either way the burst-window read-modify-write that follows is
+    serialized, so concurrent threshold crossings can neither double-fire an
+    alert nor lose a window increment. Returns True if a row was locked.
+    """
+    res = db.execute(
+        text("UPDATE app_settings SET value = value WHERE key = :k"),
+        {"k": lock_key},
+    )
+    return (res.rowcount or 0) > 0
 
 
 def get_metric(key: str) -> int:
@@ -276,52 +343,79 @@ def _get_int(db, key: str, default: int) -> int:
         return default
 
 
-def _maybe_alert_on_spike(key: str) -> None:
-    """Raise a SentinelEvent when failures of ``key`` burst past the threshold.
+def _maybe_alert_on_spike(db, key: str, now: float, threshold: int, window: int,
+                          cooldown: int) -> int | None:
+    """Advance the burst window for ``key`` and decide whether to alert.
+
+    Runs *inside the caller's locked transaction* (see ``_acquire_lock``) so the
+    read-modify-write of the window/cooldown rows is atomic against concurrent
+    failures. Returns the in-window failure count when an alert should fire, else
+    ``None``. The caller commits and (only then) records the SentinelEvent, so a
+    rolled-back transaction never leaves a dangling alert.
 
     Uses a persisted fixed-window counter plus a cooldown so a sustained outage
-    raises at most one alert per cooldown rather than one per failure. Only the
-    counters in ``_METRIC_ALERT_META`` alert; any other key is a no-op. Wholly
-    best-effort: never raises, so a failing alert path can't break the caller.
+    raises at most one alert per cooldown rather than one per failure.
+    """
+    win_start = _get_float(db, key + _WIN_START_SUFFIX, 0.0)
+    win_count = _get_int(db, key + _WIN_COUNT_SUFFIX, 0)
+
+    # Roll the window forward if the previous one has fully elapsed.
+    if now - win_start > window:
+        win_start = now
+        win_count = 0
+    win_count += 1
+
+    _set_setting(db, key + _WIN_START_SUFFIX, repr(win_start))
+    _set_setting(db, key + _WIN_COUNT_SUFFIX, str(win_count))
+
+    if win_count >= threshold:
+        last_alert = _get_float(db, key + _LAST_ALERT_SUFFIX, 0.0)
+        if now - last_alert >= cooldown:
+            # Fire, then re-arm: record the alert time and reset the window so
+            # the next alert needs a fresh burst AND the cooldown to pass.
+            _set_setting(db, key + _LAST_ALERT_SUFFIX, repr(now))
+            _set_setting(db, key + _WIN_START_SUFFIX, repr(now))
+            _set_setting(db, key + _WIN_COUNT_SUFFIX, "0")
+            return win_count
+    return None
+
+
+def record_failure(key: str, amount: int = 1) -> None:
+    """Governed entry point for the swarm's recoverable-but-noteworthy failures.
+
+    Increments the durable cumulative counter (so the Governance Center
+    dashboard keeps showing the running total) AND raises a proactive
+    SentinelEvent when failures of this counter burst past the configured
+    threshold within the window. Silent-failure paths should call this instead
+    of ``increment_metric`` directly. Best-effort throughout.
+
+    For alerting counters the cumulative bump and the burst-window update happen
+    together inside a single transaction guarded by a per-key row lock, so even
+    under parallel workers concurrent threshold crossings can neither double-fire
+    an alert nor lose an increment — strict "at most one alert per cooldown".
     """
     meta = _METRIC_ALERT_META.get(key)
     if not meta:
-        return  # not an alerting counter — just counted, never alerted
+        # Non-alerting counter: just count it (no window state to protect).
+        increment_metric(key, amount)
+        return
 
     threshold, window, cooldown = _alert_config()
-    if threshold <= 0:
-        return  # alerting disabled by configuration
+    lock_key = key + _LOCK_SUFFIX
+    _ensure_anchor(lock_key)
 
     now = time.time()
     fired_count = None
     db = SessionLocal()
     try:
-        win_start = _get_float(db, key + _WIN_START_SUFFIX, 0.0)
-        win_count = _get_int(db, key + _WIN_COUNT_SUFFIX, 0)
-
-        # Roll the window forward if the previous one has fully elapsed.
-        if now - win_start > window:
-            win_start = now
-            win_count = 0
-        win_count += 1
-
-        _set_setting(db, key + _WIN_START_SUFFIX, repr(win_start))
-        _set_setting(db, key + _WIN_COUNT_SUFFIX, str(win_count))
-
-        if win_count >= threshold:
-            last_alert = _get_float(db, key + _LAST_ALERT_SUFFIX, 0.0)
-            if now - last_alert >= cooldown:
-                # Fire, then re-arm: record the alert time and reset the window
-                # so the next alert needs a fresh burst AND the cooldown to pass.
-                _set_setting(db, key + _LAST_ALERT_SUFFIX, repr(now))
-                _set_setting(db, key + _WIN_START_SUFFIX, repr(now))
-                _set_setting(db, key + _WIN_COUNT_SUFFIX, "0")
-                fired_count = win_count
-
+        _acquire_lock(db, lock_key)  # serialize concurrent failures for this key
+        _bump_counter(db, key, amount)  # cumulative total, atomic under the lock
+        if threshold > 0:  # threshold <= 0 disables alerting (counter still climbs)
+            fired_count = _maybe_alert_on_spike(db, key, now, threshold, window, cooldown)
         db.commit()
-    except Exception as e:
+    except Exception as e:  # defensive: a reporting failure must never break the caller
         db.rollback()
-        logger.warning("_maybe_alert_on_spike(%s) failed: %s", key, e)
+        logger.warning("record_failure(%s) failed: %s", key, e)
         return
     finally:
         db.close()
@@ -337,19 +431,3 @@ def _maybe_alert_on_spike(key: str) -> None:
             ),
             recommended_action=meta["recommended_action"],
         )
-
-
-def record_failure(key: str, amount: int = 1) -> None:
-    """Governed entry point for the swarm's recoverable-but-noteworthy failures.
-
-    Increments the durable cumulative counter (so the Governance Center
-    dashboard keeps showing the running total) AND raises a proactive
-    SentinelEvent when failures of this counter burst past the configured
-    threshold within the window. Silent-failure paths should call this instead
-    of ``increment_metric`` directly. Best-effort throughout.
-    """
-    increment_metric(key, amount)
-    try:
-        _maybe_alert_on_spike(key)
-    except Exception as e:  # defensive: spike-check must never break the caller
-        logger.warning("record_failure spike-check(%s) failed: %s", key, e)
