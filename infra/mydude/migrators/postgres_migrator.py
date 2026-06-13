@@ -5,7 +5,8 @@ Applies agents_home and provider_home DDL migrations independently.
 Each database has its own role, credentials, migration lineage, and
 CompletionClaim chain through the BCS scope-completion gate (V1-V7).
 
-Unity must never own Postgres DDL; this migrator never touches Unity Catalog.
+This migrator owns Postgres DDL exclusively; knowledge-corpus (Fabric) claims
+are a separate lineage and must never cross into this one.
 The authority field on all emitted claims is MigrationAuthority.POSTGRES.
 
 Usage:

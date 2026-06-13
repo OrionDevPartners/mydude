@@ -6,7 +6,7 @@
 -- =============================================================================
 -- AUTHORITY RULE: provider_home stores raw candidates and the outbox queue.
 -- It is NOT a routing authority. Outputs here are offline-candidate until the
--- BCS gate promotes them by writing to Unity Catalog.
+-- BCS gate promotes them by writing to the governance ledger (Postgres) + knowledge corpus.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ GRANT USAGE ON SCHEMA outbox TO provider_home_writer, provider_home_reader;
 -- candidates.model_candidate
 -- Raw model evaluation results before BCS promotion.
 -- Every row here is an offline-candidate until gate_receipt_id is populated
--- by the BCS gate after successful promotion to Unity Catalog.
+-- by the BCS gate after successful promotion to the governance ledger.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS candidates.model_candidate (
     id                  BIGSERIAL PRIMARY KEY,

@@ -8,7 +8,7 @@ The local BCS path is the offline equivalent of the cloud BCS gate. It:
 
 This module is used by the local sovereign stack when the cloud BCS gate is
 unreachable. It shares the same CompletionClaim and ScopeGate logic but uses
-the POSTGRES authority (never Unity) and routes through the offline outbox.
+the POSTGRES authority (never the knowledge corpus) and routes through the offline outbox.
 """
 from __future__ import annotations
 
@@ -121,7 +121,7 @@ def write_candidate(
         "gate_receipt_id": gate_receipt_id,
         # exec_locus pin (V4) — local candidates always run on local infra
         "exec_locus": exec_locus if exec_locus in ("in_azure", "anthropic_hosted", "local") else "local",
-        # Authority boundary (V5) — local outbox uses postgres authority lane, never Unity
+        # Authority boundary (V5) — local outbox uses postgres authority lane, never the knowledge corpus
         "authority": "postgres",
         # Scope label (V7) — mark with the terminal gate label; cloud gate re-validates all
         "scope_label": "V7_scope_label",

@@ -7,16 +7,18 @@ invariants hold. They run against:
   2. Live Azure deployment (when AZURE_SUBSCRIPTION_ID and AZURE_TOKEN are set)
 
 Invariants proved:
-  D01 — Exactly one managed identity holds Unity Catalog write (bcs_gate_identity)
+  D01 — Exactly one managed identity holds governance-ledger write (bcs_gate_identity)
   D02 — provider_home, Master_DB readers, fan-out gateway are catalog read-only
-  D03 — Foundry Agent Service identity never holds catalog write
+  D03 — Foundry Agent Service identity never holds governance-ledger write
   D04 — Every agent output is a candidate until BCS gate promotes it
   D05 — Model Router only ever sees the MyDude-granted model set
   D06 — exec_locus integrity holds (no model can satisfy a pinned exec_locus it cannot run on)
   D07 — cloud_shift kill switch is present and defaults to enabled
   D08 — agents_home and provider_home have separate roles, credentials, and migration lineages
-  D09 — BCS gate is the sole catalog writer (V1-V7 scope gates enforced)
-  D10 — No authority inversion: Unity does not own Postgres DDL; Postgres does not write to Unity
+  D09 — BCS gate is the sole governance-ledger writer (V1-V7 scope gates enforced)
+  D10 — No authority inversion: the knowledge corpus (Fabric) never owns Postgres DDL; Postgres never writes the corpus
+  D11 — Governance ledger exists + model claims route to /claims/model
+  D12 — Live: a submitted claim persists in the Postgres governance ledger
 
 Usage:
     python acceptance_doctors.py                    # all checks, static + live if configured
@@ -73,7 +75,7 @@ class AcceptanceDoctors:
             self.D08_separate_roles_and_migration_lineages,
             self.D09_bcs_gate_sole_catalog_writer,
             self.D10_no_authority_inversion,
-            self.D11_unity_bootstrap_and_claim_routing,
+            self.D11_governance_ledger_and_claim_routing,
             self.D12_live_claim_integration,
         ]
         for fn in checks:
@@ -105,7 +107,7 @@ class AcceptanceDoctors:
             "D08": self.D08_separate_roles_and_migration_lineages,
             "D09": self.D09_bcs_gate_sole_catalog_writer,
             "D10": self.D10_no_authority_inversion,
-            "D11": self.D11_unity_bootstrap_and_claim_routing,
+            "D11": self.D11_governance_ledger_and_claim_routing,
             "D12": self.D12_live_claim_integration,
         }
         fn = fn_map.get(check_id.upper())
@@ -114,10 +116,10 @@ class AcceptanceDoctors:
         return fn()
 
     # -----------------------------------------------------------------------
-    # D01: Exactly one managed identity holds Unity Catalog write
+    # D01: Exactly one managed identity holds governance-ledger write
     # -----------------------------------------------------------------------
     def D01_single_catalog_writer(self) -> CheckResult:
-        """D01 — Exactly one managed identity holds Unity Catalog write (bcs_gate_identity)"""
+        """D01 — Exactly one managed identity holds governance-ledger write (bcs_gate_identity)"""
         evidence = []
         passed = True
 
@@ -144,8 +146,8 @@ class AcceptanceDoctors:
         bcs_app = GATES_DIR / "bcs_gate" / "app.py"
         if bcs_app.exists():
             content = bcs_app.read_text()
-            write_fns = re.findall(r"def\s+(_write_claim_to_unity)\s*\(", content)
-            evidence.append("BCS gate write functions: %s" % write_fns)
+            write_fns = re.findall(r"def\s+(_write_claim_to_ledger)\s*\(", content)
+            evidence.append("BCS gate ledger write functions: %s" % write_fns)
             if len(write_fns) == 1:
                 evidence.append("PASS: Exactly one write function in BCS gate.")
             else:
@@ -206,7 +208,7 @@ class AcceptanceDoctors:
     # D03: Foundry Agent Service identity never holds catalog write
     # -----------------------------------------------------------------------
     def D03_foundry_agent_never_writes_catalog(self) -> CheckResult:
-        """D03 — Foundry Agent Service identity never holds Unity Catalog write"""
+        """D03 — Foundry Agent Service identity never holds governance-ledger write"""
         evidence = []
         passed = True
 
@@ -229,11 +231,15 @@ class AcceptanceDoctors:
         manifest = INFRA_DIR / "manifest.yaml"
         if manifest.exists():
             content = manifest.read_text()
-            if "foundry_agent_identity" in content and "catalog_write: false" in content:
-                evidence.append("PASS: manifest.yaml declares foundry_agent_identity catalog_write: false.")
+            forbids_write = (
+                "corpus_write: false" in content
+                or "foundry_agent_identity_never_writes_authority: true" in content
+            )
+            if "foundry_agent_identity" in content and forbids_write:
+                evidence.append("PASS: manifest.yaml declares foundry_agent_identity never writes any authority (corpus_write: false).")
             else:
                 passed = False
-                evidence.append("FAIL: manifest.yaml does not explicitly forbid foundry_agent_identity catalog write.")
+                evidence.append("FAIL: manifest.yaml does not explicitly forbid foundry_agent_identity authority write.")
 
         return CheckResult("D03", self.D03_foundry_agent_never_writes_catalog.__doc__ or "", passed, "static", evidence=evidence)
 
@@ -530,7 +536,7 @@ class AcceptanceDoctors:
     # D09: BCS gate is the sole catalog writer with V1-V7 scope gates
     # -----------------------------------------------------------------------
     def D09_bcs_gate_sole_catalog_writer(self) -> CheckResult:
-        """D09 — BCS gate is the sole catalog writer; V1-V7 scope gates enforced on every claim"""
+        """D09 — BCS gate is the sole governance-ledger writer; V1-V7 scope gates enforced on every claim"""
         evidence = []
         passed = True
 
@@ -544,8 +550,8 @@ class AcceptanceDoctors:
                 passed = False
                 evidence.append("FAIL: BCS gate missing scope gates: %s" % [g for g in ["V1","V2","V3","V4","V5","V6","V7"] if g not in content])
 
-            if "_write_claim_to_unity" in content:
-                evidence.append("PASS: _write_claim_to_unity is the single catalog write path.")
+            if "_write_claim_to_ledger" in content:
+                evidence.append("PASS: _write_claim_to_ledger is the single governance-ledger write path.")
 
             if "LeaseLock" in content:
                 evidence.append("PASS: BCS gate implements LeaseLock.")
@@ -566,35 +572,34 @@ class AcceptanceDoctors:
         return CheckResult("D09", self.D09_bcs_gate_sole_catalog_writer.__doc__ or "", passed, "static", evidence=evidence)
 
     # -----------------------------------------------------------------------
-    # D10: No authority inversion — Unity does not own Postgres DDL; Postgres does not write Unity
+    # D10: No authority inversion — corpus (Fabric) never owns Postgres DDL; Postgres never writes corpus
     # -----------------------------------------------------------------------
     def D10_no_authority_inversion(self) -> CheckResult:
-        """D10 — No authority inversion: Unity never owns Postgres DDL; Postgres never writes to Unity Catalog"""
+        """D10 — No authority inversion: the corpus (Fabric) never owns Postgres DDL; Postgres never stages the corpus"""
         evidence = []
         passed = True
 
-        # unity_migrator.py must use authority=UNITY and never call psycopg2 for DDL
-        unity_mig = MIGRATORS_DIR / "unity_migrator.py"
-        if unity_mig.exists():
-            content = unity_mig.read_text()
-            if "MigrationAuthority.UNITY" in content:
-                evidence.append("PASS: unity_migrator.py declares authority=UNITY.")
+        # corpus_migrator.py must use authority=FABRIC and never call psycopg2 for DDL
+        corpus_mig = MIGRATORS_DIR / "corpus_migrator.py"
+        if corpus_mig.exists():
+            content = corpus_mig.read_text()
+            if "MigrationAuthority.FABRIC" in content:
+                evidence.append("PASS: corpus_migrator.py declares authority=FABRIC.")
             else:
                 passed = False
-                evidence.append("FAIL: unity_migrator.py missing MigrationAuthority.UNITY.")
+                evidence.append("FAIL: corpus_migrator.py missing MigrationAuthority.FABRIC.")
 
             # Should not have direct psycopg2 DDL execution (it submits via BCS gate)
-            if "conn.execute" not in content and "cur.execute" not in content.replace("conn.cursor()", ""):
-                evidence.append("PASS: unity_migrator.py does not execute Postgres DDL directly.")
+            if "psycopg2" not in content and "CREATE TABLE" not in content and "CREATE SCHEMA" not in content:
+                evidence.append("PASS: corpus_migrator.py executes no Postgres DDL (submits via BCS gate).")
             else:
-                # Acceptable: it may probe catalog via Unity REST, but must not run DDL
-                if "CREATE TABLE" in content or "CREATE SCHEMA" in content:
-                    passed = False
-                    evidence.append("FAIL: unity_migrator.py contains Postgres DDL (CREATE TABLE/SCHEMA).")
-                else:
-                    evidence.append("PASS: unity_migrator.py has no Postgres DDL statements.")
+                passed = False
+                evidence.append("FAIL: corpus_migrator.py contains Postgres DDL/psycopg2 (authority inversion).")
+        else:
+            passed = False
+            evidence.append("FAIL: corpus_migrator.py not found (knowledge-corpus migrator missing).")
 
-        # postgres_migrator.py must use authority=POSTGRES and never call Unity REST
+        # postgres_migrator.py must use authority=POSTGRES and never stage the Fabric corpus
         pg_mig = MIGRATORS_DIR / "postgres_migrator.py"
         if pg_mig.exists():
             content = pg_mig.read_text()
@@ -604,11 +609,11 @@ class AcceptanceDoctors:
                 passed = False
                 evidence.append("FAIL: postgres_migrator.py missing MigrationAuthority.POSTGRES.")
 
-            if "unity-catalog" not in content.lower() and "UNITY_CATALOG" not in content:
-                evidence.append("PASS: postgres_migrator.py does not write to Unity Catalog.")
+            if "MigrationAuthority.FABRIC" not in content and "onelake" not in content.lower():
+                evidence.append("PASS: postgres_migrator.py does not stage the Fabric/OneLake corpus.")
             else:
                 passed = False
-                evidence.append("FAIL: postgres_migrator.py references Unity Catalog (authority inversion).")
+                evidence.append("FAIL: postgres_migrator.py references the Fabric corpus (authority inversion).")
 
         # base.py V5 gate enforces authority boundary
         base = MIGRATORS_DIR / "base.py"
@@ -623,51 +628,52 @@ class AcceptanceDoctors:
         return CheckResult("D10", self.D10_no_authority_inversion.__doc__ or "", passed, "static", evidence=evidence)
 
     # -----------------------------------------------------------------------
-    # D11: Unity schema bootstrap and claim-type routing are correctly implemented
+    # D11: Governance ledger is defined + claim-type routing is correct
     # -----------------------------------------------------------------------
-    def D11_unity_bootstrap_and_claim_routing(self) -> CheckResult:
-        """D11 — BCS gate bootstraps Unity schema before first write; model claims route to /claims/model"""
+    def D11_governance_ledger_and_claim_routing(self) -> CheckResult:
+        """D11 — The Postgres governance ledger is defined and BCS writes to it; model claims route to /claims/model"""
         evidence = []
         passed = True
+
+        # 1. The append-only governance ledger must be defined in agents_home DDL.
+        ah_schema = GOVERNANCE_DIR / "agents_home_schema.sql"
+        if ah_schema.exists():
+            content = ah_schema.read_text()
+            if "governance.claim_ledger" in content and "CREATE TABLE IF NOT EXISTS governance.claim_ledger" in content:
+                evidence.append("PASS: agents_home_schema.sql defines governance.claim_ledger (idempotent CREATE TABLE).")
+            else:
+                passed = False
+                evidence.append("FAIL: agents_home_schema.sql missing governance.claim_ledger table.")
+
+            # Append-only: writer holds INSERT but not UPDATE/DELETE on the ledger.
+            grants_insert = re.search(r"GRANT[^;]*\bINSERT\b[^;]*governance\.claim_ledger", content, re.IGNORECASE)
+            forbids_mutation = not re.search(r"GRANT[^;]*\b(UPDATE|DELETE)\b[^;]*governance\.claim_ledger", content, re.IGNORECASE)
+            if grants_insert and forbids_mutation:
+                evidence.append("PASS: agents_home_schema.sql grants INSERT (not UPDATE/DELETE) on governance.claim_ledger (append-only).")
+            else:
+                passed = False
+                evidence.append("FAIL: agents_home_schema.sql does not grant append-only INSERT on governance.claim_ledger.")
+        else:
+            passed = False
+            evidence.append("FAIL: agents_home_schema.sql not found.")
 
         bcs_app = GATES_DIR / "bcs_gate" / "app.py"
         if bcs_app.exists():
             content = bcs_app.read_text()
 
-            # 1. BCS gate must have a bootstrap function that creates catalog/schema/tables
-            if "_ensure_unity_schema" in content:
-                evidence.append("PASS: BCS gate defines _ensure_unity_schema() for idempotent DDL bootstrap.")
+            # 2. BCS gate must write claims into the Postgres governance ledger.
+            if "_write_claim_to_ledger" in content and "governance.claim_ledger" in content:
+                evidence.append("PASS: BCS gate writes claims into governance.claim_ledger via _write_claim_to_ledger().")
             else:
                 passed = False
-                evidence.append("FAIL: BCS gate missing _ensure_unity_schema(); Unity tables are never created.")
+                evidence.append("FAIL: BCS gate does not write to governance.claim_ledger.")
 
-            # 2. Bootstrap function must use the SQL Statement Execution API for DDL.
-            # The Unity Catalog metadata REST API (/api/2.1/unity-catalog/tables) registers
-            # table metadata only; DDL and DML must go through /api/2.0/sql/statements.
-            if "/api/2.0/sql/statements" in content:
-                evidence.append("PASS: _ensure_unity_schema() uses SQL Statement Execution API for DDL.")
+            # 3. Knowledge-corpus claims (authority='fabric') are staged to OneLake/ADLS by the gate.
+            if "_stage_corpus_to_onelake" in content:
+                evidence.append("PASS: BCS gate stages knowledge-corpus claims to OneLake/ADLS.")
             else:
                 passed = False
-                evidence.append("FAIL: _ensure_unity_schema() does not use /api/2.0/sql/statements for DDL.")
-
-            if "CREATE CATALOG IF NOT EXISTS" in content:
-                evidence.append("PASS: Bootstrap DDL contains CREATE CATALOG IF NOT EXISTS (idempotent).")
-            else:
-                passed = False
-                evidence.append("FAIL: Bootstrap DDL missing CREATE CATALOG IF NOT EXISTS.")
-
-            if "CREATE TABLE IF NOT EXISTS" in content:
-                evidence.append("PASS: Bootstrap DDL contains CREATE TABLE IF NOT EXISTS (idempotent Delta tables).")
-            else:
-                passed = False
-                evidence.append("FAIL: Bootstrap DDL missing CREATE TABLE IF NOT EXISTS.")
-
-            # 3. /bootstrap/unity endpoint must exist so unity_migrator can call it
-            if "/bootstrap/unity" in content:
-                evidence.append("PASS: BCS gate exposes POST /bootstrap/unity endpoint.")
-            else:
-                passed = False
-                evidence.append("FAIL: BCS gate missing /bootstrap/unity endpoint.")
+                evidence.append("FAIL: BCS gate missing OneLake/ADLS corpus staging path.")
 
             # 4. /claims/model endpoint must exist (separate from /claims/migration)
             if '"/claims/model"' in content or "'/claims/model'" in content:
@@ -690,18 +696,7 @@ class AcceptanceDoctors:
             if "claim_endpoint" in content:
                 evidence.append("PASS: submit_completion_claim() accepts explicit endpoint override.")
 
-        unity_mig = MIGRATORS_DIR / "unity_migrator.py"
-        if unity_mig.exists():
-            content = unity_mig.read_text()
-
-            # 6. unity_migrator must call /bootstrap/unity before submitting claim
-            if "/bootstrap/unity" in content:
-                evidence.append("PASS: unity_migrator.py calls /bootstrap/unity before submitting CompletionClaim.")
-            else:
-                passed = False
-                evidence.append("FAIL: unity_migrator.py does not call /bootstrap/unity; tables may not exist.")
-
-        # 7. Simulate: confirm claim_endpoint routing logic via import
+        # 6. Simulate: confirm claim_endpoint routing logic via import
         try:
             sys.path.insert(0, str(MIGRATORS_DIR))
             from base import CompletionClaim, MigrationAuthority, ScopeLabel
@@ -740,20 +735,18 @@ class AcceptanceDoctors:
         except Exception as e:
             evidence.append("WARN: Could not simulate claim routing: %s" % e)
 
-        return CheckResult("D11", self.D11_unity_bootstrap_and_claim_routing.__doc__ or "", passed, "static", evidence=evidence)
+        return CheckResult("D11", self.D11_governance_ledger_and_claim_routing.__doc__ or "", passed, "static", evidence=evidence)
 
     # -----------------------------------------------------------------------
     # D12: Live integration — end-to-end claim submission + row verification
     # -----------------------------------------------------------------------
     def D12_live_claim_integration(self) -> CheckResult:
-        """D12 — Live: submit a test claim to BCS gate and verify row persists in Unity claim_ledger"""
+        """D12 — Live: submit a test claim to BCS gate and verify the row persists in the Postgres governance ledger"""
         evidence = []
         passed = True
 
         bcs_gate_url = os.environ.get("BCS_GATE_URL", "")
-        unity_endpoint = os.environ.get("UNITY_CATALOG_ENDPOINT", "")
-        warehouse_id = os.environ.get("DATABRICKS_SQL_WAREHOUSE_ID", "")
-        unity_token = os.environ.get("UNITY_CATALOG_TOKEN", "")
+        agents_home_dsn = os.environ.get("PG_AGENTS_HOME_DSN", "")
 
         if self.static_only:
             evidence.append("INFO: Static-only mode; D12 live integration skipped.")
@@ -766,23 +759,7 @@ class AcceptanceDoctors:
         import urllib.request
         import urllib.error
 
-        # Step 1: Bootstrap Unity schema via BCS gate (idempotent)
-        try:
-            req = urllib.request.Request(
-                bcs_gate_url + "/bootstrap/unity",
-                data=b"{}",
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                bs = json.loads(resp.read().decode())
-            evidence.append("LIVE PASS: /bootstrap/unity succeeded: %s" % bs.get("status"))
-        except Exception as e:
-            passed = False
-            evidence.append("LIVE FAIL: /bootstrap/unity failed: %s" % e)
-            return CheckResult("D12", self.D12_live_claim_integration.__doc__ or "", passed, "live", evidence=evidence)
-
-        # Step 2: Submit a test CompletionClaim to /claims/migration
+        # Step 1: Submit a test CompletionClaim to /claims/migration
         import uuid
         import hashlib
         test_candidate_id = "d12-test-" + str(uuid.uuid4())
@@ -808,7 +785,7 @@ class AcceptanceDoctors:
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 claim_result = json.loads(resp.read().decode())
-            if claim_result.get("status") in ("unity_committed", "promoted", "ok", "accepted"):
+            if claim_result.get("status") in ("ledger_committed", "promoted", "ok", "accepted"):
                 evidence.append("LIVE PASS: Test claim accepted and promoted: status=%s" % claim_result.get("status"))
             else:
                 passed = False
@@ -822,44 +799,31 @@ class AcceptanceDoctors:
             evidence.append("LIVE FAIL: /claims/migration error: %s" % e)
             return CheckResult("D12", self.D12_live_claim_integration.__doc__ or "", passed, "live", evidence=evidence)
 
-        # Step 3: Verify the row landed in Unity Catalog via SQL Statement Execution API
-        if unity_endpoint and warehouse_id and unity_token:
+        # Step 2: Verify the row landed in the Postgres governance ledger.
+        if agents_home_dsn:
             try:
-                verify_sql = (
-                    "SELECT claim_id, candidate_id, authority, promoted_at "
-                    "FROM mydude.agents_home_ledger.claim_ledger "
-                    "WHERE candidate_id = '%s' LIMIT 1" % test_candidate_id
-                )
-                stmt_payload = json.dumps({
-                    "warehouse_id": warehouse_id,
-                    "statement": verify_sql,
-                    "wait_timeout": "30s",
-                    "disposition": "INLINE",
-                    "format": "JSON_ARRAY",
-                }).encode()
-                req = urllib.request.Request(
-                    unity_endpoint.rstrip("/") + "/api/2.0/sql/statements",
-                    data=stmt_payload,
-                    headers={"Authorization": "Bearer %s" % unity_token, "Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    stmt_result = json.loads(resp.read().decode())
-                state = stmt_result.get("status", {}).get("state")
-                rows = stmt_result.get("result", {}).get("data_array", [])
-                if state == "SUCCEEDED" and rows:
-                    evidence.append("LIVE PASS: Row verified in Unity claim_ledger for candidate_id=%s" % test_candidate_id)
-                elif state == "SUCCEEDED" and not rows:
-                    passed = False
-                    evidence.append("LIVE FAIL: No row found in Unity claim_ledger for candidate_id=%s (INSERT may have failed silently)" % test_candidate_id)
-                else:
-                    passed = False
-                    evidence.append("LIVE FAIL: Unity verify query state=%s" % state)
+                import psycopg2
+                conn = psycopg2.connect(agents_home_dsn)
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT candidate_id, authority FROM governance.claim_ledger "
+                            "WHERE candidate_id = %s LIMIT 1",
+                            (test_candidate_id,),
+                        )
+                        row = cur.fetchone()
+                    if row:
+                        evidence.append("LIVE PASS: Row verified in governance.claim_ledger for candidate_id=%s" % test_candidate_id)
+                    else:
+                        passed = False
+                        evidence.append("LIVE FAIL: No row found in governance.claim_ledger for candidate_id=%s (INSERT may have failed silently)" % test_candidate_id)
+                finally:
+                    conn.close()
             except Exception as e:
-                evidence.append("LIVE WARN: Could not verify row in Unity (verification skipped): %s" % e)
+                evidence.append("LIVE WARN: Could not verify row in governance ledger (verification skipped): %s" % e)
         else:
-            evidence.append("INFO: UNITY_CATALOG_ENDPOINT/DATABRICKS_SQL_WAREHOUSE_ID/UNITY_CATALOG_TOKEN not set; "
-                            "row verification in Unity Catalog skipped (claim submission verified above).")
+            evidence.append("INFO: PG_AGENTS_HOME_DSN not set; row verification in the governance ledger skipped "
+                            "(claim submission verified above).")
 
         return CheckResult("D12", self.D12_live_claim_integration.__doc__ or "", passed, "live", evidence=evidence)
 
@@ -867,10 +831,10 @@ class AcceptanceDoctors:
     # Live checks (require AZURE_SUBSCRIPTION_ID, AZURE_TOKEN)
     # -----------------------------------------------------------------------
     def _check_live_catalog_writers(self) -> dict:
-        """Check Azure RBAC for Unity Catalog write assignments."""
+        """Check Azure RBAC for governance-ledger write assignments."""
         subscription_id = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
         token = os.environ.get("AZURE_TOKEN", "")
-        resource_group = "MyDude"
+        resource_group = "mydude"
 
         if not subscription_id or not token:
             return {
@@ -881,7 +845,7 @@ class AcceptanceDoctors:
         try:
             import urllib.request
             import urllib.error
-            # List role assignments in the MyDude resource group
+            # List role assignments in the mydude resource group
             url = ("https://management.azure.com/subscriptions/%s/resourceGroups/%s"
                    "/providers/Microsoft.Authorization/roleAssignments"
                    "?api-version=2022-04-01" % (subscription_id, resource_group))
@@ -896,7 +860,7 @@ class AcceptanceDoctors:
                 if contributor_id in ra.get("properties", {}).get("roleDefinitionId", "")
             ]
             if len(contributors) == 1:
-                return {"passed": True, "evidence": ["LIVE PASS: Exactly 1 Blob Data Contributor in MyDude RG."]}
+                return {"passed": True, "evidence": ["LIVE PASS: Exactly 1 Blob Data Contributor in mydude RG."]}
             else:
                 return {
                     "passed": False,

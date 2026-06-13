@@ -118,7 +118,8 @@ components:
     max_size_gb: 10.0
     notes: >
       Hot vector store, local sovereign stack. L2 (warm) lives on ADLS Gen2 in Azure.
-      Both are PROJECTIONS — not authorities. Rebuilt from Unity Catalog on demand.
+      Both are PROJECTIONS — not authorities. Rebuilt from the governance ledger (Postgres)
+      + knowledge corpus (OneLake/ADLS) on demand.
 
   provider_home_candidate:
     type: sqlite
@@ -155,10 +156,10 @@ components:
     port: 9000
     console_port: 9001
     buckets:
-      - name: unity-catalog
-        mirror_of: "abfss://unity-catalog@mydudestg.dfs.core.windows.net/"
+      - name: onelake-staging
+        mirror_of: "abfss://onelake-staging@mydudestg.dfs.core.windows.net/"
         sync_direction: azure_to_local
-        notes: "Read-only mirror of Unity Catalog ADLS container"
+        notes: "Read-only mirror of the knowledge-corpus OneLake staging ADLS container"
       - name: lancedb-l2
         mirror_of: "abfss://lancedb-l2@mydudestg.dfs.core.windows.net/"
         sync_direction: bidirectional
@@ -181,6 +182,6 @@ promotion_flow:
   step_3: "Outbox worker monitors connectivity"
   step_4: "On connectivity restore: replay outbox events to cloud BCS gate POST /outbox/replay"
   step_5: "Cloud BCS gate runs V1-V7 scope gates"
-  step_6: "Cloud BCS gate writes to Unity Catalog with managed identity"
+  step_6: "Cloud BCS gate writes to the governance ledger (Postgres) + knowledge corpus (OneLake/ADLS) with managed identity"
   step_7: "gate_receipt_id returned; local candidate status updated to 'promoted'"
   step_8: "agents_home.policy.model_team_policy updated with promoted model"

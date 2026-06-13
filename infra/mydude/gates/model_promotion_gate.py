@@ -13,9 +13,9 @@ Eval signal sources:
   - provider_home.candidates.model_candidate (local eval results)
 
 The gate writes only to agents_home.policy.model_team_policy, via the
-agents_home_writer role. It does NOT write to Unity Catalog — only the BCS
-gate may do that. The promotion event is submitted as a CompletionClaim to
-the BCS gate for the catalog record.
+agents_home_writer role. It does NOT write to the governance ledger — only the
+BCS gate may do that. The promotion event is submitted as a CompletionClaim to
+the BCS gate for the governance-ledger record.
 
 Usage:
     python model_promotion_gate.py --domain general --dry-run
@@ -298,12 +298,12 @@ def promote_domain(domain: str, dry_run: bool = False, team: str = "default") ->
                 bcs_result = submit_completion_claim(claim)
                 # "queued_for_replay", "logged_only", and "error" are NOT confirmed commits.
                 # They mean BCS was unreachable and the claim went to the local outbox.
-                # The roster MUST NOT advance until BCS commits the claim in Unity.
-                confirmed_statuses = {"ok", "promoted", "accepted", "unity_committed"}
+                # The roster MUST NOT advance until BCS commits the claim to the governance ledger.
+                confirmed_statuses = {"ok", "promoted", "accepted", "ledger_committed"}
                 result_status = (bcs_result or {}).get("status", "")
                 if result_status not in confirmed_statuses:
                     raise RuntimeError(
-                        "BCS gate did not confirm Unity commit (status=%r). "
+                        "BCS gate did not confirm governance-ledger commit (status=%r). "
                         "Claim is queued or in error — roster update withheld until replay." % result_status
                     )
                 bcs_confirmed = True
@@ -321,7 +321,7 @@ def promote_domain(domain: str, dry_run: bool = False, team: str = "default") ->
                 })
                 continue  # skip _promote_model_in_agents_home entirely
 
-            # BCS gate confirmed Unity commit — roster update is now safe
+            # BCS gate confirmed governance-ledger commit — roster update is now safe
             assert bcs_confirmed, "Invariant: roster write must not occur without BCS confirmation"
             _promote_model_in_agents_home(signal, score, team=team)
 

@@ -1,7 +1,7 @@
 // MyDude — Foundry Agent Service (full depth: managed runtime, gateway, browser, voice)
 //
 // AUTHORITY RULE: The Foundry Agent Service identity is scoped to tool/runtime ONLY.
-// It NEVER holds Unity Catalog write (Storage Blob Data Contributor is withheld).
+// It NEVER holds governance-ledger or knowledge-corpus write (Storage Blob Data Contributor is withheld). No catalog write.
 //
 // Model-router confinement is enforced by:
 //   1. RBAC: foundryAgentIdentity gets only "Cognitive Services OpenAI User" on AOAI —

@@ -3,7 +3,7 @@
 // AUTHORITY: Cosmos holds the agents' working memory — episodic events, semantic
 // vectors, and raw documents. Postgres remains the relational/governance/audit/secrets
 // authority; Fabric/OneLake holds the large domain-knowledge corpus. Cosmos is the
-// low-latency agent memory tier and replaces Azure AI Search (vector lives here + pgvector).
+// low-latency agent memory tier; vector search lives here alongside Postgres pgvector.
 //
 // SECURITY: private-endpoint only (publicNetworkAccess Disabled), key auth disabled
 // (disableLocalAuth) — all access via AAD/Cosmos data-plane RBAC.

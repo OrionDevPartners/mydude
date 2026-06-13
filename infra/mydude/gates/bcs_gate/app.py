@@ -1,7 +1,8 @@
 """BCS Promotion Gate — Container App (min-1, always-on).
 
-This is the SINGLE TRUTH WRITER for MyDude's Unity Catalog.
-It is the only actor that may write to the catalog.
+This is the SINGLE TRUTH WRITER for MyDude's governance ledger (Postgres) and
+knowledge corpus (Microsoft Fabric / OneLake staging in ADLS Gen2).
+It is the only actor that may write to either authority.
 
 Guarantees:
   - Single Entra managed identity (mydude-bcs-gate) is the only writer.
@@ -11,7 +12,7 @@ Guarantees:
   - Lease lock: Postgres session advisory lock (pg_try_advisory_lock) instead of an
     in-process threading.Lock, which is meaningless across Container App replicas.
   - Scope-gate V1-V7 must all pass before any write.
-  - Unity write failure raises HTTP 502 — callers must not treat "error" as "promoted".
+  - Governance-ledger write failure raises HTTP 502 — callers must not treat "error" as "promoted".
   - Candidate events from provider_home and offline outbox replays are
     admitted here and nowhere else.
 
@@ -47,14 +48,14 @@ logger = logging.getLogger("bcs_gate")
 BCS_LEASE_SECRET = os.environ.get("BCS_LEASE_SECRET", "")
 PG_AGENTS_HOME_DSN = os.environ.get("PG_AGENTS_HOME_DSN", "")
 PG_PROVIDER_HOME_DSN = os.environ.get("PG_PROVIDER_HOME_DSN", "")
-UNITY_CATALOG_ENDPOINT = os.environ.get("UNITY_CATALOG_ENDPOINT", "")
 MANAGED_IDENTITY_CLIENT_ID = os.environ.get("MANAGED_IDENTITY_CLIENT_ID", "")
 SCOPE_GATE_VERSION = os.environ.get("SCOPE_GATE_VERSION", "V7")
-# Databricks SQL Warehouse ID — required for row INSERT and DDL execution via
-# the SQL Statement Execution API (POST /api/2.0/sql/statements).
-# Unity Catalog's metadata REST API manages catalog/schema/table objects, but
-# row-level writes and DDL execution must go through a SQL Warehouse.
-DATABRICKS_SQL_WAREHOUSE_ID = os.environ.get("DATABRICKS_SQL_WAREHOUSE_ID", "")
+# Knowledge-corpus staging target (Microsoft Fabric / OneLake over ADLS Gen2).
+# The governance ledger itself is Postgres (PG_AGENTS_HOME_DSN, above); the
+# knowledge corpus is staged to this ADLS Gen2 account's OneLake-staging
+# filesystem. The BCS gate managed identity is the sole writer to both.
+ADLS_CORPUS_ACCOUNT = os.environ.get("ADLS_CORPUS_ACCOUNT", "")
+ADLS_CORPUS_FILESYSTEM = os.environ.get("ADLS_CORPUS_FILESYSTEM", "onelake-staging")
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +99,7 @@ def _pg_advisory_lease(conn, candidate_id: str, content_hash: str):
 def _pg_is_duplicate(conn, candidate_id: str, content_hash: str) -> bool:
     """Check the durable claim_receipt table for an already-committed promotion.
 
-    V1 idempotency check: ONLY rows with status='unity_committed' count as committed.
+    V1 idempotency check: ONLY rows with status='ledger_committed' count as committed.
     A row with status='pending' or 'failed' does NOT block retry — the previous
     attempt did not complete, and the claim is eligible for re-submission.
 
@@ -117,7 +118,7 @@ def _pg_is_duplicate(conn, candidate_id: str, content_hash: str) -> bool:
         row = cur.fetchone()
         if row is None:
             return False  # no receipt at all — not a duplicate
-        return row[0] == "unity_committed"  # only committed claims block retry
+        return row[0] == "ledger_committed"  # only committed claims block retry
 
 
 def _pg_upsert_receipt_pending(conn, gate_receipt_id: str, candidate_id: str, content_hash: str,
@@ -125,7 +126,7 @@ def _pg_upsert_receipt_pending(conn, gate_receipt_id: str, candidate_id: str, co
     """Insert a receipt row with status='pending', or reset a failed row to 'pending'.
 
     Uses INSERT ... ON CONFLICT to handle the case where a previous attempt left
-    a 'failed' row. A 'unity_committed' conflict is caught by _pg_is_duplicate
+    a 'failed' row. A 'ledger_committed' conflict is caught by _pg_is_duplicate
     before this call and raises ValueError(V1) instead.
 
     The UNIQUE constraint on (candidate_id, content_hash) guards against races.
@@ -148,12 +149,12 @@ def _pg_upsert_receipt_pending(conn, gate_receipt_id: str, candidate_id: str, co
 
 
 def _pg_commit_receipt(conn, candidate_id: str, content_hash: str) -> None:
-    """Advance receipt from 'pending' → 'unity_committed' after successful Unity write."""
+    """Advance receipt from 'pending' → 'ledger_committed' after successful governance-ledger write."""
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE governance.claim_receipt
-            SET status = 'unity_committed', committed_at = now()
+            SET status = 'ledger_committed', committed_at = now()
             WHERE candidate_id = %s AND content_hash = %s AND status = 'pending'
             """,
             (candidate_id, content_hash),
@@ -189,7 +190,7 @@ def _get_agents_home_conn():
 # Scope gate re-implementation (gate-side, authoritative)
 # ---------------------------------------------------------------------------
 VALID_EXEC_LOCI = ("in_azure", "anthropic_hosted", "local")
-VALID_AUTHORITIES = ("unity", "postgres")
+VALID_AUTHORITIES = ("fabric", "postgres")
 VALID_SCOPES = ("V1_idempotency", "V2_content_hash", "V3_receipt_unique",
                 "V4_exec_locus", "V5_authority", "V6_lease_lock", "V7_scope_label")
 
@@ -242,257 +243,164 @@ def _run_scope_gate(payload: dict, conn) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Unity Catalog write (via managed identity token) — sole write path
+# Governance ledger (Postgres) + knowledge corpus (OneLake/ADLS) — sole write path
 # ---------------------------------------------------------------------------
-def _get_managed_identity_token() -> Optional[str]:
-    """Acquire an access token for Unity Catalog using the managed identity."""
+def _get_storage_token() -> Optional[str]:
+    """Acquire an access token for ADLS Gen2 / OneLake using the managed identity."""
     if not MANAGED_IDENTITY_CLIENT_ID:
         return None
     try:
         import urllib.request
         url = ("http://169.254.169.254/metadata/identity/oauth2/token"
                "?api-version=2018-02-01"
-               "&resource=https://databricks.azure.com/"
+               "&resource=https://storage.azure.com/"
                "&client_id=%s" % MANAGED_IDENTITY_CLIENT_ID)
         req = urllib.request.Request(url, headers={"Metadata": "true"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
             return data.get("access_token")
     except Exception as e:
-        logger.error("Failed to acquire managed identity token: %s", e)
+        logger.error("Failed to acquire managed identity storage token: %s", e)
         return None
 
 
-def _run_sql_statement(
-    endpoint: str,
-    token: str,
-    warehouse_id: str,
-    statement: str,
-    wait_timeout: str = "30s",
-) -> dict:
-    """Execute a SQL statement via the Databricks SQL Statement Execution API.
+def _stage_corpus_to_onelake(claim_payload: dict) -> None:
+    """Stage a knowledge-corpus claim's manifest to OneLake staging in ADLS Gen2.
 
-    Uses POST /api/2.0/sql/statements against the configured SQL Warehouse.
-    This is the supported path for DDL (CREATE CATALOG/SCHEMA/TABLE) and
-    DML (INSERT) in Databricks Unity Catalog — not the metadata REST API.
+    The BCS gate is the sole writer to the knowledge corpus. Corpus claims
+    (authority='fabric') carry their manifest in `detail`; this stages that
+    manifest JSON to the configured OneLake-staging filesystem via the ADLS Gen2
+    DataLake REST API (create file → append → flush) using the gate managed
+    identity. Microsoft Fabric lakehouse items surface this staged data via
+    OneLake shortcuts; the durable governance record stays in Postgres.
 
-    Raises RuntimeError on HTTP error or statement failure.
-    Returns the raw response dict from the Statements API.
-
-    Reference:
-      https://docs.databricks.com/api/workspace/statementexecution/executestatement
+    Fail-loud in production if the corpus target is unconfigured; skip in dev/test.
+    RAISES on any staging failure — the caller must not treat a failure as success.
     """
+    production_mode = os.environ.get("PRODUCTION_MODE", "false").lower() == "true"
+    if not ADLS_CORPUS_ACCOUNT or not ADLS_CORPUS_FILESYSTEM:
+        if production_mode:
+            raise RuntimeError(
+                "ADLS_CORPUS_ACCOUNT / ADLS_CORPUS_FILESYSTEM not configured "
+                "(PRODUCTION_MODE=true). Knowledge-corpus claims must be staged to "
+                "OneLake/ADLS, not silently dropped."
+            )
+        logger.warning("ADLS corpus target not configured; corpus staging skipped (dev/test mode).")
+        return
+
+    token = _get_storage_token()
+    if not token:
+        raise RuntimeError(
+            "Cannot obtain managed identity token for OneLake/ADLS corpus staging "
+            "(candidate_id=%s). Corpus claim NOT staged." % claim_payload.get("candidate_id")
+        )
+
     import urllib.request
     import urllib.error
 
-    url = "%s/api/2.0/sql/statements" % endpoint.rstrip("/")
-    body = json.dumps({
-        "warehouse_id": warehouse_id,
-        "statement": statement,
-        "wait_timeout": wait_timeout,
-        "on_wait_timeout": "CANCEL",
-        "disposition": "INLINE",
-        "format": "JSON_ARRAY",
-    }).encode()
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Authorization": "Bearer %s" % token, "Content-Type": "application/json"},
-        method="POST",
+    candidate_id = claim_payload.get("candidate_id", "unknown")
+    rel_path = "corpus/%s/%s.json" % (
+        claim_payload.get("migration_name") or "manifest", candidate_id,
     )
+    body = json.dumps(claim_payload.get("detail", {})).encode()
+    base = "https://%s.dfs.core.windows.net/%s/%s" % (
+        ADLS_CORPUS_ACCOUNT, ADLS_CORPUS_FILESYSTEM, rel_path,
+    )
+    auth = {"Authorization": "Bearer %s" % token, "x-ms-version": "2021-08-06"}
+
+    def _call(url: str, method: str, data: bytes, extra: Optional[dict] = None) -> None:
+        headers = dict(auth)
+        if extra:
+            headers.update(extra)
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read().decode())
+        # ADLS Gen2 DataLake REST: create empty file, append the body, then flush.
+        _call(base + "?resource=file", "PUT", b"")
+        _call(base + "?action=append&position=0", "PATCH", body,
+              {"Content-Type": "application/octet-stream"})
+        _call(base + "?action=flush&position=%d" % len(body), "PATCH", b"")
+        logger.info("Staged corpus manifest to OneLake/ADLS: %s/%s",
+                    ADLS_CORPUS_FILESYSTEM, rel_path)
     except urllib.error.HTTPError as e:
-        err_body = e.read().decode(errors="replace")
-        raise RuntimeError("SQL Statement API HTTP %d: %s" % (e.code, err_body))
-
-    state = result.get("status", {}).get("state", "UNKNOWN")
-    if state not in ("SUCCEEDED", "CLOSED"):
-        err = result.get("status", {}).get("error", {})
         raise RuntimeError(
-            "SQL statement failed (state=%s): %s — SQL: %.200s"
-            % (state, err.get("message", "no detail"), statement)
+            "OneLake/ADLS corpus staging failed (HTTP %d): %s"
+            % (e.code, e.read().decode(errors="replace"))
         )
-    return result
+    except Exception as e:
+        raise RuntimeError("OneLake/ADLS corpus staging error: %s" % e)
 
 
-def _ensure_unity_schema(endpoint: str, token: str, warehouse_id: str) -> None:
-    """Bootstrap Unity Catalog schema/tables on first deploy or after schema loss.
+def _write_claim_to_ledger(conn, claim_payload: dict) -> dict:
+    """Write a promoted claim to the Postgres governance ledger (governance.claim_ledger).
 
-    Uses the Databricks SQL Statement Execution API (POST /api/2.0/sql/statements)
-    to execute CREATE CATALOG/SCHEMA/TABLE IF NOT EXISTS DDL via the SQL Warehouse.
+    This is the ONLY function in the system that writes rows to the governance
+    ledger. The BCS gate (single Entra managed identity) is the sole truth writer.
 
-    This is the ONLY correct mechanism for Delta table DDL in Databricks —
-    the Unity Catalog metadata REST API (/api/2.1/unity-catalog/tables) registers
-    table metadata after the physical table exists; it does NOT create Delta tables
-    from scratch. All DDL must go through a SQL Warehouse.
-
-    Called at BCS gate startup and via POST /bootstrap/unity.
-    Idempotent: IF NOT EXISTS guards mean repeated calls are safe.
-    Raises RuntimeError on any statement failure.
-    """
-    ddl_statements = [
-        "CREATE CATALOG IF NOT EXISTS mydude COMMENT 'MyDude sovereign claim ledger catalog'",
-        "CREATE SCHEMA IF NOT EXISTS mydude.agents_home_ledger "
-        "  COMMENT 'Committed routing decisions and claim ledger'",
-        "CREATE SCHEMA IF NOT EXISTS mydude.provider_home_ledger "
-        "  COMMENT 'Candidate promotion history from provider_home'",
-        # claim_ledger — immutable record of all BCS-promoted claims
-        """CREATE TABLE IF NOT EXISTS mydude.agents_home_ledger.claim_ledger (
-            claim_id        STRING NOT NULL,
-            candidate_id    STRING NOT NULL,
-            content_hash    STRING NOT NULL,
-            gate_receipt_id STRING NOT NULL,
-            exec_locus      STRING NOT NULL,
-            authority       STRING NOT NULL,
-            scope_label     STRING NOT NULL,
-            migration_name  STRING,
-            database        STRING,
-            model_id        STRING,
-            provider        STRING,
-            domain          STRING,
-            promoted_at     TIMESTAMP NOT NULL,
-            detail          STRING
-        )
-        USING DELTA
-        PARTITIONED BY (exec_locus)
-        TBLPROPERTIES (
-            'write_authority' = 'bcs_gate_only',
-            'delta.enableDeletionVectors' = 'false'
-        )
-        COMMENT 'Immutable record of all BCS-promoted claims'""",
-        # routing_decision_ledger
-        """CREATE TABLE IF NOT EXISTS mydude.agents_home_ledger.routing_decision_ledger (
-            decision_id         STRING NOT NULL,
-            request_id          STRING NOT NULL,
-            exec_locus          STRING NOT NULL,
-            fallback_tier       INT,
-            model_team          STRING,
-            resolved_provider   STRING,
-            cloud_shift_active  BOOLEAN NOT NULL,
-            outcome             STRING NOT NULL,
-            decided_at          TIMESTAMP NOT NULL
-        )
-        USING DELTA
-        PARTITIONED BY (exec_locus)
-        TBLPROPERTIES ('write_authority' = 'bcs_gate_only')
-        COMMENT 'Committed routing decisions promoted from agents_home'""",
-        # promotion_history
-        """CREATE TABLE IF NOT EXISTS mydude.provider_home_ledger.promotion_history (
-            promotion_id        STRING NOT NULL,
-            candidate_id        STRING NOT NULL,
-            content_hash        STRING NOT NULL,
-            gate_receipt_id     STRING NOT NULL,
-            model_id            STRING NOT NULL,
-            provider            STRING NOT NULL,
-            domain              STRING NOT NULL,
-            exec_locus          STRING NOT NULL,
-            benchmark_score     DOUBLE,
-            cost_per_1k_tokens  DOUBLE,
-            latency_p50_ms      INT,
-            promoted_at         TIMESTAMP NOT NULL,
-            source              STRING
-        )
-        USING DELTA
-        PARTITIONED BY (domain, exec_locus)
-        TBLPROPERTIES ('write_authority' = 'bcs_gate_only')
-        COMMENT 'Record of all model candidates promoted through the BCS gate'""",
-    ]
-    for stmt in ddl_statements:
-        _run_sql_statement(endpoint, token, warehouse_id, stmt)
-    logger.info("Unity Catalog DDL bootstrap complete: catalog=mydude, 2 schemas, 3 Delta tables.")
-
-
-def _write_claim_to_unity(claim_payload: dict) -> dict:
-    """Write a promoted claim to the Unity Catalog claim_ledger via SQL INSERT.
-
-    Uses the Databricks SQL Statement Execution API (POST /api/2.0/sql/statements)
-    with a parameterised INSERT INTO statement executed on the configured SQL Warehouse.
-    This is the ONLY supported mechanism for row-level writes to Delta tables in
-    Databricks — there is no row-insertion endpoint in the Unity Catalog metadata REST API.
-
-    This is the ONLY function in the system that writes rows to Unity Catalog.
-    It uses the bcs-gate managed identity exclusively.
+    The INSERT is left UNCOMMITTED so the caller can commit it atomically with the
+    claim_receipt state advance. For knowledge-corpus claims (authority='fabric')
+    the corpus manifest is then staged to OneLake/ADLS via _stage_corpus_to_onelake().
 
     Returns a dict with status="promoted" on success.
     RAISES on any failure — callers must not swallow errors.
     """
     production_mode = os.environ.get("PRODUCTION_MODE", "false").lower() == "true"
 
-    if not UNITY_CATALOG_ENDPOINT:
+    if conn is None:
         if production_mode:
             raise RuntimeError(
-                "UNITY_CATALOG_ENDPOINT is not configured (PRODUCTION_MODE=true). "
-                "BCS gate cannot proceed: claims must be written to Unity Catalog, not silently dropped. "
-                "Set UNITY_CATALOG_ENDPOINT to the Databricks workspace URL."
+                "PG_AGENTS_HOME_DSN is not configured (PRODUCTION_MODE=true). "
+                "BCS gate cannot proceed: claims must be written to the governance "
+                "ledger (Postgres), not silently dropped. Set PG_AGENTS_HOME_DSN."
             )
-        logger.warning("UNITY_CATALOG_ENDPOINT not configured; claim recorded locally only (dev/test mode).")
-        return {"status": "local_only", "reason": "no_unity_endpoint"}
-
-    if not DATABRICKS_SQL_WAREHOUSE_ID:
-        if production_mode:
-            raise RuntimeError(
-                "DATABRICKS_SQL_WAREHOUSE_ID is not configured (PRODUCTION_MODE=true). "
-                "Row INSERT requires a running SQL Warehouse. Set DATABRICKS_SQL_WAREHOUSE_ID."
-            )
-        logger.warning("DATABRICKS_SQL_WAREHOUSE_ID not configured; claim recorded locally only (dev/test mode).")
-        return {"status": "local_only", "reason": "no_warehouse_id"}
-
-    token = _get_managed_identity_token()
-    if not token:
-        raise RuntimeError(
-            "Cannot obtain managed identity token for Unity Catalog write "
-            "(candidate_id=%s). Claim NOT promoted." % claim_payload.get("candidate_id")
-        )
+        logger.warning("PG_AGENTS_HOME_DSN not configured; claim recorded locally only (dev/test mode).")
+        return {"status": "local_only", "reason": "no_agents_home_dsn"}
 
     claim_id = str(uuid.uuid4())
-    promoted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
-
-    def _sql_str(val) -> str:
-        if val is None:
-            return "NULL"
-        escaped = str(val).replace("'", "''")
-        return "'" + escaped + "'"
-
-    detail_json = json.dumps(claim_payload.get("detail", {})).replace("'", "''")
-
-    insert_sql = (
-        "INSERT INTO mydude.agents_home_ledger.claim_ledger "
-        "(claim_id, candidate_id, content_hash, gate_receipt_id, exec_locus, "
-        "authority, scope_label, migration_name, database, model_id, provider, domain, promoted_at, detail) "
-        "VALUES ({claim_id}, {candidate_id}, {content_hash}, {gate_receipt_id}, {exec_locus}, "
-        "{authority}, {scope_label}, {migration_name}, {database}, {model_id}, {provider}, {domain}, "
-        "CAST({promoted_at} AS TIMESTAMP), {detail})"
-    ).format(
-        claim_id=_sql_str(claim_id),
-        candidate_id=_sql_str(claim_payload.get("candidate_id")),
-        content_hash=_sql_str(claim_payload.get("content_hash")),
-        gate_receipt_id=_sql_str(claim_payload.get("gate_receipt_id")),
-        exec_locus=_sql_str(claim_payload.get("exec_locus")),
-        authority=_sql_str(claim_payload.get("authority")),
-        scope_label=_sql_str(claim_payload.get("scope_label")),
-        migration_name=_sql_str(claim_payload.get("migration_name")),
-        database=_sql_str(claim_payload.get("database")),
-        model_id=_sql_str(claim_payload.get("model_id")),
-        provider=_sql_str(claim_payload.get("provider")),
-        domain=_sql_str(claim_payload.get("domain")),
-        promoted_at=_sql_str(promoted_at),
-        detail=_sql_str(detail_json),
-    )
-
+    authority = claim_payload.get("authority", "")
     try:
-        result = _run_sql_statement(
-            UNITY_CATALOG_ENDPOINT, token, DATABRICKS_SQL_WAREHOUSE_ID, insert_sql
-        )
-        logger.info("Unity claim_ledger INSERT succeeded for candidate_id=%s claim_id=%s",
-                    claim_payload.get("candidate_id"), claim_id)
-        return {"status": "promoted", "claim_id": claim_id, "statement_id": result.get("statement_id")}
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO governance.claim_ledger
+                    (claim_id, candidate_id, content_hash, gate_receipt_id, exec_locus,
+                     authority, scope_label, migration_name, database,
+                     model_id, provider, domain, detail, promoted_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
+                ON CONFLICT (candidate_id, content_hash) DO NOTHING
+                """,
+                (
+                    claim_id,
+                    claim_payload.get("candidate_id"),
+                    claim_payload.get("content_hash"),
+                    claim_payload.get("gate_receipt_id"),
+                    claim_payload.get("exec_locus"),
+                    authority,
+                    claim_payload.get("scope_label"),
+                    claim_payload.get("migration_name"),
+                    claim_payload.get("database"),
+                    claim_payload.get("model_id"),
+                    claim_payload.get("provider"),
+                    claim_payload.get("domain"),
+                    json.dumps(claim_payload.get("detail", {})),
+                ),
+            )
     except Exception as e:
-        # Always raise — _process_claim must not return 200 when Unity write fails.
+        # Always raise — _process_claim must not return 200 when the ledger write fails.
         raise RuntimeError(
-            "Unity Catalog INSERT failed for candidate_id=%s: %s" % (claim_payload.get("candidate_id"), e)
+            "Governance ledger INSERT failed for candidate_id=%s: %s"
+            % (claim_payload.get("candidate_id"), e)
         )
+
+    # Knowledge-corpus claims also stage their manifest to OneLake/ADLS (gate-only).
+    if authority == "fabric":
+        _stage_corpus_to_onelake(claim_payload)
+
+    logger.info("Governance ledger INSERT staged for candidate_id=%s claim_id=%s",
+                claim_payload.get("candidate_id"), claim_id)
+    return {"status": "promoted", "claim_id": claim_id}
 
 
 # ---------------------------------------------------------------------------
@@ -525,10 +433,10 @@ class OutboxReplayRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(
-        "BCS Gate starting. Unity endpoint: %s, managed identity: %s, agents_home DSN: %s",
-        UNITY_CATALOG_ENDPOINT or "[not configured]",
+        "BCS Gate starting. Governance ledger DSN: %s, corpus account: %s, managed identity: %s",
+        "configured" if PG_AGENTS_HOME_DSN else "[MISSING — V1 idempotency + ledger degraded]",
+        ADLS_CORPUS_ACCOUNT or "[not configured]",
         MANAGED_IDENTITY_CLIENT_ID or "[not configured]",
-        "configured" if PG_AGENTS_HOME_DSN else "[MISSING — V1 idempotency degraded]",
     )
     if not BCS_LEASE_SECRET:
         logger.warning("BCS_LEASE_SECRET not set — V6 gate will reject all claims.")
@@ -560,7 +468,8 @@ async def status():
         finally:
             conn.close()
     return {
-        "unity_endpoint_configured": bool(UNITY_CATALOG_ENDPOINT),
+        "governance_ledger_configured": bool(PG_AGENTS_HOME_DSN),
+        "corpus_staging_configured": bool(ADLS_CORPUS_ACCOUNT),
         "managed_identity_configured": bool(MANAGED_IDENTITY_CLIENT_ID),
         "agents_home_dsn_configured": bool(PG_AGENTS_HOME_DSN),
         "provider_home_dsn_configured": bool(PG_PROVIDER_HOME_DSN),
@@ -569,31 +478,6 @@ async def status():
         "idempotency_backend": "postgres" if PG_AGENTS_HOME_DSN else "degraded-no-dsn",
         "lease_backend": "postgres-advisory-lock",
     }
-
-
-@app.post("/bootstrap/unity")
-async def bootstrap_unity():
-    """Bootstrap Unity Catalog schema/tables via SQL DDL on the SQL Warehouse.
-
-    Executes CREATE CATALOG/SCHEMA/TABLE IF NOT EXISTS statements via the
-    Databricks SQL Statement Execution API (POST /api/2.0/sql/statements).
-    Safe to call multiple times — all DDL uses IF NOT EXISTS semantics.
-    Must be called once before the first /claims/* write on a fresh deployment.
-    unity_migrator.py calls this before submitting its CompletionClaim.
-    """
-    if not UNITY_CATALOG_ENDPOINT:
-        raise HTTPException(503, "UNITY_CATALOG_ENDPOINT not configured; cannot bootstrap Unity schema.")
-    if not DATABRICKS_SQL_WAREHOUSE_ID:
-        raise HTTPException(503, "DATABRICKS_SQL_WAREHOUSE_ID not configured; DDL requires a running SQL Warehouse.")
-    token = _get_managed_identity_token()
-    if not token:
-        raise HTTPException(503, "Cannot acquire managed identity token for Unity bootstrap.")
-    try:
-        _ensure_unity_schema(UNITY_CATALOG_ENDPOINT, token, DATABRICKS_SQL_WAREHOUSE_ID)
-        return {"status": "ok", "message": "Unity Catalog schema bootstrapped (idempotent)."}
-    except RuntimeError as e:
-        logger.error("Unity schema bootstrap failed: %s", e)
-        raise HTTPException(502, "Unity schema bootstrap failed: %s" % e)
 
 
 @app.post("/claims/migration")
@@ -615,9 +499,11 @@ async def _process_claim(payload: ClaimPayload, claim_type: str) -> JSONResponse
     Failure contract (strict):
       - 400  scope gate rejection (V1-V7)
       - 503  advisory lock busy (another replica is promoting this same claim)
-      - 502  Unity Catalog write failed — claim is NOT promoted; caller must retry or alert
-      - 200  ONLY when the claim is committed to BOTH Postgres claim_receipt AND Unity Catalog
-             (or UNITY_CATALOG_ENDPOINT is absent, meaning local/dev mode)
+      - 502  governance-ledger write failed — claim is NOT promoted; caller must retry or alert
+      - 200  ONLY when the claim is committed to BOTH the Postgres claim_receipt AND the
+             governance ledger (governance.claim_ledger) — and, for authority='fabric'
+             claims, staged to the knowledge corpus (OneLake/ADLS)
+             (or PG_AGENTS_HOME_DSN is absent, meaning local/dev mode)
     """
     conn = _get_agents_home_conn()
     try:
@@ -625,12 +511,12 @@ async def _process_claim(payload: ClaimPayload, claim_type: str) -> JSONResponse
 
         # Acquire per-claim Postgres advisory lock (cross-replica exclusivity)
         with _pg_advisory_lease(conn, payload.candidate_id, payload.content_hash):
-            # V1-V7 gates (V1 checks only unity_committed rows — failed/pending allow retry)
+            # V1-V7 gates (V1 checks only ledger_committed rows — failed/pending allow retry)
             passed = _run_scope_gate(payload_dict, conn)
 
             # Write receipt as 'pending' (state machine step 1 of 3).
             # ON CONFLICT resets 'failed' rows to 'pending' for retry.
-            # If receipt is already 'unity_committed', _pg_is_duplicate() raised V1 above.
+            # If receipt is already 'ledger_committed', _pg_is_duplicate() raised V1 above.
             if conn is not None:
                 try:
                     _pg_upsert_receipt_pending(
@@ -647,37 +533,40 @@ async def _process_claim(payload: ClaimPayload, claim_type: str) -> JSONResponse
                     conn.rollback()
                     raise ValueError("V1: receipt upsert failed: %s" % e)
 
-            # Write to Unity (state machine step 2 of 3) — RAISES on any failure.
-            # On failure: mark receipt 'failed' (retryable), return 502.
+            # Write to the governance ledger (state machine step 2 of 3) — RAISES on any failure.
+            # The INSERT is left uncommitted so it commits atomically with the receipt advance.
+            # On failure: roll back, mark receipt 'failed' (retryable), return 502.
             try:
-                unity_result = _write_claim_to_unity(payload_dict)
-            except RuntimeError as unity_err:
-                # Mark receipt failed so next retry can proceed (not stuck in 'pending')
+                ledger_result = _write_claim_to_ledger(conn, payload_dict)
+            except RuntimeError as ledger_err:
+                # Roll back the uncommitted ledger INSERT, then mark receipt failed so next
+                # retry can proceed (not stuck in 'pending').
                 if conn is not None:
                     try:
-                        _pg_fail_receipt(conn, payload.candidate_id, payload.content_hash, str(unity_err))
+                        conn.rollback()
+                        _pg_fail_receipt(conn, payload.candidate_id, payload.content_hash, str(ledger_err))
                         conn.commit()
                     except Exception:
                         pass  # best-effort; don't mask the original error
                 raise  # re-raise for the outer except to convert to 502
 
-            # Advance receipt to 'unity_committed' (state machine step 3 of 3).
-            # Only now is the claim considered durably promoted.
+            # Advance receipt to 'ledger_committed' and commit the ledger row atomically
+            # (state machine step 3 of 3). Only now is the claim durably promoted.
             if conn is not None:
                 try:
                     _pg_commit_receipt(conn, payload.candidate_id, payload.content_hash)
                     conn.commit()
                 except Exception as e:
-                    # Non-fatal: Unity already committed; log and continue
-                    logger.error("Failed to mark receipt unity_committed (Unity write succeeded): %s", e)
+                    conn.rollback()
+                    raise RuntimeError("Governance ledger commit failed: %s" % e)
 
     except RuntimeError as e:
         err_msg = str(e)
         if "advisory lock held" in err_msg:
             raise HTTPException(503, err_msg)
-        # Unity write failure
-        logger.error("Unity write failure (claim NOT promoted, receipt marked failed): %s", e)
-        raise HTTPException(502, "Unity Catalog write failed — claim not promoted, retry eligible: %s" % e)
+        # Governance-ledger write failure
+        logger.error("Governance-ledger write failure (claim NOT promoted, receipt marked failed): %s", e)
+        raise HTTPException(502, "Governance-ledger write failed — claim not promoted, retry eligible: %s" % e)
     except ValueError as e:
         logger.warning("Scope gate rejection: %s (candidate=%s)", e, payload.candidate_id)
         raise HTTPException(400, str(e))
@@ -686,15 +575,15 @@ async def _process_claim(payload: ClaimPayload, claim_type: str) -> JSONResponse
             conn.close()
 
     logger.info(
-        "Claim promoted: candidate_id=%s authority=%s type=%s unity=%s",
-        payload.candidate_id, payload.authority, claim_type, unity_result.get("status"),
+        "Claim promoted: candidate_id=%s authority=%s type=%s ledger=%s",
+        payload.candidate_id, payload.authority, claim_type, ledger_result.get("status"),
     )
     return JSONResponse({
         "status": "promoted",
         "gate_receipt_id": payload.gate_receipt_id,
         "candidate_id": payload.candidate_id,
         "scope_gates_passed": passed,
-        "unity_result": unity_result,
+        "ledger_result": ledger_result,
     })
 
 
@@ -703,7 +592,7 @@ async def replay_outbox(req: OutboxReplayRequest):
     """Replay pending offline promotion_events from provider_home outbox.
 
     Reads from PG_PROVIDER_HOME_DSN (provider_home database, outbox schema).
-    Each event is replayed through the full scope gate + Unity write.
+    Each event is replayed through the full scope gate + governance-ledger write.
     Events that fail are marked 'failed' with an error_detail; they are NOT silently dropped.
     """
     if not PG_PROVIDER_HOME_DSN:
@@ -737,7 +626,7 @@ async def replay_outbox(req: OutboxReplayRequest):
                                 _run_scope_gate(payload_dict, ah_conn)
                                 receipt_id = payload_dict.get("gate_receipt_id") or str(uuid.uuid4())
                                 if ah_conn is not None:
-                                    # Step 1: write receipt as 'pending' (retryable if Unity fails)
+                                    # Step 1: write receipt as 'pending' (retryable if ledger write fails)
                                     _pg_upsert_receipt_pending(
                                         ah_conn,
                                         gate_receipt_id=receipt_id,
@@ -748,10 +637,10 @@ async def replay_outbox(req: OutboxReplayRequest):
                                         exec_locus=payload_dict.get("exec_locus", "unknown"),
                                     )
                                     ah_conn.commit()
-                                # Step 2: write to Unity — raises on failure
-                                _write_claim_to_unity(payload_dict)
+                                # Step 2: write to the governance ledger — raises on failure
+                                _write_claim_to_ledger(ah_conn, payload_dict)
                                 if ah_conn is not None:
-                                    # Step 3: advance receipt to unity_committed
+                                    # Step 3: advance receipt to ledger_committed (+commit ledger row)
                                     _pg_commit_receipt(ah_conn, candidate_id, content_hash)
                                     ah_conn.commit()
                                 cur.execute(

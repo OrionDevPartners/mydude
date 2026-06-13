@@ -7,12 +7,12 @@ The MyDude **Azure capacity stack** — Azure-native, fully **private**, deploye
 
 Authority model:
 - **Postgres** — relational / governance / audit / secrets authority (`agents_home` + `provider_home`).
-- **Cosmos DB (NoSQL + vector)** — the agent swarm's low-latency working memory (document + vector). Replaces Azure AI Search.
+- **Cosmos DB (NoSQL + vector)** — the agent swarm's low-latency working memory (document + vector search).
 - **Microsoft Fabric / OneLake** — the large domain-knowledge corpus lakehouse.
 - **Azure OpenAI** — private foreground + background (agent-mesh) `gpt-4.1-mini` inference.
 
-**Dropped from the earlier design:** Databricks / Unity Catalog, app-code Container Apps,
-Azure AI Search (vector now lives in Cosmos + pgvector).
+Vector search lives in Cosmos DB + Postgres pgvector; the knowledge corpus lives in Fabric / OneLake.
+There are no separate app-code Container Apps.
 
 ## Authority model (locked)
 
@@ -152,16 +152,12 @@ isolation. Add that surface, then re-deploy with `foundryHubEnabled=true`.
 
 ---
 
-## Legacy artifacts pending rework (NOT updated by this task)
+## Acceptance checks
 
-These **runtime** artifacts still encode the dropped Unity-Catalog model and are pending a follow-up
-rework (separate from infra provisioning). Until reworked, do **not** rely on `run_doctors.sh` as an
-acceptance gate for this stack:
-
-- `doctors/acceptance_doctors.py` (D01–D10 checks reference Unity Catalog)
-- `migrators/unity_migrator.py` (Unity / Iceberg migrator)
-- `gates/bcs_gate/` + `gates/model_promotion_gate.py` (catalog-write wording)
-- `local/sovereign_stack.yaml`
+`doctors/acceptance_doctors.py` (D01–D12, runnable via `run_doctors.sh`) proves the
+no-authority-inversion invariants against the real stack — Postgres governance ledger,
+Cosmos agent memory, and the Fabric / OneLake corpus. Run `--static-only` for artifact
+analysis, or set `BCS_GATE_URL` + `PG_AGENTS_HOME_DSN` for the live D12 end-to-end claim check.
 
 ---
 
@@ -186,10 +182,10 @@ infra/mydude/
       monitoring.bicep             # Log Analytics + App Insights + provider-latency alert
   local/
     deploy.py                      # Azure Python SDK deploy driver (validate/whatif/deploy/status)
-    sovereign_stack.yaml           # Local sovereign stack definition (legacy — pending rework)
-  governance/                      # agents_home / provider_home DDL + migration lineage
-  migrators/                       # postgres_migrator.py (active) + unity_migrator.py (legacy)
-  gates/                           # BCS gate + model promotion gate (legacy wording — pending rework)
+    sovereign_stack.yaml           # Local sovereign stack definition
+  governance/                      # agents_home / provider_home DDL + migration lineage (governance.claim_ledger)
+  migrators/                       # postgres_migrator.py (DDL) + corpus_migrator.py (Fabric/OneLake corpus)
+  gates/                           # BCS gate (sole governance-ledger writer) + model promotion gate
   routing/                         # jurisdiction ladder + offline route table
-  doctors/                         # D01-D10 acceptance checks (legacy — pending rework)
+  doctors/                         # D01-D12 acceptance checks (no-authority-inversion proofs)
 ```

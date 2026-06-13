@@ -164,12 +164,12 @@ ON CONFLICT (team, domain, model_id, provider) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
 -- policy.index_policy
--- Controls which indexes (LanceDB L1/L2, AI Search) the routing layer uses.
+-- Controls which indexes (LanceDB L1/L2, Cosmos vectors) the routing layer uses.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS policy.index_policy (
     id          BIGSERIAL PRIMARY KEY,
     index_name  TEXT NOT NULL UNIQUE,
-    index_type  TEXT NOT NULL CHECK (index_type IN ('lancedb_l1', 'lancedb_l2', 'ai_search', 'duckdb')),
+    index_type  TEXT NOT NULL CHECK (index_type IN ('lancedb_l1', 'lancedb_l2', 'cosmos_vectors', 'duckdb')),
     location    TEXT NOT NULL CHECK (location IN ('local', 'azure')),
     authority   BOOLEAN NOT NULL DEFAULT FALSE,  -- always FALSE; indexes are projections
     enabled     BOOLEAN NOT NULL DEFAULT TRUE,
@@ -181,7 +181,7 @@ INSERT INTO policy.index_policy (index_name, index_type, location, authority, no
 VALUES
     ('lancedb_l1_hot', 'lancedb_l1', 'local', FALSE, 'Hot vector store, local sovereign stack'),
     ('lancedb_l2_warm', 'lancedb_l2', 'azure', FALSE, 'Warm vector store, ADLS Gen2, rebuildable'),
-    ('ai_search_main', 'ai_search', 'azure', FALSE, 'Azure AI Search, rebuildable projection')
+    ('cosmos_vectors_main', 'cosmos_vectors', 'azure', FALSE, 'Cosmos DB NoSQL + vector working memory, rebuildable projection')
 ON CONFLICT (index_name) DO NOTHING;
 
 GRANT SELECT, INSERT, UPDATE ON policy.index_policy TO agents_home_writer;
@@ -217,7 +217,7 @@ GRANT USAGE ON SEQUENCE policy.governed_threshold_id_seq TO agents_home_writer;
 -- ---------------------------------------------------------------------------
 -- governance.claim_receipt
 -- Durable idempotency log: every claim promoted by the BCS gate is recorded
--- here BEFORE the Unity Catalog write.  The UNIQUE constraint on
+-- here BEFORE the governance ledger write.  The UNIQUE constraint on
 -- (candidate_id, content_hash) is the hard idempotency guarantee that works
 -- across every BCS gate replica and worker process.
 -- ---------------------------------------------------------------------------
@@ -227,16 +227,16 @@ CREATE TABLE IF NOT EXISTS governance.claim_receipt (
     candidate_id    TEXT NOT NULL,
     content_hash    TEXT NOT NULL,          -- 64-char SHA-256 hex
     claim_type      TEXT NOT NULL CHECK (claim_type IN ('migration', 'model', 'outbox_replay')),
-    authority       TEXT NOT NULL CHECK (authority IN ('unity', 'postgres', 'unknown')),
+    authority       TEXT NOT NULL CHECK (authority IN ('fabric', 'postgres', 'unknown')),
     exec_locus      TEXT NOT NULL CHECK (exec_locus IN ('in_azure', 'anthropic_hosted', 'local', 'unknown')),
-    -- State machine: pending → unity_committed (success) | failed (transient Unity error)
-    -- Idempotency check (V1) ONLY triggers on 'unity_committed' rows.
+    -- State machine: pending → ledger_committed (success) | failed (transient ledger error)
+    -- Idempotency check (V1) ONLY triggers on 'ledger_committed' rows.
     -- Failed rows allow retry — the claim is not stuck.
     status          TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'unity_committed', 'failed')),
+                    CHECK (status IN ('pending', 'ledger_committed', 'failed')),
     failure_reason  TEXT,                   -- populated when status='failed'
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    committed_at    TIMESTAMPTZ,            -- set when status→unity_committed
+    committed_at    TIMESTAMPTZ,            -- set when status→ledger_committed
     UNIQUE (candidate_id, content_hash)     -- cross-replica duplicate guard (advisory lock enforces ordering)
 );
 
@@ -248,6 +248,42 @@ CREATE INDEX IF NOT EXISTS idx_claim_receipt_status     ON governance.claim_rece
 GRANT SELECT, INSERT, UPDATE ON governance.claim_receipt TO agents_home_writer;
 GRANT SELECT ON governance.claim_receipt TO agents_home_reader;
 GRANT USAGE ON SEQUENCE governance.claim_receipt_id_seq TO agents_home_writer;
+
+-- ---------------------------------------------------------------------------
+-- governance.claim_ledger
+-- THE GOVERNANCE LEDGER: the immutable, append-only record of every claim the
+-- BCS gate promotes. The BCS gate (single managed identity) is the SOLE writer.
+-- This Postgres ledger is the single governance authority of record.
+-- Knowledge-corpus claims (authority='fabric') are also recorded here;
+-- their OneLake/ADLS staging pointer travels in `detail`.
+-- Append-only: writer holds INSERT but NOT UPDATE/DELETE.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS governance.claim_ledger (
+    id              BIGSERIAL PRIMARY KEY,
+    claim_id        UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+    candidate_id    TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,          -- 64-char SHA-256 hex
+    gate_receipt_id UUID NOT NULL,
+    exec_locus      TEXT NOT NULL CHECK (exec_locus IN ('in_azure', 'anthropic_hosted', 'local')),
+    authority       TEXT NOT NULL CHECK (authority IN ('fabric', 'postgres')),
+    scope_label     TEXT NOT NULL,
+    migration_name  TEXT,
+    database        TEXT,
+    model_id        TEXT,
+    provider        TEXT,
+    domain          TEXT,
+    detail          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    promoted_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (candidate_id, content_hash)     -- one durable ledger row per promoted claim
+);
+
+CREATE INDEX IF NOT EXISTS idx_claim_ledger_candidate ON governance.claim_ledger (candidate_id);
+CREATE INDEX IF NOT EXISTS idx_claim_ledger_promoted  ON governance.claim_ledger (promoted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_claim_ledger_domain    ON governance.claim_ledger (domain);
+
+GRANT SELECT, INSERT ON governance.claim_ledger TO agents_home_writer;
+GRANT SELECT ON governance.claim_ledger TO agents_home_reader;
+GRANT USAGE ON SEQUENCE governance.claim_ledger_id_seq TO agents_home_writer;
 
 -- ---------------------------------------------------------------------------
 -- governance.schema_manifest

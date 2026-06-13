@@ -181,7 +181,7 @@ storage:
       - { name: offline-sync,     purpose: "MinIO->ADLS sync target for local sovereign stack" }
 
 # ---------------------------------------------------------------------------
-# 6. COSMOS DB — agent swarm memory (document + vector); replaces Azure AI Search
+# 6. COSMOS DB — agent swarm memory (document + vector search)
 # ---------------------------------------------------------------------------
 cosmos_db:
   account_name: mydude-cosmos

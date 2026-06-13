@@ -5,12 +5,13 @@
 //
 // Topology (Azure-native, private):
 //   - Postgres Flexible Server (D4ds_v5, ZoneRedundant HA) — relational / governance / audit / secrets authority
-//   - Cosmos DB (NoSQL, vector) — agent swarm memory (document + vector); replaces Azure AI Search
+//   - Cosmos DB (NoSQL, vector) — agent swarm memory (document + vector search)
 //   - Microsoft Fabric capacity — domain-knowledge corpus lakehouse (OneLake)
 //   - Azure OpenAI (private) — foreground + background (agent-mesh) gpt-4.1-mini deployments
 //   - Key Vault, ADLS Gen2 storage, VNet + private endpoints + DNS, monitoring
 //
-// Dropped from this stack: Databricks/Unity Catalog, app-code container apps, Azure AI Search.
+// Vector search lives in Cosmos DB + Postgres pgvector; the knowledge corpus
+// lives in Fabric/OneLake. No separate app-code container apps.
 // =============================================================================
 
 targetScope = 'resourceGroup'

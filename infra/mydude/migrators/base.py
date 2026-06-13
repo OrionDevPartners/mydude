@@ -6,12 +6,13 @@ Every migrator emits CompletionClaims through the BCS scope-completion gate
   V2 — content_hash matches the artifact
   V3 — gate_receipt_id is unique
   V4 — exec_locus is declared
-  V5 — authority assertion (catalog vs postgres, never mixed)
+  V5 — authority assertion (knowledge corpus vs postgres, never mixed)
   V6 — lease lock is held
   V7 — scope label is one of the registered scopes
 
-Unity must never own Postgres DDL; Postgres migrators must never write to
-Unity Catalog. This module enforces that boundary at the claim level.
+The Fabric/OneLake knowledge corpus must never own Postgres DDL; Postgres
+migrators must never write to the knowledge corpus. This module enforces that
+boundary at the claim level.
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class MigrationAuthority(str, Enum):
-    UNITY = "unity"      # Unity/Iceberg — ledger and table schemas
+    FABRIC = "fabric"    # Microsoft Fabric / OneLake — knowledge corpus staging (ADLS)
     POSTGRES = "postgres"  # agents_home + provider_home DDL
 
 
@@ -144,7 +145,7 @@ class ScopeGate:
         if self.claim.authority != self.expected_authority:
             raise ValueError(
                 "V5 authority violation: expected '%s', got '%s'. "
-                "Unity must never own Postgres DDL; Postgres must never write to Unity Catalog."
+                "The knowledge corpus must never own Postgres DDL; Postgres must never write to the knowledge corpus."
                 % (self.expected_authority.value, self.claim.authority.value)
             )
         return ScopeLabel.V5_AUTHORITY.value
@@ -178,7 +179,7 @@ def submit_completion_claim(
     In local mode: writes to provider_home.outbox.promotion_event for later replay.
 
     claim_endpoint — override the default BCS gate path. Defaults by authority:
-      MigrationAuthority.POSTGRES or UNITY → /claims/migration
+      MigrationAuthority.POSTGRES or FABRIC → /claims/migration
       MigrationAuthority.POSTGRES with migration_name="model_promotion" → /claims/model
     Callers may pass an explicit path (e.g. "/claims/model") to route correctly.
     """

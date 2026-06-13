@@ -1,6 +1,6 @@
 // MyDude — Managed Identities
-// Single authority rule: bcsGateIdentity is the ONLY Unity Catalog writer.
-// All other identities are catalog read-only or scoped to specific Postgres DBs.
+// Single authority rule: bcsGateIdentity is the ONLY governance-ledger + knowledge-corpus writer.
+// All other identities are corpus read-only or scoped to specific Postgres DBs.
 
 targetScope = 'resourceGroup'
 
