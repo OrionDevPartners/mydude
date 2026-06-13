@@ -16,6 +16,7 @@ swallowed (logged only).
 """
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from src.database import SessionLocal
 from src.models import AppSetting, SentinelEvent
@@ -25,6 +26,83 @@ logger = logging.getLogger(__name__)
 # Counter keys persisted in the app_settings table.
 METRIC_FAILED_INDEXES = "metric_failed_indexes"
 METRIC_GOVERNANCE_PROPOSAL_FAILURES = "metric_governance_proposal_failures"
+
+# All resettable error counters. Used by reset_metrics() and by callers that
+# want to clear every counter at once from the dashboard.
+RESETTABLE_METRICS = (
+    METRIC_FAILED_INDEXES,
+    METRIC_GOVERNANCE_PROPOSAL_FAILURES,
+)
+
+# Suffixes recording who last reset a counter and when (stored alongside the
+# counter key in app_settings, e.g. "metric_failed_indexes__reset_by").
+_RESET_BY_SUFFIX = "__reset_by"
+_RESET_AT_SUFFIX = "__reset_at"
+
+
+def _set_setting(db, key: str, value: str) -> None:
+    """Upsert a single app_settings row within an existing session."""
+    row = db.query(AppSetting).filter(AppSetting.key == key).first()
+    if row is None:
+        db.add(AppSetting(key=key, value=value))
+    else:
+        row.value = value
+
+
+def reset_metric(key: str, operator: str = "") -> bool:
+    """Zero an integer counter and record who reset it and when.
+
+    Returns True on success, False if persistence failed. Best-effort like the
+    rest of this module, but the caller is told whether it worked so it can
+    surface an accurate flash message.
+    """
+    db = SessionLocal()
+    try:
+        _set_setting(db, key, "0")
+        _set_setting(db, key + _RESET_BY_SUFFIX, (operator or "operator")[:120])
+        _set_setting(db, key + _RESET_AT_SUFFIX, datetime.now(timezone.utc).isoformat())
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        logger.warning("reset_metric(%s) failed: %s", key, e)
+        return False
+    finally:
+        db.close()
+
+
+def reset_metrics(keys=RESETTABLE_METRICS, operator: str = "") -> bool:
+    """Zero several counters at once. Returns True only if all succeeded."""
+    return all(reset_metric(key, operator=operator) for key in keys)
+
+
+def get_last_reset(keys=RESETTABLE_METRICS):
+    """Return (reset_at_iso, reset_by) for the most recent counter reset.
+
+    Returns ("", "") if no counter has ever been reset. Best-effort.
+    """
+    db = SessionLocal()
+    try:
+        latest_at = ""
+        latest_by = ""
+        for key in keys:
+            at_row = db.query(AppSetting).filter(
+                AppSetting.key == key + _RESET_AT_SUFFIX
+            ).first()
+            if not (at_row and at_row.value):
+                continue
+            if at_row.value > latest_at:
+                latest_at = at_row.value
+                by_row = db.query(AppSetting).filter(
+                    AppSetting.key == key + _RESET_BY_SUFFIX
+                ).first()
+                latest_by = (by_row.value if by_row else "") or ""
+        return latest_at, latest_by
+    except Exception as e:
+        logger.warning("get_last_reset failed: %s", e)
+        return "", ""
+    finally:
+        db.close()
 
 
 def increment_metric(key: str, amount: int = 1) -> None:

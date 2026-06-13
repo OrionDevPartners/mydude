@@ -875,11 +875,73 @@ async def api_governance(request: Request, _=Depends(require_auth)):
     except Exception as e:
         logger.warning("Jurisdiction state lookup failed: %s", e)
 
+    # Swarm-health counters: silent-failure paths surfaced so operators can see
+    # (and clear) them instead of having them grow forever in the background.
+    failed_indexes = 0
+    governance_proposal_failures = 0
+    metrics_reset_at = ""
+    metrics_reset_by = ""
+    try:
+        from src.swarm.error_metrics import (
+            get_metric, get_last_reset, METRIC_FAILED_INDEXES,
+            METRIC_GOVERNANCE_PROPOSAL_FAILURES,
+        )
+        failed_indexes = get_metric(METRIC_FAILED_INDEXES)
+        governance_proposal_failures = get_metric(METRIC_GOVERNANCE_PROPOSAL_FAILURES)
+        metrics_reset_at, metrics_reset_by = get_last_reset()
+    except Exception as e:
+        logger.warning("Error-metric lookup failed: %s", e)
+
     return {
         "alerts": alerts, "open_alerts": open_alerts,
         "ledger": ledger, "metrics": metrics, "total_metrics": total_metrics,
         "cloud_shift_active": cloud_shift_active, "exec_locus_dist": exec_locus_dist,
+        "failed_indexes": failed_indexes,
+        "governance_proposal_failures": governance_proposal_failures,
+        "metrics_reset_at": metrics_reset_at,
+        "metrics_reset_by": metrics_reset_by,
     }
+
+
+@router.post("/governance/metrics/reset")
+async def api_reset_swarm_metrics(metric: str = Form("all"), auth=Depends(require_auth)):
+    """Zero a swarm-health failure counter (or all of them) from the dashboard.
+
+    Auth-gated and audited, mirroring the alert-ack / cloud-shift controls. Once
+    an operator has investigated a spike there is no other way to clear the
+    cumulative counters, so an old incident stays visible forever otherwise.
+    """
+    from src.swarm.error_metrics import RESETTABLE_METRICS, reset_metric, reset_metrics
+    operator = auth.get("username") or "operator"
+    metric = (metric or "all").strip()
+    if metric == "all":
+        ok = reset_metrics(operator=operator)
+    elif metric in RESETTABLE_METRICS:
+        ok = reset_metric(metric, operator=operator)
+    else:
+        raise HTTPException(status_code=400, detail="Unknown counter.")
+    if not ok:
+        raise HTTPException(status_code=500, detail="Could not reset the counter(s).")
+
+    try:
+        from src.database import SessionLocal
+        from src.models import AuditLog
+        db = SessionLocal()
+        try:
+            db.add(AuditLog(
+                user_id=auth.get("uid") or 0,
+                command="swarm_metrics_reset",
+                args=json.dumps({"metric": metric}),
+                status="ok",
+                output_preview="reset %s" % metric,
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.warning("swarm_metrics_reset audit log write failed", exc_info=True)
+
+    return {"ok": True, "metric": metric}
 
 
 @router.get("/governance/epistemic-trend")

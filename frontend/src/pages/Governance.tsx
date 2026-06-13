@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend } from '@/lib/api'
+import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend, resetSwarmMetrics } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, Tabs, PageHeader, Empty } from '@/components/ui'
 import { fmtDate } from '@/lib/utils'
-import { ShieldCheck, Bell, BarChart2, Server, FlaskConical } from 'lucide-react'
+import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse } from 'lucide-react'
 
 const EP_COLORS: Record<string, string> = {
   verified: '#34d399',
@@ -24,6 +24,9 @@ export function Governance() {
   const [shiftBusy, setShiftBusy] = useState(false)
   const [shiftMsg, setShiftMsg] = useState<string | null>(null)
   const [shiftErr, setShiftErr] = useState<string | null>(null)
+  const [resetBusy, setResetBusy] = useState<string | null>(null)
+  const [resetMsg, setResetMsg] = useState<string | null>(null)
+  const [resetErr, setResetErr] = useState<string | null>(null)
 
   function setWindow(w: string) {
     const next = new URLSearchParams(searchParams)
@@ -34,6 +37,23 @@ export function Governance() {
   async function handleAck(id: number) {
     await ackAlert(id)
     refetch()
+  }
+
+  async function handleResetMetrics(metric: string) {
+    const label = metric === 'all' ? 'all swarm-health counters' : 'this counter'
+    if (!window.confirm(`Reset ${label} to zero? This acknowledges the failures have been investigated.`)) return
+    setResetBusy(metric)
+    setResetMsg(null)
+    setResetErr(null)
+    try {
+      await resetSwarmMetrics(metric)
+      setResetMsg(metric === 'all' ? 'Swarm-health counters reset.' : 'Counter reset.')
+      await refetch()
+    } catch (e) {
+      setResetErr(e instanceof Error ? e.message : 'Could not reset the counter.')
+    } finally {
+      setResetBusy(null)
+    }
   }
 
   async function handleCloudShift(enable: boolean) {
@@ -69,7 +89,7 @@ export function Governance() {
         ) : undefined}
       />
 
-      <Tabs tabs={['Alerts', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction']} active={tab} onChange={setTab} />
+      <Tabs tabs={['Alerts', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction']} active={tab} onChange={setTab} />
 
       {tab === 'Alerts' && data && (
         data.alerts.length === 0
@@ -99,6 +119,59 @@ export function Governance() {
               ))}
             </div>
           )
+      )}
+
+      {tab === 'Swarm Health' && data && (
+        <div>
+          <div className="glass-card" style={{ padding: 18, marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+              <HeartPulse size={18} color="var(--text-secondary)" />
+              <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)' }}>Silent-failure counters</span>
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ marginLeft: 'auto' }}
+                disabled={resetBusy !== null || (!data.failed_indexes && !data.governance_proposal_failures)}
+                onClick={() => handleResetMetrics('all')}
+              >
+                {resetBusy === 'all' ? 'Working…' : 'Reset all'}
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+              Critical swarm paths that fail quietly are counted here so they don't disappear into the logs.
+              Once you've investigated a spike, reset the counter to restore the signal of a fresh failure.
+            </p>
+            {data.metrics_reset_at && (
+              <p style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                Last reset {fmtDate(data.metrics_reset_at)}{data.metrics_reset_by ? ` by ${data.metrics_reset_by}` : ''}.
+              </p>
+            )}
+            {resetMsg && <div style={{ marginTop: 12 }}><Alert type="info">{resetMsg}</Alert></div>}
+            {resetErr && <div style={{ marginTop: 12 }}><Alert type="error">{resetErr}</Alert></div>}
+          </div>
+          <div className="glass-card" style={{ overflow: 'hidden' }}>
+            <table className="data-table">
+              <thead><tr><th>Metric</th><th>Count</th><th>Meaning</th><th></th></tr></thead>
+              <tbody>
+                <HealthRow
+                  label="Failed indexes"
+                  count={data.failed_indexes}
+                  meaning="Run-index writes that failed after a completed run (history/search may be incomplete)."
+                  busy={resetBusy === 'metric_failed_indexes'}
+                  disabled={resetBusy !== null}
+                  onReset={() => handleResetMetrics('metric_failed_indexes')}
+                />
+                <HealthRow
+                  label="Governance proposal raise failures"
+                  count={data.governance_proposal_failures}
+                  meaning="Auditor meta-claims that could not be converted into governance proposals."
+                  busy={resetBusy === 'metric_governance_proposal_failures'}
+                  disabled={resetBusy !== null}
+                  onReset={() => handleResetMetrics('metric_governance_proposal_failures')}
+                />
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
 
       {tab === 'Ledger' && data && (
@@ -284,6 +357,27 @@ export function Governance() {
         </div>
       )}
     </div>
+  )
+}
+
+function HealthRow({ label, count, meaning, busy, disabled, onReset }: {
+  label: string; count: number; meaning: string; busy: boolean; disabled: boolean; onReset: () => void
+}) {
+  return (
+    <tr>
+      <td style={{ fontWeight: 600 }}>{label}</td>
+      <td>
+        <span className={`badge badge-${count > 0 ? 'yellow' : 'green'}`}>{count}</span>
+      </td>
+      <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{meaning}</td>
+      <td style={{ textAlign: 'right' }}>
+        {count > 0 && (
+          <button className="btn btn-secondary btn-sm" disabled={disabled} onClick={onReset}>
+            {busy ? 'Working…' : 'Reset'}
+          </button>
+        )}
+      </td>
+    </tr>
   )
 }
 

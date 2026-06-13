@@ -222,12 +222,16 @@ async def governance(request: Request, _=Depends(require_auth)):
     # see them instead of having them disappear into the logs.
     failed_indexes = 0
     governance_proposal_failures = 0
+    metrics_reset_at = ""
+    metrics_reset_by = ""
     try:
         from src.swarm.error_metrics import (
-            get_metric, METRIC_FAILED_INDEXES, METRIC_GOVERNANCE_PROPOSAL_FAILURES,
+            get_metric, get_last_reset, METRIC_FAILED_INDEXES,
+            METRIC_GOVERNANCE_PROPOSAL_FAILURES,
         )
         failed_indexes = get_metric(METRIC_FAILED_INDEXES)
         governance_proposal_failures = get_metric(METRIC_GOVERNANCE_PROPOSAL_FAILURES)
+        metrics_reset_at, metrics_reset_by = get_last_reset()
     except Exception as e:
         logger.warning("Error-metric lookup failed: %s", e)
 
@@ -242,6 +246,8 @@ async def governance(request: Request, _=Depends(require_auth)):
         "exec_locus_dist": exec_locus_dist,
         "failed_indexes": failed_indexes,
         "governance_proposal_failures": governance_proposal_failures,
+        "metrics_reset_at": metrics_reset_at,
+        "metrics_reset_by": metrics_reset_by,
         "proposals": proposals,
         "open_proposals": open_proposals,
         "proposal_tallies": proposal_tallies,
@@ -265,6 +271,26 @@ async def ack_alert(alert_id: int, _=Depends(require_auth)):
     finally:
         db.close()
     return RedirectResponse(url="/governance?flash=Alert acknowledged", status_code=303)
+
+
+@router.post("/governance/metrics/reset")
+async def reset_swarm_metrics(metric: str = Form("all"), _=Depends(require_auth)):
+    from urllib.parse import quote
+    try:
+        from src.swarm.error_metrics import RESETTABLE_METRICS, reset_metric, reset_metrics
+        metric = (metric or "all").strip()
+        if metric == "all":
+            ok = reset_metrics(operator="operator")
+            msg = "Swarm-health counters reset." if ok else "Reset failed: storage error."
+        elif metric in RESETTABLE_METRICS:
+            ok = reset_metric(metric, operator="operator")
+            msg = "Counter reset." if ok else "Reset failed: storage error."
+        else:
+            msg = "Reset failed: unknown counter."
+    except Exception as e:
+        logger.warning("Metric reset failed: %s", e)
+        msg = "Reset failed: internal error."
+    return RedirectResponse(url="/governance?flash=" + quote(msg), status_code=303)
 
 
 @router.post("/governance/proposals/{proposal_id}/vote")

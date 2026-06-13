@@ -300,26 +300,53 @@
             <span class="status-badge sev-warning">{{ failed_indexes + governance_proposal_failures }} failures</span>
             {% endif %}
         </h3>
-        <span class="meta">Silent-failure counters from critical swarm paths</span>
+        <div style="display:flex;align-items:center;gap:0.75rem;">
+            <span class="meta">Silent-failure counters from critical swarm paths</span>
+            {% if failed_indexes or governance_proposal_failures %}
+            <form method="post" action="/governance/metrics/reset" style="margin:0">
+                <input type="hidden" name="metric" value="all">
+                <button class="btn btn-sm btn-outline" type="submit" onclick="return confirm('Reset all swarm-health counters to zero?')">Reset all</button>
+            </form>
+            {% endif %}
+        </div>
     </div>
     <div class="card-body">
         <div class="table-wrap">
         <table class="table">
-            <thead><tr><th>Metric</th><th>Count</th><th>Meaning</th></tr></thead>
+            <thead><tr><th>Metric</th><th>Count</th><th>Meaning</th><th></th></tr></thead>
             <tbody>
             <tr>
                 <td>Failed indexes</td>
                 <td><span class="status-badge {% if failed_indexes %}sev-warning{% else %}sev-low{% endif %}">{{ failed_indexes }}</span></td>
                 <td class="meta">Run-index writes that failed after a completed run (history/search may be incomplete).</td>
+                <td>
+                    {% if failed_indexes %}
+                    <form method="post" action="/governance/metrics/reset" style="margin:0">
+                        <input type="hidden" name="metric" value="metric_failed_indexes">
+                        <button class="btn btn-sm btn-outline" type="submit">Reset</button>
+                    </form>
+                    {% endif %}
+                </td>
             </tr>
             <tr>
                 <td>Governance proposal raise failures</td>
                 <td><span class="status-badge {% if governance_proposal_failures %}sev-warning{% else %}sev-low{% endif %}">{{ governance_proposal_failures }}</span></td>
                 <td class="meta">Auditor meta-claims that could not be converted into governance proposals.</td>
+                <td>
+                    {% if governance_proposal_failures %}
+                    <form method="post" action="/governance/metrics/reset" style="margin:0">
+                        <input type="hidden" name="metric" value="metric_governance_proposal_failures">
+                        <button class="btn btn-sm btn-outline" type="submit">Reset</button>
+                    </form>
+                    {% endif %}
+                </td>
             </tr>
             </tbody>
         </table>
         </div>
+        {% if metrics_reset_at %}
+        <p class="meta" style="margin-top:0.5rem;">Last reset {{ metrics_reset_at }}{% if metrics_reset_by %} by {{ metrics_reset_by }}{% endif %}.</p>
+        {% endif %}
     </div>
 </div>
 

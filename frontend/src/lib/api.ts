@@ -150,6 +150,12 @@ export const setCloudShift = (enabled: boolean, reason?: string) =>
       body: formBody({ enabled: enabled ? 'true' : 'false', reason: reason || '' }),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
+export const resetSwarmMetrics = (metric: string = 'all') =>
+  request<{ ok: boolean; metric: string }>('/governance/metrics/reset', {
+    method: 'POST',
+    body: formBody({ metric }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
 export const getEpistemicTrend = (window?: string) => {
   const p = new URLSearchParams()
   if (window) p.set('window', window)
@@ -551,7 +557,7 @@ export interface AuditEntry { provider: string; label: string; action: string; a
 export interface DirectoryData { grouped: { category: string; services: ServiceEntry[] }[] }
 export interface ConnectedData { rows: ConnectedRow[]; proxy_available: boolean; connected_count: number; total_count: number }
 export interface ConnectedRow { name: string; category: string; connector: string; connected: boolean; created_at: string | null; description?: string }
-export interface GovernanceData { alerts: Alert[]; open_alerts: number; ledger: LedgerEntry[]; metrics: MetricRow[]; total_metrics: number; cloud_shift_active: boolean; exec_locus_dist: unknown[] }
+export interface GovernanceData { alerts: Alert[]; open_alerts: number; ledger: LedgerEntry[]; metrics: MetricRow[]; total_metrics: number; cloud_shift_active: boolean; exec_locus_dist: unknown[]; failed_indexes: number; governance_proposal_failures: number; metrics_reset_at: string; metrics_reset_by: string }
 export interface Alert { id: number; rule: string; severity: string; detail: string; acknowledged: boolean; created_at: string }
 export interface EpistemicPoint { run_id: string; created_at: string | null; counts: Record<string, number>; total: number; pct: Record<string, number>; aborted: boolean }
 export interface EpistemicWindowOption { key: string; label: string }
