@@ -46,23 +46,28 @@ class LocalMemoryAdapter(MemoryAdapterBase):
 
         if self._available and self._query:
             try:
-                self._query.ingest(
-                    entry.content,
-                    source=f"memory:{entry.category}:{entry.source}",
-                )
-                try:
-                    self._graph.add_node(
-                        label=entry.content[:120],
-                        entity_type=entry.category,
-                        confidence=entry.confidence * entry.decay,
-                        source=entry.source,
-                        attributes={
-                            "memory_id": entry.memory_id,
-                            "verified": entry.verified,
-                        },
+                # One ingest can extract many entities + relations; without
+                # batching each add_node/add_edge would rewrite the whole graph
+                # JSON, making a single write_claim() hang on a large graph.
+                # batch() collapses every mutation here into one debounced save.
+                with self._graph.batch():
+                    self._query.ingest(
+                        entry.content,
+                        source=f"memory:{entry.category}:{entry.source}",
                     )
-                except Exception:
-                    pass
+                    try:
+                        self._graph.add_node(
+                            label=entry.content[:120],
+                            entity_type=entry.category,
+                            confidence=entry.confidence * entry.decay,
+                            source=entry.source,
+                            attributes={
+                                "memory_id": entry.memory_id,
+                                "verified": entry.verified,
+                            },
+                        )
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.warning("LocalMemoryAdapter.add KG ingest failed: %s", e)
 

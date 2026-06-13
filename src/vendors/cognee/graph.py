@@ -10,6 +10,7 @@ Adapted from Cognee's core graph module (Apache-2.0).
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import math
@@ -18,6 +19,7 @@ import re
 import threading
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -29,6 +31,13 @@ _GRAPH_FILE = _DATA_DIR / "graph.json"
 # Reentrant: add_edge() may call add_node() while already holding the lock when
 # a relation's endpoint nodes don't yet exist. A plain Lock deadlocks there.
 _LOCK = threading.RLock()
+# Serializes the actual file write so overlapping flushes (debounce timer +
+# atexit/force) never race on the temp file or os.replace.
+_IO_LOCK = threading.Lock()
+# How long to wait after the last mutation before flushing to disk. Coalesces a
+# burst of add_node/add_edge calls (e.g. one memory ingest extracts many
+# entities + relations) into a single whole-file rewrite instead of one per node.
+_SAVE_DEBOUNCE_SEC = float(os.getenv("COGNEE_SAVE_DEBOUNCE_SEC", "0.5"))
 
 
 @dataclass
@@ -102,13 +111,25 @@ class KnowledgeGraph:
         self._nodes: Dict[str, Node] = {}
         self._edges: Dict[str, Edge] = {}
         self._adj: Dict[str, List[str]] = defaultdict(list)
+        # Capture the data paths at construction so a debounced flush always
+        # targets this instance's file even if the module globals are later
+        # repointed (e.g. test fixtures swap the dir then restore it).
+        self._data_dir = _DATA_DIR
+        self._graph_file = _GRAPH_FILE
+        # Deferred-save state: mutations mark the graph dirty and schedule a
+        # single debounced flush rather than rewriting the whole JSON inline.
+        self._dirty = False
+        self._batch_depth = 0
+        self._flush_timer: Optional[threading.Timer] = None
         self._load()
+        # Guarantee no coalesced write is lost on a clean shutdown.
+        atexit.register(self.flush)
 
     def _load(self) -> None:
         try:
-            _DATA_DIR.mkdir(parents=True, exist_ok=True)
-            if _GRAPH_FILE.exists():
-                with open(_GRAPH_FILE, "r") as f:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            if self._graph_file.exists():
+                with open(self._graph_file, "r") as f:
                     data = json.load(f)
                 for nd in data.get("nodes", []):
                     n = Node(**nd)
@@ -121,18 +142,78 @@ class KnowledgeGraph:
             logger.warning("KnowledgeGraph load failed (starting fresh): %s", exc)
 
     def _save(self) -> None:
-        try:
-            _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        """Mark the graph dirty and schedule a coalesced, debounced flush.
+
+        Rewriting the entire JSON on every node/edge is what makes a memory
+        write hang on a large graph (one ingest extracts many entities and
+        relations, each previously a full-file rewrite). Instead, mutations now
+        mark the graph dirty and a single background flush writes the file once
+        the burst settles, so callers (write_claim) return promptly.
+        """
+        with _LOCK:
+            self._dirty = True
+            # Inside a batch() the outermost exit schedules the single flush.
+            if self._batch_depth > 0:
+                return
+            # A flush is already pending; it will pick up the latest state.
+            if self._flush_timer is not None:
+                return
+            timer = threading.Timer(_SAVE_DEBOUNCE_SEC, self.flush)
+            timer.daemon = True
+            self._flush_timer = timer
+        timer.start()
+
+    def flush(self) -> None:
+        """Write the graph to disk now if there are pending changes.
+
+        Snapshots under ``_LOCK`` (fast) then writes outside it under
+        ``_IO_LOCK`` so the disk I/O never blocks concurrent in-memory
+        mutations. Safe to call repeatedly; a no-op when nothing is dirty.
+        Invoked by the debounce timer, atexit, and any caller needing a
+        synchronous, durable save.
+        """
+        with _LOCK:
+            if self._flush_timer is not None:
+                self._flush_timer.cancel()
+                self._flush_timer = None
+            if not self._dirty:
+                return
+            self._dirty = False
             data = {
                 "nodes": [asdict(n) for n in self._nodes.values()],
                 "edges": [asdict(e) for e in self._edges.values()],
             }
-            tmp = str(_GRAPH_FILE) + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(data, f)
-            os.replace(tmp, _GRAPH_FILE)
+        try:
+            with _IO_LOCK:
+                self._data_dir.mkdir(parents=True, exist_ok=True)
+                tmp = f"{self._graph_file}.{os.getpid()}.{threading.get_ident()}.tmp"
+                with open(tmp, "w") as f:
+                    json.dump(data, f)
+                os.replace(tmp, self._graph_file)
         except Exception as exc:
             logger.warning("KnowledgeGraph save failed: %s", exc)
+            # Re-arm so the next mutation (or flush) retries the durable write.
+            with _LOCK:
+                self._dirty = True
+
+    @contextmanager
+    def batch(self):
+        """Group many mutations into a single persisted save.
+
+        Within the block, individual add_node/add_edge calls don't each
+        schedule a save; one (debounced) flush is scheduled when the outermost
+        block exits. Re-entrant: nested batches collapse into the outer one.
+        """
+        with _LOCK:
+            self._batch_depth += 1
+        try:
+            yield self
+        finally:
+            with _LOCK:
+                self._batch_depth -= 1
+                pending = self._batch_depth == 0 and self._dirty
+            if pending:
+                self._save()
 
     def add_node(self, label: str, entity_type: str = "concept",
                  confidence: float = 1.0, source: str = "",
@@ -319,5 +400,5 @@ class KnowledgeGraph:
         return {
             "nodes": len(self._nodes),
             "edges": len(self._edges),
-            "data_file": str(_GRAPH_FILE),
+            "data_file": str(self._graph_file),
         }

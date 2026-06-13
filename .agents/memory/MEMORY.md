@@ -33,3 +33,4 @@
 - [MyDude Azure deploy gotchas](mydude-azure-deploy.md) — RG-Owner SP limits; eastus2 blocks ZoneRedundant PG HA; Fabric/Foundry-Hub gated; AOAI account-Accepted race fix; Cosmos vector needs dedicated RU.
 - [Azure SP scope](azure-sp-scope.md) — MyDude SP is Owner on RG `mydude` (lowercase) only, not subscription; deploy must skip `az group create` and target existing RG.
 - [Docker inside Replit](docker-in-replit-container.md) — daemon works but `docker exec`/compose healthchecks fail (setns); host port 5000 is the dev workflow. Use entrypoint DB-wait, map to 5050.
+- [Cognee KG save coalescing](cognee-kg-save-coalescing.md) — KG JSON save must stay deferred/debounced + batched (never per-node inline writes); DB is source of truth; instance captures its own file path.

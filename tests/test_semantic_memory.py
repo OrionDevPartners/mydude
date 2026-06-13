@@ -309,6 +309,41 @@ def test_graph_add_edge_creates_missing_endpoint_nodes():
     assert after == before + 2, (before, after)
 
 
+def test_graph_batch_coalesces_saves_into_one_write():
+    # Regression: previously every add_node() rewrote the whole graph JSON,
+    # so one memory ingest (many entities + relations) triggered N full-file
+    # rewrites and could hang write_claim for >50s on a large graph. batch()
+    # must defer the disk write so mutations don't touch the file inline; the
+    # single flush() then persists every node at once.
+    import os as _os
+    graph = KnowledgeGraph()
+    gf = graph._graph_file
+    if _os.path.exists(gf):
+        _os.remove(gf)
+    with graph.batch():
+        for i in range(40):
+            graph.add_node(f"coalesce regression node {i}", "fact", confidence=0.9)
+        # No inline rewrite happened while inside the batch.
+        assert not _os.path.exists(gf), "batch() must not write the JSON inline"
+    # Exiting the batch schedules a (debounced) save; flush() forces it now.
+    graph.flush()
+    assert _os.path.exists(gf), "flush() must persist the graph"
+    import json as _json
+    with open(gf) as f:
+        labels = {n["label"] for n in _json.load(f)["nodes"]}
+    assert all(f"coalesce regression node {i}" in labels for i in range(40))
+
+
+def test_graph_flush_is_noop_when_clean():
+    # flush() must be safe to call repeatedly and a no-op when nothing changed.
+    graph = KnowledgeGraph()
+    graph.add_node("a clean-flush regression fact", "fact")
+    graph.flush()
+    assert graph._dirty is False
+    graph.flush()  # second call: nothing dirty, must not raise
+    assert graph._dirty is False
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
