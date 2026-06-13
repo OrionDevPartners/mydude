@@ -2,14 +2,17 @@
 
 The live app serves the React SPA, which reads its Local AI Models panel from the
 JSON twin at ``/api/local-models`` (src/web/api/router.py, ``api_local_models``).
-The Jinja ``/local-models`` page has its own coverage in
-``tests/test_local_models_panel.py``; this suite locks in the JSON contract the
-dashboard actually depends on, so a regression in provider detection, the
-reachable/total counts, or the registry payload can't slip through unnoticed.
+There is no server-rendered page (the legacy Jinja ``/local-models`` route and
+template were removed); this suite is the single source of truth for the JSON
+contract the dashboard depends on, so a regression in provider detection, the
+reachable/total counts, the guided-setup commands, or the registry payload can't
+slip through unnoticed.
 
 Covered:
   * ``/api/local-models`` returns 200 with JSON exposing both local providers
     (ollama, mlx), a numeric reachable_count/total_count, and a registry array.
+  * each provider exposes a friendly label and a guidance block whose
+    install/serve/pull commands embed the config/providers.toml default models.
   * registry_exists is false and registry is empty when the manifest is absent.
   * registry is populated (and registry_exists true) when
     LOCAL_MODEL_REGISTRY_PATH points at a valid manifest.
@@ -106,6 +109,11 @@ def test_returns_both_local_providers_and_counts():
     assert "ollama" in keys, body
     assert "mlx" in keys, body
 
+    # Friendly labels (from _PROVIDER_META) are surfaced for the dashboard.
+    labels = {p["key"]: p["label"] for p in body["providers"]}
+    assert labels["ollama"] == "Ollama", body
+    assert labels["mlx"] == "Apple MLX", body
+
     # Counts are present and numeric; total matches the providers array length.
     assert isinstance(body["reachable_count"], int), body
     assert isinstance(body["total_count"], int), body
@@ -185,6 +193,45 @@ def test_requires_auth_without_dev_bypass():
         resp = _client().get("/api/local-models", follow_redirects=False)
     assert resp.status_code in (302, 303, 307, 401), resp.status_code
     assert resp.headers.get("location") == "/login", resp.headers
+
+
+# -- guided-setup commands embed the config default models --------------------
+#
+# This coverage previously lived against the (now removed) server-rendered Jinja
+# page. It is asserted here against the live JSON path, since the SPA renders its
+# guided-setup commands from ``providers[].guidance``. The default model names
+# come from config/providers.toml (env_1), so on-screen guidance can never drift
+# from what the swarm actually resolves.
+
+OLLAMA_DEFAULT_MODEL = "llama3.2:3b"
+MLX_DEFAULT_MODEL = "mlx-community/Qwen3-14B-8bit"
+
+
+def _guidance_by_key(body) -> dict:
+    return {p["key"]: p.get("guidance") for p in body["providers"]}
+
+
+def test_guidance_pull_commands_use_config_default_models():
+    with _no_registry():
+        body = _client().get("/api/local-models").json()
+    g = _guidance_by_key(body)
+    assert g.get("ollama") and g.get("mlx"), body
+    # Ollama pull command, model name injected from spec.default_model.
+    assert g["ollama"]["pull_cmd"] == "ollama pull %s" % OLLAMA_DEFAULT_MODEL, g["ollama"]
+    # MLX serve-with-model command, model name injected from spec.default_model.
+    assert ("mlx_lm.server --model %s" % MLX_DEFAULT_MODEL) in g["mlx"]["pull_cmd"], g["mlx"]
+
+
+def test_guidance_install_and_serve_commands_present():
+    with _no_registry():
+        body = _client().get("/api/local-models").json()
+    g = _guidance_by_key(body)
+    # Install commands (no model name) for each provider.
+    assert g["ollama"]["install_cmd"] == "curl -fsSL https://ollama.com/install.sh | sh", g["ollama"]
+    assert g["mlx"]["install_cmd"] == "pip install mlx-lm", g["mlx"]
+    # Serve commands — MLX's carries the resolved port from its default base URL.
+    assert g["ollama"]["serve_cmd"] == "ollama serve", g["ollama"]
+    assert g["mlx"]["serve_cmd"] == "mlx_lm.server --port 11435", g["mlx"]
 
 
 def _run_all():

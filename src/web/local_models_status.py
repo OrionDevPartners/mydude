@@ -1,9 +1,8 @@
-"""Local AI Models console — guided setup + live status for the local sovereign
-inference providers (Ollama, Apple MLX).
+"""Shared status + guidance helpers for the local sovereign inference providers
+(Ollama, Apple MLX).
 
 These providers run on the operator's own machine, not in this container, so the
-app cannot literally install them for you. What it can do — and what this screen
-provides — is the one-click-grade glue around them:
+app cannot literally install them for you. What it can do is surface:
 
   * live status of each local server (reachable? which models are loaded?) using
     the very same TCP probe (``_server_listening``) the adapters gate
@@ -11,38 +10,20 @@ provides — is the one-click-grade glue around them:
     exposes;
   * copy-ready install / start / pull commands for each provider, with the
     default model names sourced from env_1 (config/providers.toml) so the
-    guidance can never drift from what the swarm actually resolves;
-  * a view of the local model registry (~/.mydude/local/model_registry.yaml)
-    with a refresh that re-reads it from disk.
+    guidance can never drift from what the swarm actually resolves.
+
+This module holds the *route-free* logic so the live JSON endpoint
+(``/api/local-models`` in src/web/api/router.py) is the single source of truth.
+There is no server-rendered page; the React SPA renders the Local AI Models
+screen from that JSON endpoint.
 """
 import logging
 
-from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
-
 from src.providers.adapters import _LocalOpenAICompatAdapter, _server_listening
-from src.providers.config import llm_provider_specs
-from src.providers.local_registry import (
-    add_model,
-    load_local_models,
-    local_models_for_provider,
-    registry_path,
-    remove_model,
-)
+from src.providers.local_registry import local_models_for_provider
 from src.providers.registry import build_adapter
-from src.web.auth import require_auth
-from src.web.templating import templates
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
-
-
-def _redirect(msg: str = "", err: str = ""):
-    from urllib.parse import quote
-
-    if err:
-        return RedirectResponse(url="/local-models?err=" + quote(err, safe=""), status_code=303)
-    return RedirectResponse(url="/local-models?msg=" + quote(msg, safe=""), status_code=303)
 
 # Friendly display names + install guidance keyed by the provider key in env_1.
 # Commands intentionally avoid hardcoding model names — those are injected from
@@ -143,59 +124,3 @@ def _is_local(spec) -> bool:
         return isinstance(build_adapter(spec), _LocalOpenAICompatAdapter)
     except Exception:
         return False
-
-
-@router.get("/local-models", response_class=HTMLResponse)
-async def local_models_page(request: Request, _=Depends(require_auth)):
-    specs = [s for s in llm_provider_specs() if _is_local(s)]
-    providers = [await _provider_status(s) for s in specs]
-
-    reachable_count = sum(1 for p in providers if p["reachable"])
-
-    registry = load_local_models()
-    p = registry_path()
-
-    return templates.TemplateResponse("local_models.html", {
-        "request": request,
-        "providers": providers,
-        "reachable_count": reachable_count,
-        "total_count": len(providers),
-        "registry": registry,
-        "registry_path": str(p),
-        "registry_exists": p.exists(),
-        "provider_keys": [pr["key"] for pr in providers],
-        "msg": request.query_params.get("msg"),
-        "err": request.query_params.get("err"),
-    })
-
-
-@router.post("/local-models/registry/add")
-async def registry_add(
-    model_id: str = Form(""),
-    provider: str = Form(""),
-    _=Depends(require_auth),
-):
-    try:
-        entry = add_model(model_id, provider)
-    except ValueError as e:
-        return _redirect(err=str(e))
-    except Exception as e:
-        logger.error("Failed to add model to registry: %s", e)
-        return _redirect(err="Could not write to the registry: %s" % e)
-    return _redirect(msg="Added %s (%s) to the registry." % (entry["model_id"], entry["provider"]))
-
-
-@router.post("/local-models/registry/remove")
-async def registry_remove(
-    model_id: str = Form(""),
-    provider: str = Form(""),
-    _=Depends(require_auth),
-):
-    try:
-        remove_model(model_id, provider)
-    except ValueError as e:
-        return _redirect(err=str(e))
-    except Exception as e:
-        logger.error("Failed to remove model from registry: %s", e)
-        return _redirect(err="Could not write to the registry: %s" % e)
-    return _redirect(msg="Removed %s from the registry." % (model_id or "entry"))

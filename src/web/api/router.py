@@ -1213,7 +1213,7 @@ async def api_system(_=Depends(require_auth)):
 
 @router.get("/local-models")
 async def api_local_models(_=Depends(require_auth)):
-    from src.web.routes_local_models import _is_local, _provider_status
+    from src.web.local_models_status import _is_local, _provider_status
     from src.providers.config import llm_provider_specs
     from src.providers.local_registry import load_local_models, registry_path
 
