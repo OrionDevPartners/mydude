@@ -21,6 +21,7 @@
 - [Cognitive-role prompt programs](role-program-optimization.md) — swarm role prompts are governed/optimizable like the judge; runtime must run the same seam the optimizer trains (no train/serve skew).
 - [Voice/prosody mood capture](voice-mood-capture.md) — Hume prosody emits no sentiment so valence stays None; audio is always cloud so strict-private must refuse voice.
 - [Mesh local-node offline alerts](local-node-offline-alerts.md) — background HealthMonitor raises dedup'd SentinelEvents when a local node drops; SPA /api/governance must map alert_type/description (no rule/detail cols).
+- [Swarm failure-spike alerts](swarm-failure-spike-alerts.md) — burst→SentinelEvent via record_failure; persist window/cooldown (not memory), re-arm after fire, reset clears alert state in lockstep.
 - [Evolution loop LLM thesis dispatch](evolution-llm-thesis.md) — thesis gen dispatches WaveOrchestrator on lm_bridge's persistent loop; gate on CS/HR; falls back to heuristics when no provider/governance fail.
 - [ENCRYPTION_KEY persistence](encryption-key-persistence.md) — vault Fernet key must be a persistent secret (never rotate); app warns via encryption_persistent on /keys + /capabilities when auto-generated.
 - [Prompt-opt live-provider runs](promptopt-real-provider-runs.md) — MIPRO/GEPA vs a real LLM: bounded timeout+fail-loud, deepcopy-safe LM, noisy small valsets, completion-only persistence, budget levers.

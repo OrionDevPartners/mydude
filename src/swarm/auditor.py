@@ -207,12 +207,13 @@ class ReflexiveAuditor:
                 "Failed to raise governance proposal for claim %s: %s", claim.claim_id, e
             )
             # Count the failure so it surfaces as a metric in the Governance
-            # Center rather than silently disappearing into the logs.
+            # Center rather than silently disappearing into the logs, and raise
+            # a proactive sentinel alert if these failures suddenly spike.
             try:
                 from src.swarm.error_metrics import (
-                    increment_metric, METRIC_GOVERNANCE_PROPOSAL_FAILURES,
+                    record_failure, METRIC_GOVERNANCE_PROPOSAL_FAILURES,
                 )
-                increment_metric(METRIC_GOVERNANCE_PROPOSAL_FAILURES)
+                record_failure(METRIC_GOVERNANCE_PROPOSAL_FAILURES)
             except Exception:
                 pass
 

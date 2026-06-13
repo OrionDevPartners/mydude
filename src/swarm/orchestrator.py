@@ -688,10 +688,11 @@ class WaveOrchestrator:
     @staticmethod
     def _record_index_failure() -> None:
         """Count an _index_run failure so it surfaces as a 'failed indexes'
-        metric in the Governance Center instead of vanishing into the logs."""
+        metric in the Governance Center, and proactively raise a sentinel alert
+        if these failures suddenly spike (e.g. the results store goes down)."""
         try:
-            from src.swarm.error_metrics import increment_metric, METRIC_FAILED_INDEXES
-            increment_metric(METRIC_FAILED_INDEXES)
+            from src.swarm.error_metrics import record_failure, METRIC_FAILED_INDEXES
+            record_failure(METRIC_FAILED_INDEXES)
         except Exception:
             pass
 
