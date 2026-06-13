@@ -21,6 +21,12 @@ env/
 *.env
 !.env.example
 
+# Cloud credential drops — service-principal / secret files must never be committed
+*azure-owner-sp*
+*service-principal*.json
+*-sp-*.json
+*credentials*.json
+
 # Database
 *.db
 *.sqlite3
