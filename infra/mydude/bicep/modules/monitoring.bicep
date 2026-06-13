@@ -73,5 +73,6 @@ resource providerLatencyMetric 'Microsoft.Insights/metricAlerts@2018-03-01' = {
 
 output logAnalyticsWorkspaceId string = logAnalytics.id
 output logAnalyticsWorkspaceName string = logAnalytics.name
+output appInsightsId string = appInsights.id
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
 output appInsightsInstrumentationKey string = appInsights.properties.InstrumentationKey

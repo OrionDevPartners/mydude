@@ -142,6 +142,74 @@ resource aoaiPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLin
   }
 }
 
+// Private DNS Zone for AML / AI Foundry workspace API plane (amlworkspace PE)
+resource amlApiPrivateDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.api.azureml.ms'
+  location: 'global'
+  tags: tags
+}
+
+resource amlApiPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: amlApiPrivateDns
+  name: '${prefix}-aml-api-dns-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: vnet.id }
+    registrationEnabled: false
+  }
+}
+
+// Private DNS Zone for AML / AI Foundry notebooks plane (amlworkspace PE)
+resource amlNotebooksPrivateDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.notebooks.azure.net'
+  location: 'global'
+  tags: tags
+}
+
+resource amlNotebooksPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: amlNotebooksPrivateDns
+  name: '${prefix}-aml-nb-dns-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: vnet.id }
+    registrationEnabled: false
+  }
+}
+
+// Private DNS Zone for blob (the Foundry Hub's dedicated NON-HNS workspace storage)
+resource blobPrivateDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.blob.core.windows.net'
+  location: 'global'
+  tags: tags
+}
+
+resource blobPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: blobPrivateDns
+  name: '${prefix}-blob-dns-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: vnet.id }
+    registrationEnabled: false
+  }
+}
+
+// Private DNS Zone for file (AML requires a file PE on its workspace storage)
+resource filePrivateDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.file.core.windows.net'
+  location: 'global'
+  tags: tags
+}
+
+resource filePrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: filePrivateDns
+  name: '${prefix}-file-dns-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: vnet.id }
+    registrationEnabled: false
+  }
+}
+
 // Azure Policy: Deny public network access on scoped resource types
 resource denyPublicNetworkPolicy 'Microsoft.Authorization/policyAssignments@2022-06-01' = {
   name: '${prefix}-deny-public-network'
@@ -163,3 +231,7 @@ output kvPrivateDnsZoneId string = kvPrivateDns.id
 output storagePrivateDnsZoneId string = storagePrivateDns.id
 output cosmosPrivateDnsZoneId string = cosmosPrivateDns.id
 output aoaiPrivateDnsZoneId string = aoaiPrivateDns.id
+output amlApiPrivateDnsZoneId string = amlApiPrivateDns.id
+output amlNotebooksPrivateDnsZoneId string = amlNotebooksPrivateDns.id
+output blobPrivateDnsZoneId string = blobPrivateDns.id
+output filePrivateDnsZoneId string = filePrivateDns.id

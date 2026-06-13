@@ -144,6 +144,12 @@ module foundry 'modules/foundry.bicep' = {
     acaSubnetId: network.outputs.acaSubnetId
     peSubnetId: network.outputs.peSubnetId
     aoaiPrivateDnsZoneId: network.outputs.aoaiPrivateDnsZoneId
+    keyVaultId: keyvault.outputs.keyVaultId
+    appInsightsId: monitoring.outputs.appInsightsId
+    amlApiPrivateDnsZoneId: network.outputs.amlApiPrivateDnsZoneId
+    amlNotebooksPrivateDnsZoneId: network.outputs.amlNotebooksPrivateDnsZoneId
+    blobPrivateDnsZoneId: network.outputs.blobPrivateDnsZoneId
+    filePrivateDnsZoneId: network.outputs.filePrivateDnsZoneId
     aoaiForegroundCapacity: aoaiForegroundCapacity
     aoaiBackgroundCapacity: aoaiBackgroundCapacity
     foundryHubEnabled: foundryHubEnabled

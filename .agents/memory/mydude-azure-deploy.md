@@ -20,18 +20,25 @@ out of scope for the RG-Owner SP — leave SameZone and note it.
 ## Microsoft.Fabric/capacities can't be created by an RG-scoped SP
 Fails with "Unable to authorize with Azure Active Directory" — capacity creation needs AAD/Graph
 authorization an RG-scoped SP cannot satisfy, even with a human admin UPN in `fabricAdminMembers`.
-**How to apply:** gate it behind a `fabricEnabled` param (default true, false for SP deploys); a
-tenant/Fabric admin (or AAD-authorized SP) creates it; OneLake workspace+lakehouse items are SaaS
-(portal/API, not ARM).
+**How to apply:** gate it behind a `fabricEnabled` param (Bicep default true; **keep it false in
+`parameters.json`, which is the SP deploy's param file** — flipping it true there fails every SP
+deploy at the Fabric module). A tenant/Fabric admin (or AAD-authorized SP) creates it; OneLake
+workspace+lakehouse items are SaaS (portal/API, not ARM).
 
 ## AI Foundry Hub (MachineLearningServices/workspaces kind='Hub') needs real backing resources
 Creating a Hub with no `storageAccount`/`keyVault` fails with the opaque
 `InternalServerError: Received 400`. A Hub requires a dedicated **GPv2 NON-HNS** storage account
 (an HNS-enabled ADLS account is NOT usable as AML primary storage), plus Key Vault, App Insights,
-and (for private) an AML private endpoint + AML private DNS (`privatelink.api.azureml.ms`,
-`privatelink.notebooks.azure.net`) and managed-network isolation.
-**Decision:** gate the Hub/Project behind `foundryHubEnabled` and ship the AOAI account+deployments
-alone (the app calls AOAI directly over its PE; the managed runtime is not required to function).
+and (for private) an AML private endpoint (`groupId: amlworkspace`) + AML private DNS
+(`privatelink.api.azureml.ms`, `privatelink.notebooks.azure.net`) and managed-network isolation.
+**Now wired & enabled (`foundryHubEnabled=true`):** `foundry.bicep` provisions a dedicated
+`mydudefoundrystg` (StorageV2, isHnsEnabled:false) with blob+file PEs/DNS, wires the shared
+`mydude-kv` + `mydude-appinsights` by ID (foundry identity needs KV `secrets:set`), adds the
+`amlworkspace` PE, and sets `managedNetwork.isolationMode: AllowInternetOutbound`. A user-assigned-
+identity Hub also needs Storage Blob Data Contributor + Storage File Data Privileged Contributor on
+its OWN storage (AML doesn't auto-grant). All Hub-side resources gate on `foundryHubEnabled`.
+**Why:** the AOAI account+deployments ship/work independently over their PE; the Hub is the managed
+agent runtime layer added on top.
 
 ## AOAI account+deployments race on Incremental re-runs ("account in state Accepted")
 `AccountProvisioningStateInvalid: Account ... in state Accepted` appears intermittently on redeploys.

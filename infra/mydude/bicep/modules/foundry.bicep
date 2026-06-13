@@ -30,6 +30,12 @@ param storageAccountId string          // Foundry gets NO write role on this acc
 param acaSubnetId string               // VNet subnet Foundry agents run in
 param peSubnetId string                // Private endpoint subnet for AOAI private link
 param aoaiPrivateDnsZoneId string      // privatelink.openai.azure.com zone ID from network.bicep
+param keyVaultId string                 // existing mydude-kv — wired as the Hub's Key Vault backing
+param appInsightsId string              // existing mydude-appinsights — wired as the Hub's App Insights backing
+param amlApiPrivateDnsZoneId string     // privatelink.api.azureml.ms zone ID from network.bicep
+param amlNotebooksPrivateDnsZoneId string // privatelink.notebooks.azure.net zone ID from network.bicep
+param blobPrivateDnsZoneId string       // privatelink.blob.core.windows.net zone ID (Hub workspace storage)
+param filePrivateDnsZoneId string       // privatelink.file.core.windows.net zone ID (Hub workspace storage)
 
 @description('Enable browser capability (Azure Playwright Service). Default false.')
 param foundryBrowserEnabled bool = false
@@ -175,7 +181,136 @@ resource gpt41MiniBgDeployment 'Microsoft.CognitiveServices/accounts/deployments
 }
 
 // ---------------------------------------------------------------------------
-// Azure AI Foundry Hub — workspace that hosts the Agent managed runtime
+// Dedicated Hub workspace storage — GPv2, NON-HNS (the shared mydudestg is
+// HNS-enabled ADLS, which AML rejects as primary workspace storage). Private:
+// public access disabled, reached only via blob + file private endpoints.
+// Gated on foundryHubEnabled — only provisioned when the Hub is enabled.
+// ---------------------------------------------------------------------------
+resource foundryStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (foundryHubEnabled) {
+  name: '${prefix}foundrystg'
+  location: location
+  tags: union(tags, { role: 'foundry-hub-storage', hns: 'false' })
+  kind: 'StorageV2'
+  sku: { name: 'Standard_LRS' }
+  properties: {
+    isHnsEnabled: false
+    supportsHttpsTrafficOnly: true
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: true
+    publicNetworkAccess: 'Disabled'
+    networkAcls: {
+      defaultAction: 'Deny'
+      bypass: 'AzureServices'
+      virtualNetworkRules: []
+      ipRules: []
+    }
+    encryption: {
+      services: {
+        blob: { enabled: true }
+        file: { enabled: true }
+      }
+      keySource: 'Microsoft.Storage'
+    }
+  }
+}
+
+// Blob private endpoint for the Hub workspace storage.
+resource foundryStorageBlobPe 'Microsoft.Network/privateEndpoints@2023-11-01' = if (foundryHubEnabled) {
+  name: '${prefix}-foundrystg-blob-pe'
+  location: location
+  tags: tags
+  properties: {
+    subnet: { id: peSubnetId }
+    privateLinkServiceConnections: [
+      {
+        name: '${prefix}-foundrystg-blob-plsc'
+        properties: {
+          privateLinkServiceId: foundryStorage.id
+          groupIds: ['blob']
+        }
+      }
+    ]
+  }
+}
+
+resource foundryStorageBlobDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = if (foundryHubEnabled) {
+  parent: foundryStorageBlobPe
+  name: 'blobDnsGroup'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'privatelink-blob'
+        properties: { privateDnsZoneId: blobPrivateDnsZoneId }
+      }
+    ]
+  }
+}
+
+// File private endpoint for the Hub workspace storage (AML requires file access).
+resource foundryStorageFilePe 'Microsoft.Network/privateEndpoints@2023-11-01' = if (foundryHubEnabled) {
+  name: '${prefix}-foundrystg-file-pe'
+  location: location
+  tags: tags
+  properties: {
+    subnet: { id: peSubnetId }
+    privateLinkServiceConnections: [
+      {
+        name: '${prefix}-foundrystg-file-plsc'
+        properties: {
+          privateLinkServiceId: foundryStorage.id
+          groupIds: ['file']
+        }
+      }
+    ]
+  }
+}
+
+resource foundryStorageFileDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = if (foundryHubEnabled) {
+  parent: foundryStorageFilePe
+  name: 'fileDnsGroup'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'privatelink-file'
+        properties: { privateDnsZoneId: filePrivateDnsZoneId }
+      }
+    ]
+  }
+}
+
+// RBAC: the Hub's user-assigned identity needs data-plane access to its OWN
+// workspace storage. AML does not auto-grant this for user-assigned-identity
+// workspaces, so the workspace fails to operate without these roles.
+// Storage Blob Data Contributor: ba92f5b4-2d11-453d-a403-e96b0029c9fe
+resource foundryStorageBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (foundryHubEnabled) {
+  name: guid(foundryStorage.id, foundryAgentPrincipalId, 'StorageBlobDataContributor')
+  scope: foundryStorage
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+    principalId: foundryAgentPrincipalId
+    principalType: 'ServicePrincipal'
+    description: 'Foundry Hub identity: blob data on its dedicated workspace storage.'
+  }
+}
+
+// Storage File Data Privileged Contributor: 69566ab7-960f-475b-8e7c-b3118f30c6bd
+resource foundryStorageFileRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (foundryHubEnabled) {
+  name: guid(foundryStorage.id, foundryAgentPrincipalId, 'StorageFileDataPrivilegedContributor')
+  scope: foundryStorage
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69566ab7-960f-475b-8e7c-b3118f30c6bd')
+    principalId: foundryAgentPrincipalId
+    principalType: 'ServicePrincipal'
+    description: 'Foundry Hub identity: file data on its dedicated workspace storage.'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Azure AI Foundry Hub — workspace that hosts the Agent managed runtime.
+// Backed by: dedicated NON-HNS storage (above), the shared Key Vault and
+// App Insights (wired by ID), and managed-network isolation. Reached privately
+// via the amlworkspace private endpoint below.
 // ---------------------------------------------------------------------------
 resource foundryHub 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = if (foundryHubEnabled) {
   name: '${prefix}-foundry'
@@ -190,11 +325,66 @@ resource foundryHub 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = 
     friendlyName: 'MyDude Foundry Hub'
     description: 'MyDude AI Foundry Hub — tool/runtime scope only. No catalog write.'
     publicNetworkAccess: 'Disabled'
+    // A Hub workspace fails with an opaque "InternalServerError: Received 400"
+    // when these backing resources are absent. NON-HNS storage is mandatory.
+    storageAccount: foundryStorage.id
+    keyVault: keyVaultId
+    applicationInsights: appInsightsId
+    // Managed VNet isolation: AML provisions a managed network for the Hub's
+    // compute; inbound is private-only (the amlworkspace PE below), outbound is
+    // managed. AllowInternetOutbound keeps managed outbound working without
+    // hand-maintaining approved-FQDN rules; harden to AllowOnlyApprovedOutbound
+    // once the required outbound rule set is enumerated.
+    managedNetwork: {
+      isolationMode: 'AllowInternetOutbound'
+    }
     workspaceHubConfig: {
       // Must be the FULL resource-group ARM ID (/subscriptions/.../resourceGroups/x),
       // not just the name, or the RP throws "Error parsing DefaultWorkspaceResourceGroup".
       defaultWorkspaceResourceGroup: resourceGroup().id
     }
+  }
+  // Storage data-plane roles must exist before the workspace initializes against
+  // its primary storage, or first-run operations are denied.
+  dependsOn: [foundryStorageBlobRole, foundryStorageFileRole]
+}
+
+// ---------------------------------------------------------------------------
+// AML private endpoint (groupId 'amlworkspace') — sole inbound path to the Hub.
+// Resolves both the api and notebooks private-link planes.
+// ---------------------------------------------------------------------------
+resource foundryHubPe 'Microsoft.Network/privateEndpoints@2023-11-01' = if (foundryHubEnabled) {
+  name: '${prefix}-foundry-pe'
+  location: location
+  tags: tags
+  properties: {
+    subnet: { id: peSubnetId }
+    privateLinkServiceConnections: [
+      {
+        name: '${prefix}-foundry-plsc'
+        properties: {
+          privateLinkServiceId: foundryHub.id
+          groupIds: ['amlworkspace']
+        }
+      }
+    ]
+  }
+}
+
+resource foundryHubDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = if (foundryHubEnabled) {
+  parent: foundryHubPe
+  name: 'amlDnsGroup'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'privatelink-api-azureml'
+        properties: { privateDnsZoneId: amlApiPrivateDnsZoneId }
+      }
+      {
+        name: 'privatelink-notebooks'
+        properties: { privateDnsZoneId: amlNotebooksPrivateDnsZoneId }
+      }
+    ]
   }
 }
 

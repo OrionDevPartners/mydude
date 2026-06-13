@@ -71,10 +71,11 @@ bash .agents/skills/bicep/ensure-bicep.sh        # (re)install the bicep CLI
 **Network:** `mydude-vnet` (`10.10.0.0/16`). Subnets: `mydude-aca-subnet` (`10.10.1.0/24`, delegated
 `Microsoft.App/environments`), `mydude-pg-subnet` (`10.10.2.0/24`, delegated PostgreSQL flexibleServers),
 `mydude-pe-subnet` (`10.10.3.0/24`). Private endpoints: Key Vault, Storage (`dfs`), Cosmos (`Sql`),
-AOAI (`account`). Postgres uses its **delegated subnet + private DNS zone**
-(`mydude.postgres.database.azure.com`) rather than a private endpoint. Private DNS zones:
-`vaultcore`, `dfs`, `documents`, `openai`, + Postgres. Azure Policy `mydude-deny-public-network`
-(RG-scoped).
+AOAI (`account`). When the Foundry Hub is enabled it also adds private endpoints for the Hub
+(`amlworkspace`) and its dedicated storage (`blob`, `file`). Postgres uses its **delegated subnet +
+private DNS zone** (`mydude.postgres.database.azure.com`) rather than a private endpoint. Private DNS
+zones: `vaultcore`, `dfs`, `documents`, `openai`, `api.azureml.ms`, `notebooks.azure.net`, `blob`,
+`file`, + Postgres. Azure Policy `mydude-deny-public-network` (RG-scoped).
 
 **Postgres** — `mydude-pg`: `Standard_D4ds_v5` GeneralPurpose, 128 GB, v16, **HA mode `SameZone`**.
 Databases: `agents_home` (routing authority), `provider_home` (candidate cognition + outbox).
@@ -115,29 +116,40 @@ identity holds **Cognitive Services OpenAI User** (inference only — cannot man
 
 ---
 
-## Gated capabilities (post-deploy admin steps — beyond the RG-Owner SP)
+## Gated capabilities
 
-The live deploy ran with these **OFF** (`fabricEnabled=false`, `foundryHubEnabled=false`) so the
-RG-Owner SP could converge the rest of the stack.
-
-### Fabric capacity (`fabricEnabled=false`)
+### Fabric capacity (`fabricEnabled=false` in the SP parameter file — STILL GATED)
 
 `Microsoft.Fabric/capacities` creation needs AAD/Graph authorization the RG-scoped SP cannot satisfy
-("Unable to authorize with Azure Active Directory"). Enable it as an admin step:
+("Unable to authorize with Azure Active Directory"), so `parameters.json` (the **SP** deploy's param
+file, consumed by `deploy.py`) keeps `fabricEnabled=false` — flipping it true there would make every
+SP deploy fail at the Fabric module. The Bicep **default** is `true`, so an AAD-authorized deploy
+path (or admin run with no override) provisions it. `fabricSkuName` is `F32` (the target capacity).
+
+Enable it as an admin step:
 1. A tenant/Fabric admin (or an SP with the required AAD authorization) creates capacity
    **`mydudefabric`** (`F32`) with the configured `fabricAdminMembers` — either via the portal or by
-   re-running the deploy with `fabricEnabled=true`.
+   running the deploy with `fabricEnabled=true` under an authorized identity.
 2. OneLake workspace + lakehouse **items** are created in the Fabric portal/API (SaaS — not ARM).
    Private-link hardening for OneLake is tenant/admin-dependent.
 
-### AI Foundry Hub + Project (`foundryHubEnabled=false`)
+### AI Foundry Hub + Project (`foundryHubEnabled=true` — NOW ENABLED, SP-deployable)
 
-The AOAI account **and both deployments are live** — the app calls AOAI directly over its private
-endpoint and does not need the managed runtime to function. The Hub/Project are deferred because an
-AI Foundry Hub workspace requires: a **dedicated GPv2 NON-HNS** storage account (`mydudestg` is HNS,
-unusable as AML primary storage), the Key Vault, App Insights, an **AML private endpoint** + AML
-private DNS zones (`privatelink.api.azureml.ms`, `privatelink.notebooks.azure.net`), and managed-network
-isolation. Add that surface, then re-deploy with `foundryHubEnabled=true`.
+The Hub's required backing surface is now in `foundry.bicep` (all gated on `foundryHubEnabled` so it
+is created only when the Hub is on), so the RG-Owner SP can deploy it directly:
+- a **dedicated GPv2 NON-HNS** storage account **`mydudefoundrystg`** (`StorageV2`, `isHnsEnabled:false`,
+  public access Disabled) with **blob + file** private endpoints/DNS — the shared `mydudestg` is HNS,
+  which AML rejects as primary workspace storage;
+- the shared **Key Vault** (`mydude-kv`) and **App Insights** (`mydude-appinsights`) wired by resource
+  ID (the Foundry agent identity gains KV `secrets: set` so the Hub can persist connection secrets);
+- an **AML private endpoint** (`groupId: amlworkspace`) resolving the AML private DNS zones
+  `privatelink.api.azureml.ms` + `privatelink.notebooks.azure.net`;
+- **managed-network isolation** (`managedNetwork.isolationMode: AllowInternetOutbound`);
+- data-plane roles for the Hub identity on its own storage (Storage Blob Data Contributor + Storage
+  File Data Privileged Contributor).
+
+The AOAI account + both deployments remain live independently — the app calls AOAI directly over its
+private endpoint and does not depend on the managed runtime to function.
 
 ---
 
@@ -178,7 +190,7 @@ infra/mydude/
       storage.bicep                # ADLS Gen2 (knowledge-raw, onelake-staging, lancedb-l2, mlflow-artifacts, offline-sync)
       cosmos.bicep                 # Cosmos DB NoSQL+vector (agents_memory: episodic, vectors, documents)
       fabric.bicep                 # Microsoft Fabric capacity (gated)
-      foundry.bicep                # AOAI account + foreground/background deployments; Hub/Project (gated)
+      foundry.bicep                # AOAI account + fg/bg deployments; Hub/Project + dedicated NON-HNS storage, AML PE/DNS, managed-net (gated)
       monitoring.bicep             # Log Analytics + App Insights + provider-latency alert
   local/
     deploy.py                      # Azure Python SDK deploy driver (validate/whatif/deploy/status)

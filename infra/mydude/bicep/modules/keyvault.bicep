@@ -43,12 +43,14 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
           secrets: ['get', 'set', 'list']
         }
       }
-      // Foundry Agent — read/list only
+      // Foundry Agent — read/list, plus set so the AI Foundry Hub (which runs
+      // under this same user-assigned identity) can persist its connection
+      // secrets into the vault. This KV is the Hub's wired Key Vault backing.
       {
         tenantId: subscription().tenantId
         objectId: foundryAgentPrincipalId
         permissions: {
-          secrets: ['get', 'list']
+          secrets: ['get', 'list', 'set']
         }
       }
       // agents_home DB identity — get only (connection string)

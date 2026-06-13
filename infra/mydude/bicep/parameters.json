@@ -15,7 +15,7 @@
       "value": "{TENANT_ID}"
     },
     "fabricSkuName": {
-      "value": "F2"
+      "value": "F32"
     },
     "fabricAdminMembers": {
       "value": ["Bo@symio.ai"]
@@ -24,7 +24,7 @@
       "value": false
     },
     "foundryHubEnabled": {
-      "value": false
+      "value": true
     },
     "aoaiForegroundCapacity": {
       "value": 250
