@@ -52,7 +52,7 @@ STUB_RESULT = {
 }
 
 
-async def _stub_run(self, prompt):  # noqa: ANN001
+async def _stub_run(self, prompt, **kwargs):  # noqa: ANN001
     return dict(STUB_RESULT)
 
 
@@ -76,15 +76,30 @@ def _client_and_patches(monkeypatch):
 
 
 def _run_and_fetch(client):
+    import time
+
     resp = client.post("/api/tasks/run", data={"prompt": "draft a proposal"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is True
+    # The run is now scheduled in the background: the endpoint must return the
+    # task_id immediately with a "running" status, and the polling UI drives
+    # completion (rather than the request blocking until the swarm finishes).
+    assert body.get("status") == "running", body
     task_id = body["task_id"]
 
-    detail = client.get(f"/api/tasks/{task_id}")
-    assert detail.status_code == 200, detail.text
-    return detail.json()
+    # Poll just like the React dashboard does until the background run finishes.
+    deadline = time.time() + 30
+    detail = None
+    while time.time() < deadline:
+        resp = client.get(f"/api/tasks/{task_id}")
+        assert resp.status_code == 200, resp.text
+        detail = resp.json()
+        if detail["status"] != "running":
+            break
+        time.sleep(0.1)
+    assert detail is not None
+    return detail
 
 
 def _check(task):

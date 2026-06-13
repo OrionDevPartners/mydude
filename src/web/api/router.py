@@ -340,6 +340,111 @@ async def api_dashboard(request: Request, _=Depends(require_auth)):
     }
 
 
+# Strong references to in-flight background task-run coroutines. asyncio only
+# holds a weak reference to scheduled tasks, so without this they could be
+# garbage-collected mid-run; the done callback discards each when it finishes.
+_background_task_runs: set = set()
+
+
+def _fail_task_run(task_id: int, message: str) -> None:
+    """Mark a TaskRun row as failed with the given message (best effort)."""
+    from src.database import SessionLocal
+    from src.models import TaskRun
+
+    db = SessionLocal()
+    try:
+        task_run = db.query(TaskRun).filter(TaskRun.id == task_id).first()
+        if task_run is None:
+            return
+        task_run.result = message
+        task_run.status = "failed"
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to mark task %s as failed", task_id)
+    finally:
+        db.close()
+
+
+async def _execute_task_run(task_id: int, prompt: str, domain: str, team: str) -> None:
+    """Run the swarm orchestration for an already-created TaskRun row.
+
+    Runs in the background so /api/tasks/run can return immediately. Owns its
+    own DB session, transitions the row to completed/failed, and always
+    releases the concurrency guard so a crashed run never leaks a guard slot or
+    leaves an orphaned "running" row.
+    """
+    import time
+    from src.database import SessionLocal
+    from src.models import TaskRun
+    from src.web.routes_tasks import _run_guard
+
+    db = SessionLocal()
+    start_time = time.time()
+    try:
+        task_run = db.query(TaskRun).filter(TaskRun.id == task_id).first()
+        if task_run is None:
+            logger.error("Background task run %s vanished before execution", task_id)
+            return
+        try:
+            from src.swarm.broker import CapabilityBroker
+            from src.swarm.policy import PolicyEngine
+            from src.swarm.integrations import Integrations
+            from src.swarm.orchestrator import WaveOrchestrator
+
+            policy = PolicyEngine()
+            integrations = Integrations()
+            broker = CapabilityBroker(policy, integrations)
+            orchestrator = WaveOrchestrator(broker)
+            result = await orchestrator.run(prompt, domain=domain, team=team, task_run_id=task_id)
+
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            result_text = json.dumps(result, indent=2, default=str)
+            # Normalize the orchestrator's structured output into the compact,
+            # display-ready shape the dashboard expects: compliance and
+            # hallucination_risk as 0..1 numbers, jurisdiction as a short string.
+            scores = {}
+            cs_list = result.get("COMPLIANCE_SCORES")
+            if isinstance(cs_list, list) and cs_list:
+                cs_vals = [
+                    c.get("score") for c in cs_list
+                    if isinstance(c, dict) and isinstance(c.get("score"), (int, float))
+                ]
+                if cs_vals:
+                    # Compliance scores are 0..100 ints; surface a 0..1 average.
+                    scores["compliance"] = round(sum(cs_vals) / len(cs_vals) / 100.0, 3)
+            hr = result.get("HALLUCINATION_RISK")
+            if isinstance(hr, dict) and isinstance(hr.get("average"), (int, float)):
+                scores["hallucination_risk"] = round(float(hr["average"]), 3)
+            elif isinstance(hr, (int, float)):
+                scores["hallucination_risk"] = round(float(hr), 3)
+            jur = result.get("JURISDICTION")
+            if isinstance(jur, dict):
+                jur_parts = [str(jur.get(k)) for k in ("domain", "team") if jur.get(k)]
+                if jur_parts:
+                    scores["jurisdiction"] = " \u00b7 ".join(jur_parts)
+            elif isinstance(jur, str) and jur.strip():
+                scores["jurisdiction"] = jur.strip()
+            task_run.result = result_text
+            task_run.status = "completed"
+            task_run.execution_time_ms = elapsed_ms
+            task_run.provider_scores = json.dumps(scores) if scores else None
+            db.commit()
+        except Exception:
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            logger.exception("Task execution failed for task %s", task_id)
+            task_run.result = "Error: task execution failed. See server logs for details."
+            task_run.status = "failed"
+            task_run.execution_time_ms = elapsed_ms
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+    finally:
+        db.close()
+        _run_guard.release()
+
+
 @router.post("/tasks/run")
 async def api_run_task(
     request: Request,
@@ -375,78 +480,36 @@ async def api_run_task(
         raise HTTPException(status_code=429, detail="The swarm is busy with other tasks. Please try again shortly.")
 
     db = SessionLocal()
-    task_run = TaskRun(prompt=prompt, status="running")
     try:
+        task_run = TaskRun(prompt=prompt, status="running")
         db.add(task_run)
         db.commit()
         db.refresh(task_run)
         task_id = task_run.id
     except Exception as e:
         db.rollback()
+        _run_guard.release()
+        raise HTTPException(status_code=500, detail="Could not start the task. Please try again.")
+    finally:
         db.close()
+
+    # Kick off the (potentially multi-minute) swarm run in the background and
+    # return immediately so the polling UI (getTask) drives completion instead
+    # of holding the HTTP request open past proxy/client timeouts. The
+    # background runner owns the concurrency-guard release.
+    try:
+        bg = asyncio.create_task(_execute_task_run(task_id, prompt, domain, team))
+        _background_task_runs.add(bg)
+        bg.add_done_callback(_background_task_runs.discard)
+    except Exception:
+        # Scheduling failed: mark the row failed and release the guard so we
+        # never leave an orphaned "running" row or a leaked guard slot.
+        logger.exception("Failed to schedule background task %s", task_id)
+        _fail_task_run(task_id, "Error: task execution could not be started. See server logs for details.")
         _run_guard.release()
         raise HTTPException(status_code=500, detail="Could not start the task. Please try again.")
 
-    start_time = time.time()
-    try:
-        from src.swarm.broker import CapabilityBroker
-        from src.swarm.policy import PolicyEngine
-        from src.swarm.integrations import Integrations
-        from src.swarm.orchestrator import WaveOrchestrator
-
-        policy = PolicyEngine()
-        integrations = Integrations()
-        broker = CapabilityBroker(policy, integrations)
-        orchestrator = WaveOrchestrator(broker)
-        result = await orchestrator.run(prompt, domain=domain, team=team, task_run_id=task_id)
-
-        elapsed_ms = int((time.time() - start_time) * 1000)
-        result_text = json.dumps(result, indent=2, default=str)
-        # Normalize the orchestrator's structured output into the compact,
-        # display-ready shape the dashboard expects: compliance and
-        # hallucination_risk as 0..1 numbers, jurisdiction as a short string.
-        scores = {}
-        cs_list = result.get("COMPLIANCE_SCORES")
-        if isinstance(cs_list, list) and cs_list:
-            cs_vals = [
-                c.get("score") for c in cs_list
-                if isinstance(c, dict) and isinstance(c.get("score"), (int, float))
-            ]
-            if cs_vals:
-                # Compliance scores are 0..100 ints; surface a 0..1 average.
-                scores["compliance"] = round(sum(cs_vals) / len(cs_vals) / 100.0, 3)
-        hr = result.get("HALLUCINATION_RISK")
-        if isinstance(hr, dict) and isinstance(hr.get("average"), (int, float)):
-            scores["hallucination_risk"] = round(float(hr["average"]), 3)
-        elif isinstance(hr, (int, float)):
-            scores["hallucination_risk"] = round(float(hr), 3)
-        jur = result.get("JURISDICTION")
-        if isinstance(jur, dict):
-            jur_parts = [str(jur.get(k)) for k in ("domain", "team") if jur.get(k)]
-            if jur_parts:
-                scores["jurisdiction"] = " \u00b7 ".join(jur_parts)
-        elif isinstance(jur, str) and jur.strip():
-            scores["jurisdiction"] = jur.strip()
-        task_run.result = result_text
-        task_run.status = "completed"
-        task_run.execution_time_ms = elapsed_ms
-        task_run.provider_scores = json.dumps(scores) if scores else None
-        db.commit()
-    except Exception as e:
-        elapsed_ms = int((time.time() - start_time) * 1000)
-        logger.exception("Task execution failed for task %s", task_id)
-        task_run.result = "Error: task execution failed. See server logs for details."
-        task_run.status = "failed"
-        task_run.execution_time_ms = elapsed_ms
-        try:
-            db.commit()
-        except Exception:
-            db.rollback()
-    finally:
-        db.close()
-        _run_guard.release()
-
-    return {"ok": True, "task_id": task_id}
+    return {"ok": True, "task_id": task_id, "status": "running"}
 
 
 @router.get("/tasks/history")
