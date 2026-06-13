@@ -13,6 +13,27 @@
     },
     "tenantId": {
       "value": "{TENANT_ID}"
+    },
+    "fabricSkuName": {
+      "value": "F2"
+    },
+    "fabricAdminMembers": {
+      "value": ["Bo@symio.ai"]
+    },
+    "fabricEnabled": {
+      "value": false
+    },
+    "foundryHubEnabled": {
+      "value": false
+    },
+    "aoaiForegroundCapacity": {
+      "value": 250
+    },
+    "aoaiBackgroundCapacity": {
+      "value": 100
+    },
+    "cosmosMaxThroughput": {
+      "value": 10000
     }
   }
 }

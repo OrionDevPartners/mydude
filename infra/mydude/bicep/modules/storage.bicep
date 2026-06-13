@@ -1,4 +1,4 @@
-// MyDude — ADLS Gen2 storage (Unity Catalog root, LanceDB L2, MLflow artifacts, offline-sync)
+// MyDude — ADLS Gen2 storage (knowledge-raw lake landing, OneLake staging, LanceDB L2, MLflow artifacts, offline-sync)
 
 targetScope = 'resourceGroup'
 
@@ -24,6 +24,7 @@ resource adls 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
+    publicNetworkAccess: 'Disabled'
     networkAcls: {
       defaultAction: 'Deny'
       bypass: 'AzureServices'
@@ -42,8 +43,15 @@ resource adls 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 }
 
 // Containers (ADLS filesystem containers)
-resource unityCatalogContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
-  name: '${adls.name}/default/unity-catalog'
+resource knowledgeRawContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${adls.name}/default/knowledge-raw'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource onelakeStagingContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${adls.name}/default/onelake-staging'
   properties: {
     publicAccess: 'None'
   }
@@ -70,7 +78,7 @@ resource offlineSyncContainer 'Microsoft.Storage/storageAccounts/blobServices/co
   }
 }
 
-// RBAC: BCS gate = Storage Blob Data Contributor (write authority for Unity Catalog root)
+// RBAC: BCS gate = Storage Blob Data Contributor (write authority for the lake landing zone)
 resource bcsGateStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(adls.id, bcsGatePrincipalId, 'StorageBlobDataContributor')
   scope: adls
@@ -129,6 +137,7 @@ resource adlsDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2
 
 output adlsAccountName string = adls.name
 output adlsId string = adls.id
-output unityCatalogUri string = 'abfss://unity-catalog@${adls.name}.dfs.core.windows.net/'
+output knowledgeRawUri string = 'abfss://knowledge-raw@${adls.name}.dfs.core.windows.net/'
+output onelakeStagingUri string = 'abfss://onelake-staging@${adls.name}.dfs.core.windows.net/'
 output lancedbL2Uri string = 'abfss://lancedb-l2@${adls.name}.dfs.core.windows.net/'
 output mlflowArtifactsUri string = 'abfss://mlflow-artifacts@${adls.name}.dfs.core.windows.net/'

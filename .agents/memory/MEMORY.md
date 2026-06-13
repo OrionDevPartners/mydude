@@ -1,7 +1,7 @@
 - [Capability governance gates](capability-gates.md) — how MyDude's browser/SSH capabilities must enforce allow-lists; pitfalls that bypass them.
 - [Two-phase cancel gate](two-phase-cancel-gate.md) — irreversible-action confirm gate must be decoupled from best-effort review login, or it goes invisible/untestable.
 - [Local Playwright in this container](playwright-local-env.md) — local Chromium can't launch (missing system libs); Browserbase is the prod path.
-- [uv re-lock blocked by pytorch-cpu sources](uv-relock-pytorch-cpu-sources.md) — `uv lock`/`sync` fails on PyPI-available pkgs; vestigial `[tool.uv.sources]` vs lock; deploy uses `uv sync --frozen`.
+- [uv re-lock blocked by pytorch-cpu sources](uv-relock-pytorch-cpu-sources.md) — `uv lock`/`uv sync` fails on PyPI-available pkgs; vestigial `[tool.uv.sources]` vs lock; deploy uses `uv sync --frozen`.
 - [Governed degraded-fallback rule](governed-degraded-fallback.md) — fallbacks must use live approved prompt + mark/audit degraded; never a hardcoded copy or raw ungoverned output.
 - [DSPy hermetic optimizer testing](dspy-hermetic-testing.md) — test MIPROv2/GEPA offline with DummyLM(itertools.repeat(superset-dict)); needs optuna; redirect dspy stdout.
 - [Token-bearing outbound HTTPS](token-bearing-outbound-https.md) — operator URLs that carry a secret must enforce https:// in code (fail-loud), not just in docs.
@@ -30,3 +30,6 @@
 - [Non-secret settings → env mirror](settings-env-mirror.md) — app_settings values mirrored to os.environ on write+boot so swarm picks them up restart-free; patch settings_store.SessionLocal to test.
 - [Orchestrator→dashboard shape](orchestrator-dashboard-shape.md) — run endpoint must collapse list/dict governance scores to 0..1 numbers + SYNTHESIS text or the result panel shows raw JSON.
 - [Governance participation floor](governance-participation-floor.md) — auto-resolve gates BOTH enact+reject on a live-env voter/weight floor; fail-safe to default; abstain participates but can't decide.
+- [MyDude Azure deploy gotchas](mydude-azure-deploy.md) — RG-Owner SP limits; eastus2 blocks ZoneRedundant PG HA; Fabric/Foundry-Hub gated; AOAI account-Accepted race fix; Cosmos vector needs dedicated RU.
+- [Azure SP scope](azure-sp-scope.md) — MyDude SP is Owner on RG `mydude` (lowercase) only, not subscription; deploy must skip `az group create` and target existing RG.
+- [Docker inside Replit](docker-in-replit-container.md) — daemon works but `docker exec`/compose healthchecks fail (setns); host port 5000 is the dev workflow. Use entrypoint DB-wait, map to 5050.

@@ -1,88 +1,87 @@
 # =============================================================================
 # MyDude Identity-First Provisioning Manifest
-# Resource Group: MyDude
-# Pattern: Sovereign substrate + Azure capacity stack
-# Date: 2026-06-07
+# Resource Group: mydude (existing; service principal is Owner on this RG only)
+# Pattern: Azure-native private capacity stack — Cosmos + Fabric authority model
+# Date: 2026-06-13
 # =============================================================================
 #
-# ARCHITECTURAL RULES (locked):
-#   1. MyDude owns routing authority — agents_home is the only governance authority.
-#   2. The BCS promotion gate is the only truth writer.
-#   3. Every Azure / agent-runtime service is an ADAPTER or PROJECTION, never
-#      an authority — agent-runtime auto-memory and outside-the-agent policy
-#      are replaced, not adopted.
+# AUTHORITY MODEL (locked):
+#   1. agents_home (Postgres) is the routing / governance authority.
+#   2. The BCS promotion gate is the only truth writer — to the governance ledger
+#      (Postgres) and the knowledge corpus (Fabric / OneLake staging in ADLS).
+#   3. Every Azure / agent-runtime service is an ADAPTER or PROJECTION, never an
+#      authority. Cosmos agent memory and the AI Foundry managed runtime are
+#      tool/runtime scope only.
 #   4. exec_locus (in_azure | anthropic_hosted | local) must match a domain's
 #      pinned exec_locus before any model can be promoted to that domain.
 #
-# ISOLATION: Fully isolated from any other project. Distinct resource group,
-# identities, catalog, storage, and Postgres server. No shared writers.
+# DROPPED from the earlier design: Databricks/Unity Catalog, app-code Container
+# Apps, Azure AI Search (vector now lives in Cosmos + pgvector).
+#
+# ISOLATION: distinct resource group, identities, storage, Cosmos, and Postgres.
 # =============================================================================
 
 metadata:
-  manifest_id: mydude-total-stack-v1
-  resource_group: MyDude
+  manifest_id: mydude-azure-stack-v2
+  resource_group: mydude
   location: eastus2
-  created: "2026-06-07"
+  created: "2026-06-13"
   owner: MyDude
 
 # ---------------------------------------------------------------------------
-# 1. ENTRA MANAGED IDENTITIES
+# 1. ENTRA MANAGED IDENTITIES (5 user-assigned)
 # ---------------------------------------------------------------------------
 identities:
-  # Single truth writer — the ONLY identity that may write to Unity Catalog.
+  # Single truth writer — governance ledger (Postgres) + knowledge corpus (OneLake/ADLS staging).
   bcs_gate_identity:
     display_name: mydude-bcs-gate
     role: BCSGateWriter
-    catalog_write: true
-    catalog_read: false
-    note: "Sole Unity Catalog write authority. All other identities are catalog read-only."
+    corpus_write: true
+    note: "Sole write authority for the governance ledger + knowledge corpus. Storage Blob Data Contributor on ADLS; Key Vault get/set/list."
 
-  # Agent runtime — tool/runtime scope only. Never holds catalog write.
+  # Agent runtime — AOAI inference + (future) Foundry managed runtime. Never a truth writer.
   foundry_agent_identity:
     display_name: mydude-foundry-agent
     role: FoundryAgentRuntime
-    catalog_write: false
-    catalog_read: true
+    corpus_write: false
     scope: tool_and_runtime_only
-    constraint: "Must never hold Unity Catalog write. Foundry Agent Service identity only."
+    constraint: "Cognitive Services OpenAI User on AOAI (inference only). Cannot manage deployments or write any authority."
 
-  # agents_home Postgres role — routing decisions, policy, threshold writes.
+  # agents_home Postgres role + Cosmos agent-memory writer.
   agents_home_identity:
     display_name: mydude-agents-home-db
     role: AgentsHomeDBWriter
-    catalog_write: false
-    catalog_read: false
     pg_role: agents_home_writer
     databases: [agents_home]
+    cosmos_role: CosmosDataContributor
+    note: "Routing/policy/threshold writes in Postgres; read+write agent memory in Cosmos."
 
   # provider_home Postgres role — candidate cognition + outbox only.
   provider_home_identity:
     display_name: mydude-provider-home-db
     role: ProviderHomeDBWriter
-    catalog_write: false
-    catalog_read: false
     pg_role: provider_home_writer
     databases: [provider_home]
 
-  # Read-only actors — Master_DB readers, fan-out gateway, all query agents.
+  # Read-only actors — query agents, projections.
   readonly_identity:
     display_name: mydude-readonly
-    role: CatalogReader
-    catalog_write: false
-    catalog_read: true
+    role: ReadOnly
     pg_role: agents_home_reader
+    cosmos_role: CosmosDataReader
+    storage_role: StorageBlobDataReader
 
-# Authority inversion rules (enforced by acceptance doctors):
+# Authority inversion rules (the intent the runtime gates must enforce):
 authority_rules:
-  - exactly_one_catalog_writer: bcs_gate_identity
-  - foundry_agent_identity_never_writes_catalog: true
+  - exactly_one_corpus_writer: bcs_gate_identity
+  - foundry_agent_identity_never_writes_authority: true
   - provider_home_reader_never_promotes_directly: true
   - every_agent_output_is_candidate_until_bcs_promotes: true
   - model_router_sees_only_mydude_granted_model_set: true
   - exec_locus_must_match_domain_pin_before_promotion: true
 
 # ---------------------------------------------------------------------------
-# 2. NETWORK BOUNDARY
+# 2. NETWORK BOUNDARY (all private)
 # ---------------------------------------------------------------------------
 network:
   vnet:
@@ -96,64 +95,58 @@ network:
     postgres_subnet:
       name: mydude-pg-subnet
       address_prefix: "10.10.2.0/24"
-      service_endpoints: [Microsoft.Storage]
+      delegation: Microsoft.DBforPostgreSQL/flexibleServers
     private_endpoints_subnet:
       name: mydude-pe-subnet
       address_prefix: "10.10.3.0/24"
   private_endpoints:
-    - name: mydude-kv-pe
-      resource: key_vault
-      subresource: vault
-    - name: mydude-pg-pe
-      resource: postgres_server
-      subresource: postgresqlServer
-    - name: mydude-storage-pe
-      resource: adls_gen2
-      subresource: dfs
+    - { name: mydude-kv-pe,      resource: key_vault, subresource: vault }
+    - { name: mydude-storage-pe, resource: adls_gen2, subresource: dfs }
+    - { name: mydude-cosmos-pe,  resource: cosmos_db, subresource: Sql }
+    - { name: mydude-aoai-pe,    resource: azure_openai, subresource: account }
+  # Postgres uses a delegated subnet + private DNS zone (no private endpoint).
+  private_dns_zones:
+    - privatelink.vaultcore.azure.net
+    - privatelink.dfs.core.windows.net
+    - privatelink.documents.azure.com
+    - privatelink.openai.azure.com
+    - mydude.postgres.database.azure.com
   azure_policy:
-    public_network_deny:
-      display_name: "Deny public network access — MyDude resources"
-      resources: [PostgreSQL, KeyVault, Storage]
+    deny_public_network:
+      name: mydude-deny-public-network
+      scope: resource_group
       effect: Deny
 
 # ---------------------------------------------------------------------------
-# 3. KEY VAULT
+# 3. KEY VAULT — secrets / governance authority surface
 # ---------------------------------------------------------------------------
 key_vault:
   name: mydude-kv
   sku: standard
   soft_delete_days: 90
   purge_protection: true
-  network_acls:
-    default_action: Deny
-    bypass: AzureServices
-  secrets:
-    - name: agents-home-pg-password
-      description: "PostgreSQL password for agents_home_writer role"
-    - name: provider-home-pg-password
-      description: "PostgreSQL password for provider_home_writer role"
-    - name: adls-connection-string
-      description: "ADLS Gen2 primary connection string"
-    - name: bcs-gate-idempotency-key
-      description: "BCS gate lease lock secret"
+  public_network_access: Disabled
   access_policies:
     bcs_gate_identity: [get, set, list]
     foundry_agent_identity: [get, list]
     agents_home_identity: [get]
     provider_home_identity: [get]
+  secrets_to_populate:        # populated post-provision, not by Bicep
+    - { name: agents-home-pg-dsn,        contains: "full DSN for agents_home_writer" }
+    - { name: provider-home-pg-dsn,      contains: "full DSN for provider_home_writer" }
+    - { name: bcs-gate-idempotency-key,  contains: "32-byte hex lease/idempotency key" }
 
 # ---------------------------------------------------------------------------
-# 4. POSTGRES SERVER
+# 4. POSTGRES — relational / governance / audit / secrets authority
 # ---------------------------------------------------------------------------
 postgres:
   server_name: mydude-pg
   sku: Standard_D4ds_v5
+  tier: GeneralPurpose
   storage_size_gb: 128
-  storage_autoscale: true
-  high_availability:
-    mode: ZoneRedundant
-    standby_zone: "2"
   version: "16"
+  high_availability:
+    mode: SameZone          # eastus2 offer restricts ZoneRedundant (MultiAzHaIsOfferRestricted); upgrade in place via support ticket later
   network:
     delegated_subnet: mydude-pg-subnet
     private_dns_zone: mydude.postgres.database.azure.com
@@ -161,159 +154,115 @@ postgres:
     agents_home:
       description: "Routing authority — policy, model teams, governed thresholds, cloud_shift"
       roles:
-        agents_home_writer:
-          privileges: [CONNECT, CREATE, INSERT, UPDATE, DELETE, SELECT]
-          schemas: [public, routing, policy]
-        agents_home_reader:
-          privileges: [CONNECT, SELECT]
-          schemas: [public, routing, policy]
+        agents_home_writer: { privileges: [CONNECT, CREATE, INSERT, UPDATE, DELETE, SELECT] }
+        agents_home_reader: { privileges: [CONNECT, SELECT] }
     provider_home:
-      description: "Private candidate cognition and outbox"
+      description: "Private candidate cognition + outbox"
       roles:
-        provider_home_writer:
-          privileges: [CONNECT, CREATE, INSERT, UPDATE, DELETE, SELECT]
-          schemas: [public, candidates, outbox]
-        provider_home_reader:
-          privileges: [CONNECT, SELECT]
-          schemas: [public, candidates, outbox]
+        provider_home_writer: { privileges: [CONNECT, CREATE, INSERT, UPDATE, DELETE, SELECT] }
+        provider_home_reader: { privileges: [CONNECT, SELECT] }
 
 # ---------------------------------------------------------------------------
-# 5. STORAGE — ADLS Gen2 + MinIO mirror
+# 5. STORAGE — ADLS Gen2 (knowledge corpus staging + projections)
 # ---------------------------------------------------------------------------
 storage:
   adls_gen2:
     name: mydudestg
     replication: RA-GRS
     hierarchical_namespace: true
+    rbac:
+      bcs_gate_identity: StorageBlobDataContributor
+      readonly_identity: StorageBlobDataReader
     containers:
-      - name: unity-catalog
-        purpose: "Unity Catalog managed Iceberg REST — single commit authority"
-      - name: lancedb-l2
-        purpose: "LanceDB L2 hot-warm vector store (rebuildable projection)"
-      - name: mlflow-artifacts
-        purpose: "MLflow experiment artifacts and eval results"
-      - name: offline-sync
-        purpose: "MinIO→ADLS sync target for local sovereign stack"
-  minio_mirror:
-    bucket: mydude-offline-sync
-    sync_direction: local_to_azure
-    sync_trigger: outbox_replay_on_bcs_gate
+      - { name: knowledge-raw,    purpose: "Raw domain-knowledge ingest (corpus source)" }
+      - { name: onelake-staging,  purpose: "Staging for promotion into Fabric/OneLake" }
+      - { name: lancedb-l2,       purpose: "LanceDB L2 hot-warm vector store (rebuildable projection)" }
+      - { name: mlflow-artifacts, purpose: "MLflow experiment artifacts and eval results" }
+      - { name: offline-sync,     purpose: "MinIO->ADLS sync target for local sovereign stack" }
 
 # ---------------------------------------------------------------------------
-# 6. UNITY CATALOG (Managed Iceberg REST)
+# 6. COSMOS DB — agent swarm memory (document + vector); replaces Azure AI Search
 # ---------------------------------------------------------------------------
-unity_catalog:
-  endpoint: https://mydude-catalog.azuredatabricks.net
-  catalog_name: mydude
-  storage_root: abfss://unity-catalog@mydudestg.dfs.core.windows.net/
-  write_identity: bcs_gate_identity
-  dr_replica: RA-GRS_readonly
-  schemas:
-    agents_home_ledger:
-      purpose: "Committed routing decisions + claim ledger (read-only projection)"
-    provider_home_ledger:
-      purpose: "Candidate promotion history (read-only projection)"
+cosmos_db:
+  account_name: mydude-cosmos
+  api: NoSQL
+  vector_search: true
+  consistency: Session
+  zone_redundant: true
+  backup: Continuous7Days
+  local_auth: disabled        # AAD / data-plane RBAC only
+  public_network_access: Disabled
+  database:
+    name: agents_memory
+    autoscale_max_ru: 10000
+  containers:
+    episodic:
+      partition_key: /agentId
+      ttl: off
+      purpose: "Per-agent episodic event / interaction log"
+    vectors:
+      partition_key: /namespace
+      dedicated_autoscale_max_ru: 4000   # vector indexing rejected on shared-DB throughput
+      vector_index: { type: diskANN, dimensions: 1536, distance: cosine, path: /embedding }
+      purpose: "Semantic memory — vector similarity recall"
+    documents:
+      partition_key: /namespace
+      purpose: "Raw agent documents / working context"
+  data_plane_rbac:
+    agents_home_identity: CosmosDataContributor
+    readonly_identity: CosmosDataReader
 
 # ---------------------------------------------------------------------------
-# 7. AZURE AI SEARCH (rebuildable projection)
+# 7. MICROSOFT FABRIC — domain-knowledge corpus lakehouse (GATED)
 # ---------------------------------------------------------------------------
-ai_search:
-  name: mydude-search
-  sku: standard
-  replicas: 1
-  partitions: 1
-  identity: readonly_identity
-  note: "Rebuildable projection — not an authority. Rebuilt from Unity Catalog on demand."
+fabric:
+  capacity_name: mydudefabric
+  sku: F32
+  admin_members_from: parameters.json (fabricAdminMembers)
+  status: GATED                # fabricEnabled=false at deploy time
+  reason: "Microsoft.Fabric/capacities creation needs AAD/Graph authorization the RG-scoped SP cannot satisfy."
+  admin_step: "A tenant/Fabric admin (or an AAD-authorized SP) creates the capacity; OneLake workspace + lakehouse items are created in the Fabric portal/API (SaaS, not ARM)."
 
 # ---------------------------------------------------------------------------
-# 8. CONTAINER APPS (BCS Gate + Master_DB + Fan-out Gateway)
+# 8. AZURE OPENAI (private) — foreground + background gpt-4.1-mini
 # ---------------------------------------------------------------------------
-container_apps:
-  environment:
-    name: mydude-aca-env
-    subnet: mydude-aca-subnet
-    log_analytics: mydude-logs
-  apps:
-    bcs_gate:
-      name: mydude-bcs-gate
-      image: mydude/bcs-gate:latest
-      min_replicas: 1
-      max_replicas: 5
-      identity: bcs_gate_identity
-      env_refs:
-        - name: PG_AGENTS_HOME_DSN
-          secret_ref: agents-home-pg-password
-        - name: ADLS_CONNECTION_STRING
-          secret_ref: adls-connection-string
-        - name: BCS_LEASE_SECRET
-          secret_ref: bcs-gate-idempotency-key
-      ingress:
-        external: false
-        target_port: 8080
-      note: "Single truth writer. min-1 for always-on gate."
-
-    master_db:
-      name: mydude-master-db
-      image: mydude/master-db:latest
-      min_replicas: 1
-      max_replicas: 3
-      identity: readonly_identity
-      note: "DuckDB-in-Container-App for fan-out query aggregation. Catalog read-only."
-      ingress:
-        external: false
-        target_port: 8081
-
-    fanout_gateway:
-      name: mydude-fanout-gw
-      image: mydude/fanout-gateway:latest
-      min_replicas: 1
-      max_replicas: 10
-      identity: readonly_identity
-      note: "Fan-out query gateway. Catalog read-only."
-      ingress:
-        external: true
-        target_port: 8082
+azure_openai:
+  account_name: mydude-aoai
+  kind: OpenAI
+  sku: S0
+  public_network_access: Disabled
+  identity_role: "Cognitive Services OpenAI User (foundry_agent_identity, inference only)"
+  deployments:
+    gpt-41-mini:
+      model: { name: gpt-4.1-mini, version: "2025-04-14" }
+      sku: { name: GlobalStandard, capacity: 250 }
+      tier: foreground
+    gpt-41-mini-bg:
+      model: { name: gpt-4.1-mini, version: "2025-04-14" }
+      sku: { name: GlobalStandard, capacity: 100 }
+      tier: background
+      note: "Agent-mesh background priority enforced in app routing (AOAI has no native low-priority SKU). Serialized behind the foreground deployment + account PE/DNS/role to avoid the account-Accepted race on Incremental re-runs."
 
 # ---------------------------------------------------------------------------
-# 9. FOUNDRY AGENT SERVICE (Full depth)
+# 9. AI FOUNDRY HUB + PROJECT — managed agent runtime (GATED)
 # ---------------------------------------------------------------------------
-foundry:
-  agent_service:
-    name: mydude-foundry
-    identity: foundry_agent_identity
-    components:
-      - managed_runtime
-      - gateway
-      - browser
-      - voice_live
-  model_router:
-    name: mydude-model-router
-    constraint: "Must only see the MyDude-granted model set from agents_home.model_team_policy"
-    scope: mydude_granted_deployments_only
-  foundry_maas:
-    enabled: true
-    deployments_from: agents_home.model_team_policy
-  serverless_gpu:
-    enabled: true
-    sku: Standard_NC24ads_A100_v4
-    purpose: "Serverless inference for local-promoted models"
+foundry_hub:
+  hub_name: mydude-foundry
+  project_name: mydude-foundry-project
+  identity: foundry_agent_identity
+  status: GATED                # foundryHubEnabled=false at deploy time
+  reason: "Hub workspace needs a dedicated GPv2 NON-HNS storage account (mydudestg is HNS), Key Vault, App Insights, an AML private endpoint + AML private DNS, and managed-network isolation."
+  note: "AOAI account + both deployments are live and used directly; the managed runtime is deferred until the workspace dependencies are added."
 
 # ---------------------------------------------------------------------------
-# 10. MLFLOW + AZURE MONITOR (lineage / eval)
+# 10. OBSERVABILITY (Azure Monitor)
 # ---------------------------------------------------------------------------
 observability:
-  mlflow:
-    workspace: mydude-mlflow
-    artifact_store: abfss://mlflow-artifacts@mydudestg.dfs.core.windows.net/
-  azure_monitor:
-    workspace: mydude-logs
-    retention_days: 90
-    metrics:
-      - provider_latency
-      - bcs_promotion_count
-      - exec_locus_violations
-      - cloud_shift_triggers
-      - hallucination_risk_score
+  log_analytics: mydude-logs
+  app_insights: mydude-appinsights
+  alerts:
+    - mydude-provider-latency-alert
+  retention_days: 90
 
 # ---------------------------------------------------------------------------
 # 11. EXEC LOCUS DOMAINS
@@ -321,12 +270,12 @@ observability:
 exec_locus_domains:
   in_azure:
     description: "Model must run in the MyDude Azure resource group"
-    pinned_providers: [foundry_maas, serverless_gpu, azure_openai]
+    pinned_providers: [azure_openai, foundry_runtime]
   anthropic_hosted:
     description: "Model must run on Anthropic infrastructure"
     pinned_providers: [anthropic]
   local:
-    description: "Model must run on local sovereign substrate (MLX, Ollama, etc.)"
+    description: "Model must run on the local sovereign substrate (MLX, Ollama, etc.)"
     pinned_providers: [mlx, ollama, qwen3]
 
 # ---------------------------------------------------------------------------
@@ -336,8 +285,8 @@ routing:
   authority: agents_home
   jurisdiction_ladder:
     tier_0: "MyDude jurisdiction (agents_home)"
-    tier_1: "Foundry Model Router (within MyDude-granted Azure deployments)"
-    tier_2: "LiteLLM (within MyDude-granted provider APIs)"
+    tier_1: "Foundry / AOAI model set (MyDude-granted Azure deployments)"
+    tier_2: "LiteLLM (MyDude-granted provider APIs)"
   fallback_tiers:
     1: preferred_model
     2: cloud_shift
@@ -348,7 +297,7 @@ routing:
     name: cloud_shift
     column: agents_home.routing.cloud_shift
     default: true
-    when_false: "Egress to cloud providers is disabled. Only local sovereign stack is used."
+    when_false: "Egress to cloud providers is disabled. Only the local sovereign stack is used."
 
 # ---------------------------------------------------------------------------
 # 13. LOCAL SOVEREIGN STACK
@@ -365,6 +314,20 @@ local_sovereign:
     - provider_home_candidate     # Local candidate store (pre-outbox)
     - local_bcs_path              # Local BCS gate (offline promotion path)
     - offline_route_table         # Static fallback route table
-    - minio_object_store          # MinIO mirroring ADLS offline-sync bucket
+    - minio_object_store          # MinIO mirroring ADLS offline-sync container
   outputs_status: offline_candidate
-  promotion_path: "Local outputs are offline-candidate until outbox replays into cloud BCS gate"
+  promotion_path: "Local outputs are offline-candidate until the outbox replays into the cloud BCS gate"
+
+# ---------------------------------------------------------------------------
+# 14. DEPLOYMENT
+# ---------------------------------------------------------------------------
+deployment:
+  driver: infra/mydude/local/deploy.py
+  sdk_auth: ClientSecretCredential (AZURE_* secrets)
+  mode: Incremental
+  sp_scope: "Owner on RG mydude only — no subscription/tenant-scoped operations"
+  gated_params:
+    fabricEnabled: false
+    foundryHubEnabled: false
+  secret_injection:
+    pgAdminPassword: "from PG_ADMIN_PASSWORD secret at deploy time"

@@ -1,0 +1,27 @@
+# Version control / agent metadata
+.git
+.agents
+.local
+.cache
+.config
+.upm
+
+# Local Python envs / build artifacts
+.venv
+.pythonlibs
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Local-only assets and scratch
+attached_assets
+docs
+tests
+
+# Editor / OS noise
+.DS_Store
+*.swp
+
+# The image installs deps from pyproject.toml + uv.lock; no need to copy these
+node_modules

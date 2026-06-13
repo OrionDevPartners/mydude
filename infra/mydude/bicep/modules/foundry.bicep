@@ -37,6 +37,15 @@ param foundryBrowserEnabled bool = false
 @description('Enable voice capability (Azure Communication Services + Speech). Default false.')
 param foundryVoiceEnabled bool = false
 
+@description('Deploy the AI Foundry Hub + Project + AOAI connection (managed agent runtime). Default true. The Hub workspace requires a dedicated NON-HNS workspace storage account + KeyVault + App Insights + an AML private endpoint/DNS; until that surface is added, set false to ship the AOAI account/deployments (which the app uses directly over the AOAI private endpoint) without the managed runtime.')
+param foundryHubEnabled bool = true
+
+@description('AOAI foreground (interactive) gpt-4.1-mini capacity (x1000 TPM).')
+param aoaiForegroundCapacity int = 250
+
+@description('AOAI background (agent-mesh) gpt-4.1-mini capacity (x1000 TPM).')
+param aoaiBackgroundCapacity int = 100
+
 // ---------------------------------------------------------------------------
 // AOAI Account (private; holds the MyDude-granted model deployments)
 // ---------------------------------------------------------------------------
@@ -127,8 +136,8 @@ resource foundryAoaiUserRoleAssignment 'Microsoft.Authorization/roleAssignments@
 resource gpt41MiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
   parent: aoaiAccount
   name: 'gpt-41-mini'
-  tags: union(tags, { granted_by: 'agents_home.policy.model_team_policy', exec_locus: 'in_azure' })
-  sku: { name: 'GlobalStandard', capacity: 50 }
+  tags: union(tags, { granted_by: 'agents_home.policy.model_team_policy', exec_locus: 'in_azure', tier: 'foreground' })
+  sku: { name: 'GlobalStandard', capacity: aoaiForegroundCapacity }
   properties: {
     model: {
       format: 'OpenAI'
@@ -138,12 +147,37 @@ resource gpt41MiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
     versionUpgradeOption: 'NoAutoUpgrade'
     raiPolicyName: 'Microsoft.DefaultV2'
   }
+  // Account-adjacent ops (PE/DNS/role) re-PUT on Incremental deploys flip the
+  // AOAI account into a transient 'Accepted' state; serialize deployment creates
+  // behind them so they never race the account ("AccountProvisioningStateInvalid").
+  dependsOn: [aoaiPrivateEndpoint, aoaiDnsGroup, foundryAoaiUserRoleAssignment]
+}
+
+// Background (agent-mesh) deployment — same model, separate capacity so the 24/7
+// low-throttle mesh runs isolated from interactive traffic. AOAI serializes deployment
+// operations on an account, so this dependsOn the foreground deployment. Background
+// priority is enforced in app routing (AOAI has no native low-priority SKU).
+resource gpt41MiniBgDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
+  parent: aoaiAccount
+  name: 'gpt-41-mini-bg'
+  tags: union(tags, { granted_by: 'agents_home.policy.model_team_policy', exec_locus: 'in_azure', tier: 'background' })
+  sku: { name: 'GlobalStandard', capacity: aoaiBackgroundCapacity }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: 'gpt-4.1-mini'
+      version: '2025-04-14'
+    }
+    versionUpgradeOption: 'NoAutoUpgrade'
+    raiPolicyName: 'Microsoft.DefaultV2'
+  }
+  dependsOn: [gpt41MiniDeployment]
 }
 
 // ---------------------------------------------------------------------------
 // Azure AI Foundry Hub — workspace that hosts the Agent managed runtime
 // ---------------------------------------------------------------------------
-resource foundryHub 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = {
+resource foundryHub 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = if (foundryHubEnabled) {
   name: '${prefix}-foundry'
   location: location
   tags: union(tags, { role: 'foundry-hub', catalog_write: 'false', scope: 'tool-runtime-only' })
@@ -157,7 +191,9 @@ resource foundryHub 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = 
     description: 'MyDude AI Foundry Hub — tool/runtime scope only. No catalog write.'
     publicNetworkAccess: 'Disabled'
     workspaceHubConfig: {
-      defaultWorkspaceResourceGroup: resourceGroup().name
+      // Must be the FULL resource-group ARM ID (/subscriptions/.../resourceGroups/x),
+      // not just the name, or the RP throws "Error parsing DefaultWorkspaceResourceGroup".
+      defaultWorkspaceResourceGroup: resourceGroup().id
     }
   }
 }
@@ -165,7 +201,7 @@ resource foundryHub 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = 
 // ---------------------------------------------------------------------------
 // Foundry Project — per-application agent project within the hub
 // ---------------------------------------------------------------------------
-resource foundryProject 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = {
+resource foundryProject 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = if (foundryHubEnabled) {
   name: '${prefix}-foundry-project'
   location: location
   tags: union(tags, { role: 'foundry-project', catalog_write: 'false', scope: 'tool-runtime-only' })
@@ -186,7 +222,7 @@ resource foundryProject 'Microsoft.MachineLearningServices/workspaces@2024-04-01
 // metadata.model_router_confinement signals to the app layer which table
 // to query before dispatching — the router never reads the raw deployment list.
 // ---------------------------------------------------------------------------
-resource foundryAoaiConnection 'Microsoft.MachineLearningServices/workspaces/connections@2024-04-01' = {
+resource foundryAoaiConnection 'Microsoft.MachineLearningServices/workspaces/connections@2024-04-01' = if (foundryHubEnabled) {
   parent: foundryProject
   name: '${prefix}-aoai-connection'
   properties: {
@@ -201,6 +237,11 @@ resource foundryAoaiConnection 'Microsoft.MachineLearningServices/workspaces/con
       model_router_confinement: 'agents_home.policy.model_team_policy'
     }
   }
+  // AOAI accounts return from ARM create while still provisioning ("Accepted").
+  // Creating the connection too early fails with AccountProvisioningStateInvalid.
+  // Gate the connection on the model deployments, which only complete once the
+  // account is fully Succeeded.
+  dependsOn: [gpt41MiniDeployment, gpt41MiniBgDeployment]
 }
 
 // ---------------------------------------------------------------------------
@@ -254,11 +295,13 @@ resource speechService 'Microsoft.CognitiveServices/accounts@2024-10-01' = if (f
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
-output foundryHubId string = foundryHub.id
-output foundryProjectId string = foundryProject.id
-output foundryEndpoint string = 'https://${prefix}-foundry.services.ai.azure.com'
+output foundryHubId string = foundryHubEnabled ? foundryHub.id : 'NOT_DEPLOYED (foundryHubEnabled=false)'
+output foundryProjectId string = foundryHubEnabled ? foundryProject.id : 'NOT_DEPLOYED (foundryHubEnabled=false)'
+output foundryEndpoint string = foundryHubEnabled ? 'https://${prefix}-foundry.services.ai.azure.com' : 'NOT_DEPLOYED (foundryHubEnabled=false; AOAI delivered directly via its private endpoint)'
 output aoaiEndpoint string = aoaiAccount.properties.endpoint
 output aoaiAccountId string = aoaiAccount.id
+output foregroundDeploymentName string = gpt41MiniDeployment.name
+output bgDeploymentName string = gpt41MiniBgDeployment.name
 output browserEnabled bool = foundryBrowserEnabled
 output voiceEnabled bool = foundryVoiceEnabled
 output modelRouterConfinementNote string = 'Foundry model router reads agents_home.policy.model_team_policy; AOAI deployment list is never the authority.'

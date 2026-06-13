@@ -30,9 +30,14 @@ resource pgServer 'Microsoft.DBforPostgreSQL/flexibleServers@2023-12-01-preview'
       storageSizeGB: 128
       autoGrow: 'Enabled'
     }
+    // HA mode: eastus2 / this subscription offer restricts Multi-Zone (ZoneRedundant)
+    // HA (MultiAzHaIsOfferRestricted — an exception requires a support ticket). SameZone
+    // HA keeps a hot standby in the SAME availability zone (instance/node failover) and
+    // is not subject to the multi-AZ offer gate. Upgrading to ZoneRedundant later is an
+    // in-place control-plane HA change (server name/FQDN/data preserved) once the offer
+    // allows it — do not pin standbyAvailabilityZone here.
     highAvailability: {
-      mode: 'ZoneRedundant'
-      standbyAvailabilityZone: '2'
+      mode: 'SameZone'
     }
     network: {
       delegatedSubnetResourceId: delegatedSubnetId

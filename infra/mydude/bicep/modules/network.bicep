@@ -53,37 +53,6 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
           privateEndpointNetworkPolicies: 'Disabled'
         }
       }
-      // Databricks public subnet — required for Unity Catalog workspace (no_public_ip mode)
-      // Must be delegated to Microsoft.Databricks/workspaces; /24 satisfies minimum size.
-      {
-        name: '${prefix}-dbr-public'
-        properties: {
-          addressPrefix: '10.10.4.0/24'
-          delegations: [
-            {
-              name: 'dbr-public-delegation'
-              properties: {
-                serviceName: 'Microsoft.Databricks/workspaces'
-              }
-            }
-          ]
-        }
-      }
-      // Databricks private subnet — paired with public subnet for no-public-IP cluster mode
-      {
-        name: '${prefix}-dbr-private'
-        properties: {
-          addressPrefix: '10.10.5.0/24'
-          delegations: [
-            {
-              name: 'dbr-private-delegation'
-              properties: {
-                serviceName: 'Microsoft.Databricks/workspaces'
-              }
-            }
-          ]
-        }
-      }
     ]
   }
 }
@@ -139,16 +108,16 @@ resource storagePrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetwork
   }
 }
 
-// Private DNS Zone for Databricks (UI + API private endpoint)
-resource dbrPrivateDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink.azuredatabricks.net'
+// Private DNS Zone for Cosmos DB (NoSQL / documents)
+resource cosmosPrivateDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.documents.azure.com'
   location: 'global'
   tags: tags
 }
 
-resource dbrPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
-  parent: dbrPrivateDns
-  name: '${prefix}-dbr-dns-link'
+resource cosmosPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: cosmosPrivateDns
+  name: '${prefix}-cosmos-dns-link'
   location: 'global'
   properties: {
     virtualNetwork: { id: vnet.id }
@@ -189,10 +158,8 @@ output vnetId string = vnet.id
 output acaSubnetId string = '${vnet.id}/subnets/${prefix}-aca-subnet'
 output pgSubnetId string = '${vnet.id}/subnets/${prefix}-pg-subnet'
 output peSubnetId string = '${vnet.id}/subnets/${prefix}-pe-subnet'
-output dbrPublicSubnetName string = '${prefix}-dbr-public'
-output dbrPrivateSubnetName string = '${prefix}-dbr-private'
 output pgPrivateDnsZoneId string = pgPrivateDns.id
 output kvPrivateDnsZoneId string = kvPrivateDns.id
 output storagePrivateDnsZoneId string = storagePrivateDns.id
-output dbrPrivateDnsZoneId string = dbrPrivateDns.id
+output cosmosPrivateDnsZoneId string = cosmosPrivateDns.id
 output aoaiPrivateDnsZoneId string = aoaiPrivateDns.id
