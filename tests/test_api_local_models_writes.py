@@ -279,6 +279,53 @@ def test_remove_requires_auth_without_dev_bypass():
     assert resp.headers.get("location") == "/login", resp.headers
 
 
+# -- write-failure mapping ----------------------------------------------------
+
+@contextmanager
+def _writer_raises(name, exc):
+    """Make src.providers.local_registry.<name> raise ``exc`` when called.
+
+    The endpoints import the writer lazily (``from ... import add_model``) at
+    request time, so patching the module attribute is enough to intercept it.
+    """
+    from src.providers import local_registry
+
+    original = getattr(local_registry, name)
+
+    def _boom(*args, **kwargs):
+        raise exc
+
+    setattr(local_registry, name, _boom)
+    try:
+        yield
+    finally:
+        setattr(local_registry, name, original)
+
+
+def test_add_write_failure_returns_500_not_leaking_detail():
+    # An unexpected (non-ValueError) writer failure maps to a 500 with a
+    # generic message — never a 400 and never the raw exception text.
+    with _registry():
+        with _writer_raises("add_model", RuntimeError("disk on fire: /secret/path")):
+            resp = _client().post(
+                "/api/local-models/registry/add",
+                data={"model_id": "llama3.2:3b", "provider": "ollama"},
+            )
+        assert resp.status_code == 500, resp.text
+        assert "disk on fire" not in resp.text, resp.text
+
+
+def test_remove_write_failure_returns_500_not_leaking_detail():
+    with _registry():
+        with _writer_raises("remove_model", RuntimeError("disk on fire: /secret/path")):
+            resp = _client().post(
+                "/api/local-models/registry/remove",
+                data={"model_id": "llama3.2:3b", "provider": "ollama"},
+            )
+        assert resp.status_code == 500, resp.text
+        assert "disk on fire" not in resp.text, resp.text
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
