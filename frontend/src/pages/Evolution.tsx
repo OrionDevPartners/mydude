@@ -461,7 +461,7 @@ export function Evolution() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Evolution Loop"
         subtitle="EXPERIMENTAL: each cognition component evolves its edge truth through isolated thesis trials, weighted-debate consensus, and governance-gated promotion. The loop self-perpetuates — every promotion or rejection seeds the next thesis automatically."

@@ -2,8 +2,9 @@ import { Link } from 'react-router-dom'
 import { getKeyAudit } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, PageHeader, Empty } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { ArrowLeft, FileText } from 'lucide-react'
+import { ArrowLeft, FileText, Shield, Eye, RefreshCw } from 'lucide-react'
 
 function actionBadge(action: string) {
   const map: Record<string, string> = {
@@ -16,12 +17,25 @@ function actionBadge(action: string) {
 export function KeyAudit() {
   const { data, loading, error } = useApi(getKeyAudit, [])
 
+  const creates = data?.entries.filter(e => e.action === 'create').length ?? 0
+  const reveals = data?.entries.filter(e => e.action === 'reveal').length ?? 0
+  const rotates = data?.entries.filter(e => e.action === 'rotate').length ?? 0
+
   return (
-    <div>
+    <div className="animate-fade-in">
       <Link to="/keys" className="btn btn-ghost btn-sm" style={{ marginBottom: 16, paddingLeft: 0 }}>
         <ArrowLeft size={14} /> Back to vault
       </Link>
       <PageHeader title="Key Audit Log" subtitle="All credential vault actions" />
+
+      {data && data.entries.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}>
+          <GlassStatCard value={data.entries.length} label="Total events" icon={<FileText size={16} />} />
+          <GlassStatCard value={creates} label="Created" icon={<Shield size={16} />} glow={creates > 0} />
+          <GlassStatCard value={reveals} label="Revealed" icon={<Eye size={16} />} />
+          <GlassStatCard value={rotates} label="Rotated" icon={<RefreshCw size={16} />} />
+        </div>
+      )}
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
       {error && <Alert type="error">{error}</Alert>}

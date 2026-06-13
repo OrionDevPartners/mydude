@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { getMemory } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Empty } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { Search, Brain, Database } from 'lucide-react'
+import { Search, Brain, Database, Layers, Cloud } from 'lucide-react'
 
 function num(v: unknown): number | null {
   return typeof v === 'number' ? v : null
@@ -20,8 +21,17 @@ export function Memory() {
   const events = data?.substrate_events ?? []
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader title="Memory Explorer" subtitle={`${data?.total ?? 0} memory layers stored`} />
+
+      {data && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 22 }}>
+          <GlassStatCard value={data.total} label="Memory layers" icon={<Brain size={16} />} glow={data.total > 0} />
+          <GlassStatCard value={data.layer_types.length} label="Layer types" icon={<Layers size={16} />} />
+          <GlassStatCard value={localEntries ?? '—'} label="Local KG entries" icon={<Database size={16} />} />
+          <GlassStatCard value={cloudEntries ?? '—'} label="Cloud entries" icon={<Cloud size={16} />} />
+        </div>
+      )}
 
       {sub && (localEntries !== null || cloudEntries !== null) && (
         <Card style={{ padding: '14px 18px', marginBottom: 18 }}>

@@ -679,7 +679,7 @@ export function Fleet() {
   const resources = provData?.resources || []
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Bot Fleet"
         subtitle="Create, deploy, and govern persistent bots and teams"

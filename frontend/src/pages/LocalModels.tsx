@@ -5,6 +5,7 @@ import {
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Badge, Empty } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { Cpu, ExternalLink, RefreshCw, CheckCircle, XCircle, Copy, Check, Database, Plus, Trash2, Pencil, X, Network, Wifi, Save } from 'lucide-react'
 
 export function LocalModels() {
@@ -14,8 +15,10 @@ export function LocalModels() {
   if (error) return <Alert type="error">{error}</Alert>
   if (!data) return null
 
+  const offline = data.total_count - data.reachable_count
+
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Local AI Models"
         subtitle="Run models on your own machine — sovereign, offline inference via Ollama and Apple MLX"
@@ -25,6 +28,13 @@ export function LocalModels() {
           </button>
         }
       />
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 22 }}>
+        <GlassStatCard value={data.reachable_count} label="Reachable" icon={<CheckCircle size={16} />} glow={data.reachable_count > 0} />
+        <GlassStatCard value={offline} label="Offline" icon={<XCircle size={16} />} />
+        <GlassStatCard value={data.total_count} label="Total servers" icon={<Cpu size={16} />} />
+        <GlassStatCard value={data.registry?.length ?? 0} label="Registered models" icon={<Database size={16} />} />
+      </div>
 
       <Card style={{ padding: '14px 18px', marginBottom: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>

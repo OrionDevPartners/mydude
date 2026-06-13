@@ -6,8 +6,9 @@ import {
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, Screenshot, FormField } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { Plus, Trash2, ExternalLink, XCircle, CreditCard, RefreshCw } from 'lucide-react'
+import { Plus, Trash2, ExternalLink, XCircle, CreditCard, RefreshCw, CheckCircle, Search } from 'lucide-react'
 
 const STATUS_COLOR: Record<string, string> = {
   confirmed: 'badge-green', candidate: 'badge-blue',
@@ -47,8 +48,13 @@ export function Subscriptions() {
     finally { setWorking(false) }
   }
 
+  const subs = data?.subscriptions ?? []
+  const confirmedCount = subs.filter(s => s.status === 'confirmed').length
+  const candidateCount = subs.filter(s => s.status === 'candidate').length
+  const pendingCount = subs.filter(s => s.status === 'cancel_pending').length
+
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Subscriptions"
         subtitle="Discover and manage recurring subscriptions"
@@ -57,6 +63,15 @@ export function Subscriptions() {
       {msg && <Alert type="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {err && <Alert type="error" onClose={() => setErr(null)}>{err}</Alert>}
       {result && <SubResult result={result} onClose={() => setResult(null)} />}
+
+      {data && subs.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 22 }}>
+          <GlassStatCard value={subs.length} label="Tracked" icon={<CreditCard size={16} />} />
+          <GlassStatCard value={confirmedCount} label="Confirmed" icon={<CheckCircle size={16} />} glow={confirmedCount > 0} />
+          <GlassStatCard value={candidateCount} label="Candidates" icon={<Search size={16} />} />
+          <GlassStatCard value={pendingCount} label="Cancel pending" icon={<XCircle size={16} />} />
+        </div>
+      )}
 
       <Tabs tabs={['Subscriptions', 'Discover', 'Audit']} active={tab} onChange={setTab} />
 

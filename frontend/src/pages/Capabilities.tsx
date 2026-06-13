@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { getCapabilities, toggleCapability, testBrowser, testSsh, testCode, testHistory, testReceipts, saveEmailConfig, saveSshConfig, TestResult } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, PageHeader, Toggle, FormField, Screenshot } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
 import { Globe, Terminal, Mail, CheckCircle, XCircle, Zap } from 'lucide-react'
 
@@ -31,11 +32,22 @@ export function Capabilities() {
   if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}><Spinner /></div>
   if (error) return <Alert type="error">{error}</Alert>
 
+  const enabledCount = data ? [data.browser_enabled, data.ssh_enabled, data.email_enabled].filter(Boolean).length : 0
+
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader title="Capabilities Console" subtitle="Manage browser, SSH and email automation bridges" />
       {msg && <Alert type="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {testErr && <Alert type="error" onClose={() => setTestErr(null)}>{testErr}</Alert>}
+
+      {data && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 22 }}>
+          <GlassStatCard value={`${enabledCount} / 3`} label="Bridges enabled" icon={<Zap size={16} />} glow={enabledCount > 0} />
+          <GlassStatCard value={data.browser_enabled ? 'On' : 'Off'} label="Browser" icon={<Globe size={16} />} glow={data.browser_enabled} />
+          <GlassStatCard value={data.ssh_enabled ? 'On' : 'Off'} label="SSH bridge" icon={<Terminal size={16} />} glow={data.ssh_enabled} />
+          <GlassStatCard value={data.email_enabled ? 'On' : 'Off'} label="Email / IMAP" icon={<Mail size={16} />} glow={data.email_enabled} />
+        </div>
+      )}
       {data && !data.encryption_persistent && (
         <Alert type="error">
           <strong>ENCRYPTION_KEY is not set.</strong> Saved credentials (Browserbase

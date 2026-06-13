@@ -352,7 +352,7 @@ export function PromptEngine() {
   const [selected, setSelected] = useState<string | null>(null)
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Prompt Engine"
         subtitle="Self-evolving, governance-gated prompt optimization. Evolved prompts go live only through the approval gate; rollback is one click and audited."

@@ -5,10 +5,11 @@ import {
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Modal, FormField, PageHeader, Empty } from '@/components/ui'
-import { fmtDate, statusBadge } from '@/lib/utils'
+import { GlassStatCard, GlassSection } from '@/components/glass'
+import { fmtDate } from '@/lib/utils'
 import {
   Plus, Search, Eye, EyeOff, RefreshCw, Trash2, ToggleLeft, ToggleRight,
-  AlertTriangle, Key, FileText, Filter
+  AlertTriangle, Key, FileText, Lock, ShieldCheck
 } from 'lucide-react'
 
 export function Keys() {
@@ -47,8 +48,11 @@ export function Keys() {
     }
   }
 
+  const activeKeys = data?.keys.filter(k => k.is_active).length ?? 0
+  const totalKeys = data?.keys.length ?? 0
+
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="API Vault"
         subtitle="Encrypted credential storage"
@@ -67,7 +71,6 @@ export function Keys() {
       {msg && <Alert type="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {(err || error) && <Alert type="error" onClose={() => setErr(null)}>{err || error}</Alert>}
 
-      {/* Encryption key persistence warning */}
       {data && !data.encryption_persistent && (
         <Alert type="error">
           <AlertTriangle size={14} /> <strong>ENCRYPTION_KEY is not set.</strong> The
@@ -78,14 +81,21 @@ export function Keys() {
         </Alert>
       )}
 
-      {/* Reminders */}
       {data?.reminders?.map((r, i) => (
         <Alert key={i} type={r.level === 'danger' ? 'error' : 'warn'}>
           <AlertTriangle size={14} /> {r.text}
         </Alert>
       ))}
 
-      {/* Filters */}
+      {data && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}>
+          <GlassStatCard value={totalKeys} label="Total keys" icon={<Key size={16} />} />
+          <GlassStatCard value={activeKeys} label="Active" icon={<ShieldCheck size={16} />} glow={activeKeys > 0} />
+          <GlassStatCard value={totalKeys - activeKeys} label="Disabled" icon={<Lock size={16} />} />
+          <GlassStatCard value={data.used_categories?.length ?? 0} label="Categories" icon={<FileText size={16} />} />
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
           <Search size={14} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
@@ -164,25 +174,13 @@ export function Keys() {
                         >
                           {revealId === key.id ? <EyeOff size={13} /> : <Eye size={13} />}
                         </button>
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          title="Rotate"
-                          onClick={() => setRotateTarget(key)}
-                        >
+                        <button className="btn btn-ghost btn-sm" title="Rotate" onClick={() => setRotateTarget(key)}>
                           <RefreshCw size={13} />
                         </button>
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          title={key.is_active ? 'Disable' : 'Enable'}
-                          onClick={() => handleToggle(key)}
-                        >
+                        <button className="btn btn-ghost btn-sm" title={key.is_active ? 'Disable' : 'Enable'} onClick={() => handleToggle(key)}>
                           {key.is_active ? <ToggleRight size={13} style={{ color: '#34d399' }} /> : <ToggleLeft size={13} />}
                         </button>
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          title="Delete"
-                          onClick={() => setDeleteTarget(key)}
-                        >
+                        <button className="btn btn-ghost btn-sm" title="Delete" onClick={() => setDeleteTarget(key)}>
                           <Trash2 size={13} style={{ color: '#f87171' }} />
                         </button>
                       </div>
@@ -195,7 +193,6 @@ export function Keys() {
         )
       )}
 
-      {/* Add key modal */}
       <AddKeyModal
         open={showAdd}
         catalog={data?.catalog || []}
@@ -205,7 +202,6 @@ export function Keys() {
         onError={setErr}
       />
 
-      {/* Rotate modal */}
       <RotateModal
         target={rotateTarget}
         onClose={() => setRotateTarget(null)}
@@ -213,7 +209,6 @@ export function Keys() {
         onError={setErr}
       />
 
-      {/* Delete confirm */}
       <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Delete key">
         <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 20 }}>
           Delete <strong style={{ color: 'var(--text-primary)' }}>{deleteTarget?.name}</strong>? This cannot be undone.

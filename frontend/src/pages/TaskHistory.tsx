@@ -3,8 +3,9 @@ import { Link } from 'react-router-dom'
 import { getTaskHistory } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Empty } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { fmtDate, fmtMs, statusBadge, truncate } from '@/lib/utils'
-import { Clock, ChevronRight, ChevronLeft, History } from 'lucide-react'
+import { Clock, ChevronRight, ChevronLeft, History, CheckCircle, XCircle, Zap } from 'lucide-react'
 import type { Task } from '@/lib/api'
 
 function taskDomain(task: Task): string | null {
@@ -20,9 +21,21 @@ export function TaskHistory() {
   const [page, setPage] = useState(1)
   const { data, loading, error } = useApi(() => getTaskHistory(page), [page])
 
+  const completed = data?.tasks.filter(t => t.status === 'completed').length ?? 0
+  const failed = data?.tasks.filter(t => t.status === 'failed' || t.status === 'error').length ?? 0
+
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader title="Task History" subtitle="All AI task runs" />
+
+      {data && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
+          <GlassStatCard value={data.total_pages > 1 ? `${data.tasks.length}+` : data.tasks.length} label="Tasks (page)" icon={<History size={16} />} />
+          <GlassStatCard value={completed} label="Completed" icon={<CheckCircle size={16} />} glow={completed > 0} />
+          <GlassStatCard value={failed} label="Failed" icon={<XCircle size={16} />} />
+          <GlassStatCard value={`${data.page} / ${data.total_pages}`} label="Page" icon={<Zap size={16} />} />
+        </div>
+      )}
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
       {error && <Alert type="error">{error}</Alert>}
@@ -78,21 +91,13 @@ export function TaskHistory() {
 
           {data.total_pages > 1 && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 20 }}>
-              <button
-                className="btn btn-secondary btn-sm"
-                disabled={page <= 1}
-                onClick={() => setPage(p => p - 1)}
-              >
+              <button className="btn btn-secondary btn-sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
                 <ChevronLeft size={14} /> Prev
               </button>
               <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                 Page {data.page} of {data.total_pages}
               </span>
-              <button
-                className="btn btn-secondary btn-sm"
-                disabled={page >= data.total_pages}
-                onClick={() => setPage(p => p + 1)}
-              >
+              <button className="btn btn-secondary btn-sm" disabled={page >= data.total_pages} onClick={() => setPage(p => p + 1)}>
                 Next <ChevronRight size={14} />
               </button>
             </div>

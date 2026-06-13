@@ -5,6 +5,7 @@ import {
 import { useApi } from '@/hooks/useApi'
 import { useAuth } from '@/contexts/AuthContext'
 import { Spinner, Alert, Modal, FormField, PageHeader, Empty } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
 import {
   Plus, UserPlus, Trash2, ToggleLeft, ToggleRight, KeyRound, ShieldCheck, Users as UsersIcon,
@@ -82,8 +83,11 @@ export function Users() {
     }
   }
 
+  const activeCount = data?.users.filter(u => u.is_active).length ?? 0
+  const adminCount = data?.users.filter(u => u.is_admin).length ?? 0
+
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Users"
         subtitle="Individual operator accounts — each action is attributable and revocable"
@@ -96,6 +100,14 @@ export function Users() {
 
       {msg && <Alert type="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {err && <Alert type="error" onClose={() => setErr(null)}>{err}</Alert>}
+
+      {data && data.users.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}>
+          <GlassStatCard value={data.users.length} label="Total users" icon={<UsersIcon size={16} />} />
+          <GlassStatCard value={activeCount} label="Active" icon={<ToggleRight size={16} />} glow={activeCount > 0} />
+          <GlassStatCard value={adminCount} label="Admins" icon={<ShieldCheck size={16} />} />
+        </div>
+      )}
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
       {error && <Alert type="error">{error}</Alert>}

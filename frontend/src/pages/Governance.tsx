@@ -3,8 +3,9 @@ import { useSearchParams } from 'react-router-dom'
 import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend, resetSwarmMetrics } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, Tabs, PageHeader, Empty } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse } from 'lucide-react'
+import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse, Activity } from 'lucide-react'
 
 const EP_COLORS: Record<string, string> = {
   verified: '#34d399',
@@ -80,7 +81,7 @@ export function Governance() {
   if (error) return <Alert type="error">{error}</Alert>
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Governance"
         subtitle="Sentinel alerts, performance ledger and provider metrics"
@@ -88,6 +89,15 @@ export function Governance() {
           <span className="badge badge-red">{data.open_alerts} open</span>
         ) : undefined}
       />
+
+      {data && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 22 }}>
+          <GlassStatCard value={data.open_alerts ?? 0} label="Open alerts" icon={<Bell size={16} />} glow={(data.open_alerts ?? 0) === 0} />
+          <GlassStatCard value={data.total_metrics ?? 0} label="Metric events" icon={<BarChart2 size={16} />} />
+          <GlassStatCard value={data.metrics?.length ?? 0} label="Providers" icon={<Server size={16} />} />
+          <GlassStatCard value={data.cloud_shift_active ? 'Cloud' : 'Local'} label="Routing mode" icon={<Activity size={16} />} glow={data.cloud_shift_active} />
+        </div>
+      )}
 
       <Tabs tabs={['Alerts', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction']} active={tab} onChange={setTab} />
 

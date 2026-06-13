@@ -2,12 +2,13 @@ import { useParams, Link } from 'react-router-dom'
 import { getTask } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader } from '@/components/ui'
+import { GlassCard, GlassStatCard, GlassDivider } from '@/components/glass'
 import { fmtDate, fmtMs, statusBadge } from '@/lib/utils'
 import {
   AssistantMessage, UserMessage, ReasoningMessage, SourcesMessage,
   CodeBlock, ScoreBar, MessageThread,
 } from '@/components/ai-elements'
-import { ArrowLeft, Clock, MapPin } from 'lucide-react'
+import { ArrowLeft, Clock, MapPin, ShieldCheck, Zap } from 'lucide-react'
 
 function riskColor(v: number) {
   if (v < 0.35) return '#34d399'
@@ -52,51 +53,52 @@ export function TaskDetail() {
     : (scores.jurisdiction != null ? String(scores.jurisdiction) : null)
 
   return (
-    <div>
-      <div style={{ marginBottom: 20 }}>
-        <Link to="/history" className="btn btn-ghost btn-sm" style={{ marginBottom: 14, paddingLeft: 0 }}>
-          <ArrowLeft size={14} /> Back to history
-        </Link>
-        <PageHeader
-          title={`Task #${task.id}`}
-          subtitle={`Created ${fmtDate(task.created_at)}`}
-          actions={<span className={`badge ${statusBadge(task.status)}`} style={{ fontSize: 13 }}>{task.status}</span>}
-        />
-      </div>
+    <div className="animate-fade-in">
+      <Link to="/history" className="btn btn-ghost btn-sm" style={{ marginBottom: 14, paddingLeft: 0 }}>
+        <ArrowLeft size={14} /> Back to history
+      </Link>
 
-      {/* Meta row */}
-      <div style={{ display: 'flex', gap: 16, marginBottom: 22, flexWrap: 'wrap' }}>
+      <PageHeader
+        title={`Task #${task.id}`}
+        subtitle={`Created ${fmtDate(task.created_at)}`}
+        actions={<span className={`badge ${statusBadge(task.status)}`} style={{ fontSize: 13 }}>{task.status}</span>}
+      />
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 22 }}>
         {task.execution_time_ms != null && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)' }}>
-            <Clock size={12} /> {fmtMs(task.execution_time_ms)}
-          </div>
+          <GlassStatCard value={fmtMs(task.execution_time_ms)} label="Execution time" icon={<Clock size={16} />} />
         )}
+        <GlassStatCard value={task.status} label="Status" icon={<Zap size={16} />} glow={task.status === 'completed'} />
         {jurText && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)' }}>
-            <MapPin size={12} /> {jurText}
-          </div>
+          <GlassStatCard value={jurText} label="Jurisdiction" icon={<MapPin size={16} />} />
+        )}
+        {scores.compliance != null && typeof scores.compliance === 'number' && (
+          <GlassStatCard
+            value={`${(scores.compliance * 100).toFixed(0)}%`}
+            label="Compliance"
+            icon={<ShieldCheck size={16} />}
+            glow={(scores.compliance as number) > 0.65}
+          />
         )}
       </div>
 
-      {/* Governance scores */}
       {hasScores && (
-        <Card style={{ padding: '18px 20px', marginBottom: 20 }}>
-          <p style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14 }}>Governance scores</p>
+        <GlassCard padding="18px 20px" style={{ marginBottom: 20 }}>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14 }}>
+            Governance Scores
+          </p>
           {scores.hallucination_risk != null && typeof scores.hallucination_risk === 'number' && (
             <ScoreBar label="Hallucination Risk" value={scores.hallucination_risk as number} colorFn={riskColor} />
           )}
           {scores.compliance != null && typeof scores.compliance === 'number' && (
             <ScoreBar label="Compliance Score" value={scores.compliance as number} colorFn={complianceColor} />
           )}
-        </Card>
+        </GlassCard>
       )}
 
-      {/* Conversation thread */}
       <MessageThread>
-        {/* User prompt */}
         <UserMessage>{task.prompt}</UserMessage>
 
-        {/* Main AI response */}
         <AssistantMessage
           timestamp={task.execution_time_ms ? fmtMs(task.execution_time_ms) : undefined}
           badge={<span className={`badge ${statusBadge(task.status)}`}>{task.status}</span>}
@@ -105,27 +107,23 @@ export function TaskDetail() {
             {mainText ?? (task.result ?? '(no output)')}
           </div>
 
-          {/* Inline code block */}
           {codeContent && typeof codeContent === 'string' && (
             <div style={{ marginTop: 16 }}>
               <CodeBlock code={codeContent} />
             </div>
           )}
 
-          {/* Sources */}
           {sources && Array.isArray(sources) && sources.length > 0 && (
             <SourcesMessage sources={sources as string[]} />
           )}
         </AssistantMessage>
 
-        {/* Reasoning trace */}
         {reasoning && (
           <ReasoningMessage defaultOpen={false}>
             {typeof reasoning === 'object' ? JSON.stringify(reasoning, null, 2) : String(reasoning)}
           </ReasoningMessage>
         )}
 
-        {/* Additional parsed sections (debates, waves, etc.) */}
         {parsed && Object.entries(parsed)
           .filter(([k]) => !mainKeys.includes(k) && !skipKeys.has(k) && k !== 'REASONING' && k !== 'reasoning' && k !== 'DEBATE_SUMMARY' && k !== 'SOURCES' && k !== 'sources' && k !== 'CODE' && k !== 'code' && k !== 'CODE_BLOCK')
           .map(([key, val]) => (
@@ -136,7 +134,6 @@ export function TaskDetail() {
         }
       </MessageThread>
 
-      {/* Raw JSON toggle */}
       {task.result && (
         <details style={{ marginTop: 22 }}>
           <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)', userSelect: 'none', fontWeight: 600 }}>

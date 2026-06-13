@@ -48,7 +48,7 @@ export function Finance() {
   }
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Finance"
         subtitle="QuickBooks + Plaid — read-only by default, writes behind approval"

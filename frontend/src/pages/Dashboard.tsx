@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { getDashboard, runTask, getTask, type Task } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader } from '@/components/ui'
+import { GlassStatCard, GlassSection } from '@/components/glass'
 import { fmtDate, fmtMs, statusBadge, truncate } from '@/lib/utils'
 import {
   PromptInput, PromptInputBody, PromptInputTextarea,
@@ -10,7 +11,7 @@ import {
   UserMessage, AssistantMessage, ReasoningMessage,
   SourcesMessage, CodeBlock, ThinkingIndicator, ScoreBar, MessageThread,
 } from '@/components/ai-elements'
-import { ChevronRight, Clock, Key, MapPin } from 'lucide-react'
+import { ChevronRight, Clock, Key, MapPin, Zap, CheckCircle, History } from 'lucide-react'
 
 function riskColor(v: number): string {
   if (v < 0.35) return '#34d399'
@@ -39,53 +40,37 @@ function ResultPanel({ task, prompt }: { task: Task; prompt: string }) {
 
   return (
     <MessageThread>
-      {/* User prompt bubble */}
       <UserMessage>{prompt}</UserMessage>
 
-      {/* Scores strip */}
       {scores && (
         <div className="ai-scores-strip">
           {scores.hallucination_risk != null && typeof scores.hallucination_risk === 'number' && (
             <div style={{ minWidth: 200 }}>
-              <ScoreBar
-                label="Hallucination Risk"
-                value={scores.hallucination_risk as number}
-                colorFn={riskColor}
-              />
+              <ScoreBar label="Hallucination Risk" value={scores.hallucination_risk as number} colorFn={riskColor} />
             </div>
           )}
           {scores.compliance != null && typeof scores.compliance === 'number' && (
             <div style={{ minWidth: 200 }}>
-              <ScoreBar
-                label="Compliance Score"
-                value={scores.compliance as number}
-                colorFn={v => v > 0.65 ? '#34d399' : v > 0.35 ? '#fbbf24' : '#f87171'}
-              />
+              <ScoreBar label="Compliance Score" value={scores.compliance as number} colorFn={v => v > 0.65 ? '#34d399' : v > 0.35 ? '#fbbf24' : '#f87171'} />
             </div>
           )}
         </div>
       )}
 
-      {/* Main AI response */}
       <AssistantMessage timestamp={ts} badge={statusEl}>
         <div style={{ lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>
           {mainText ?? fallbackText}
         </div>
-
-        {/* Code block if present */}
         {codeBlocks && typeof codeBlocks === 'string' && (
           <div style={{ marginTop: 14 }}>
             <CodeBlock code={codeBlocks} />
           </div>
         )}
-
-        {/* Sources */}
         {sources && Array.isArray(sources) && sources.length > 0 && (
           <SourcesMessage sources={sources as string[]} />
         )}
       </AssistantMessage>
 
-      {/* Reasoning trace */}
       {reasoning && (
         <ReasoningMessage>
           {typeof reasoning === 'object' ? JSON.stringify(reasoning, null, 2) : String(reasoning)}
@@ -127,7 +112,6 @@ export function Dashboard() {
 
     try {
       const { task_id } = await runTask(p, domain)
-      // Poll for completion
       const iv = setInterval(async () => {
         try {
           const task = await getTask(task_id)
@@ -149,8 +133,10 @@ export function Dashboard() {
     }
   }
 
+  const completedTasks = data?.recent_tasks?.filter(t => t.status === 'completed').length ?? 0
+
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader title="AI Task Runner" subtitle="Ask MyDude to automate your business workflows" />
 
       {!data?.has_keys && (
@@ -160,79 +146,113 @@ export function Dashboard() {
         </div>
       )}
 
-      {/* Prompt card */}
-      <Card style={{ marginBottom: 24 }}>
-        <div style={{ padding: '16px 20px 14px' }}>
-          <PromptInput
-            value={prompt}
-            onChange={setPrompt}
-            onSubmit={handleRun}
-            status={running ? 'submitted' : 'ready'}
-          >
-            <PromptInputBody>
-              <PromptInputTextarea
-                placeholder="Ask MyDude to draft a proposal, research a topic, analyze data, automate a workflow…"
-              />
-            </PromptInputBody>
-            <PromptInputActions>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
-                <MapPin size={13} />
-                <select
-                  className="form-input"
-                  value={domain}
-                  onChange={e => setDomain(e.target.value)}
-                  disabled={running}
-                  title="Route this request to a jurisdiction domain"
-                  style={{ padding: '4px 8px', fontSize: 12, height: 'auto', width: 'auto' }}
-                >
-                  {domains.map(d => (
-                    <option key={d} value={d}>{domainLabel(d)}</option>
-                  ))}
-                </select>
-              </label>
-              <PromptInputActionSend />
-            </PromptInputActions>
-          </PromptInput>
+      {data && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
+          <GlassStatCard
+            value={data.recent_tasks.length}
+            label="Recent tasks"
+            icon={<History size={16} />}
+          />
+          <GlassStatCard
+            value={completedTasks}
+            label="Completed"
+            icon={<CheckCircle size={16} />}
+            glow={completedTasks > 0}
+          />
+          <GlassStatCard
+            value={data.has_keys ? 'Active' : 'None'}
+            label="API keys"
+            icon={<Key size={16} />}
+            glow={data.has_keys}
+          />
+          <GlassStatCard
+            value={domains.length}
+            label="Domains"
+            icon={<MapPin size={16} />}
+          />
         </div>
+      )}
 
-        {runError && (
-          <div style={{ padding: '0 20px 16px' }}>
-            <Alert type="error">{runError}</Alert>
+      <GlassSection title="Run a Task" className="animate-fade-in-up">
+        <div className="glass-card-glow" style={{ borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
+          <div style={{ padding: '16px 20px 14px' }}>
+            <PromptInput
+              value={prompt}
+              onChange={setPrompt}
+              onSubmit={handleRun}
+              status={running ? 'submitted' : 'ready'}
+            >
+              <PromptInputBody>
+                <PromptInputTextarea
+                  placeholder="Ask MyDude to draft a proposal, research a topic, analyze data, automate a workflow…"
+                />
+              </PromptInputBody>
+              <PromptInputActions>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+                  <MapPin size={13} />
+                  <select
+                    className="form-input"
+                    value={domain}
+                    onChange={e => setDomain(e.target.value)}
+                    disabled={running}
+                    title="Route this request to a jurisdiction domain"
+                    style={{ padding: '4px 8px', fontSize: 12, height: 'auto', width: 'auto' }}
+                  >
+                    {domains.map(d => (
+                      <option key={d} value={d}>{domainLabel(d)}</option>
+                    ))}
+                  </select>
+                </label>
+                <PromptInputActionSend />
+              </PromptInputActions>
+            </PromptInput>
           </div>
-        )}
 
-        {/* Thinking state */}
-        {running && !currentTask && (
-          <div style={{ padding: '4px 20px 18px', borderTop: '1px solid var(--border)' }}>
-            <ThinkingIndicator />
-          </div>
-        )}
+          {runError && (
+            <div style={{ padding: '0 20px 16px' }}>
+              <Alert type="error">{runError}</Alert>
+            </div>
+          )}
 
-        {/* Result */}
-        {(currentTask || (running && submittedPrompt)) && (
-          <div style={{ padding: '4px 20px 20px', borderTop: '1px solid var(--border)' }}>
-            {currentTask
-              ? <ResultPanel task={currentTask} prompt={submittedPrompt} />
-              : running && <ThinkingIndicator />}
-          </div>
-        )}
-      </Card>
+          {running && !currentTask && (
+            <div style={{ padding: '4px 20px 18px', borderTop: '1px solid var(--border)' }}>
+              <ThinkingIndicator />
+            </div>
+          )}
 
-      {/* Recent tasks */}
+          {(currentTask || (running && submittedPrompt)) && (
+            <div style={{ padding: '4px 20px 20px', borderTop: '1px solid var(--border)' }}>
+              {currentTask
+                ? <ResultPanel task={currentTask} prompt={submittedPrompt} />
+                : running && <ThinkingIndicator />}
+            </div>
+          )}
+        </div>
+      </GlassSection>
+
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
       {error && <Alert type="error">{error}</Alert>}
+
       {data && data.recent_tasks.length > 0 && (
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-            <h2 style={{ fontSize: 15, fontWeight: 700 }}>Recent tasks</h2>
+        <GlassSection
+          title="Recent Tasks"
+          actions={
             <Link to="/history" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
               View all <ChevronRight size={13} />
             </Link>
-          </div>
+          }
+        >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {data.recent_tasks.map(task => (
-              <Link key={task.id} to={`/tasks/${task.id}`} style={{ textDecoration: 'none' }}>
+            {data.recent_tasks.map((task, i) => (
+              <Link key={task.id} to={`/tasks/${task.id}`} style={{ textDecoration: 'none' }} className="animate-fade-in-up" style={{ animationDelay: `${i * 40}ms` }}>
                 <Card style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                    background: 'var(--accent-dim)', border: '1px solid var(--border-accent)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Zap size={14} style={{ color: 'var(--accent)' }} />
+                  </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ fontSize: 13.5, color: 'var(--text-primary)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {truncate(task.prompt, 80)}
@@ -248,7 +268,7 @@ export function Dashboard() {
               </Link>
             ))}
           </div>
-        </div>
+        </GlassSection>
       )}
     </div>
   )

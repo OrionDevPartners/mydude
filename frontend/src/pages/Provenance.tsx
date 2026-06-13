@@ -2,21 +2,46 @@ import { useState } from 'react'
 import { getProvenance } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, PageHeader, Empty } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { Search, ChevronLeft, ChevronRight, GitBranch } from 'lucide-react'
+import { Search, ChevronLeft, ChevronRight, GitBranch, CheckCircle, AlertTriangle } from 'lucide-react'
+
+function confColor(c: number): string {
+  if (c >= 0.8) return '#34d399'
+  if (c >= 0.5) return '#fbbf24'
+  return '#f87171'
+}
 
 export function Provenance() {
   const [q, setQ] = useState('')
   const [page, setPage] = useState(1)
   const { data, loading, error } = useApi(() => getProvenance({ q: q || undefined, page }), [q, page])
 
+  const verified = data?.records.filter(r => r.verified).length ?? 0
+  const highConf = data?.records.filter(r => r.confidence != null && r.confidence >= 0.8).length ?? 0
+
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader title="Claim Provenance" subtitle="Track the origin and confidence of AI-generated claims" />
+
+      {data && data.total > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}>
+          <GlassStatCard value={data.total} label="Total claims" icon={<GitBranch size={16} />} />
+          <GlassStatCard value={verified} label="Verified (page)" icon={<CheckCircle size={16} />} glow={verified > 0} />
+          <GlassStatCard value={highConf} label="High confidence" icon={<AlertTriangle size={16} />} />
+          <GlassStatCard value={`${data.page} / ${data.total_pages}`} label="Page" icon={<Search size={16} />} />
+        </div>
+      )}
 
       <div style={{ position: 'relative', marginBottom: 18 }}>
         <Search size={14} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-        <input className="form-input" style={{ paddingLeft: 34 }} placeholder="Search claims…" value={q} onChange={e => { setQ(e.target.value); setPage(1) }} />
+        <input
+          className="form-input"
+          style={{ paddingLeft: 34 }}
+          placeholder="Search claims…"
+          value={q}
+          onChange={e => { setQ(e.target.value); setPage(1) }}
+        />
       </div>
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
@@ -24,13 +49,14 @@ export function Provenance() {
 
       {data && (
         <>
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>{data.total} records</p>
           {data.records.length === 0
             ? <Empty message="No provenance records yet." icon={<GitBranch size={32} />} />
             : (
               <div className="glass-card" style={{ overflow: 'hidden' }}>
                 <table className="data-table">
-                  <thead><tr><th>Claim</th><th>Role</th><th>Provider</th><th>Confidence</th><th>Verified</th><th>Time</th></tr></thead>
+                  <thead>
+                    <tr><th>Claim</th><th>Role</th><th>Provider</th><th>Confidence</th><th>Verified</th><th>Time</th></tr>
+                  </thead>
                   <tbody>
                     {data.records.map(r => (
                       <tr key={r.id}>
@@ -55,19 +81,17 @@ export function Provenance() {
           }
           {data.total_pages > 1 && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 18 }}>
-              <button className="btn btn-secondary btn-sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}><ChevronLeft size={14} /> Prev</button>
+              <button className="btn btn-secondary btn-sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+                <ChevronLeft size={14} /> Prev
+              </button>
               <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Page {data.page} of {data.total_pages}</span>
-              <button className="btn btn-secondary btn-sm" disabled={page >= data.total_pages} onClick={() => setPage(p => p + 1)}>Next <ChevronRight size={14} /></button>
+              <button className="btn btn-secondary btn-sm" disabled={page >= data.total_pages} onClick={() => setPage(p => p + 1)}>
+                Next <ChevronRight size={14} />
+              </button>
             </div>
           )}
         </>
       )}
     </div>
   )
-}
-
-function confColor(c: number): string {
-  if (c >= 0.8) return '#34d399'
-  if (c >= 0.5) return '#fbbf24'
-  return '#f87171'
 }

@@ -38,7 +38,7 @@ export function Avatar() {
   }
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Avatar"
         subtitle="Persona + voice + real-time avatar identity for your bots — AI-use disclosure and recording consent enforced on every call"

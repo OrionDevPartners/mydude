@@ -51,7 +51,7 @@ export function Coach() {
   }
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <PageHeader
         title="Coach"
         subtitle="Empathetic life-coach + secretary — private by design, every outbound action approval-gated"
