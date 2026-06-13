@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend, resetSwarmMetrics } from '@/lib/api'
+import type { GovernanceProposal } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, Tabs, PageHeader, Empty } from '@/components/ui'
 import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse, Activity } from 'lucide-react'
+import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse, Activity, Vote } from 'lucide-react'
 
 const EP_COLORS: Record<string, string> = {
   verified: '#34d399',
@@ -96,10 +97,11 @@ export function Governance() {
           <GlassStatCard value={data.total_metrics ?? 0} label="Metric events" icon={<BarChart2 size={16} />} />
           <GlassStatCard value={data.metrics?.length ?? 0} label="Providers" icon={<Server size={16} />} />
           <GlassStatCard value={data.cloud_shift_active ? 'Cloud' : 'Local'} label="Routing mode" icon={<Activity size={16} />} glow={data.cloud_shift_active} />
+          <GlassStatCard value={data.open_proposals ?? 0} label="Open proposals" icon={<Vote size={16} />} />
         </div>
       )}
 
-      <Tabs tabs={['Alerts', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction']} active={tab} onChange={setTab} />
+      <Tabs tabs={['Alerts', 'Proposals', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction']} active={tab} onChange={setTab} />
 
       {tab === 'Alerts' && data && (
         data.alerts.length === 0
@@ -127,6 +129,26 @@ export function Governance() {
                   )}
                 </div>
               ))}
+            </div>
+          )
+      )}
+
+      {tab === 'Proposals' && data && (
+        (data.proposals?.length ?? 0) === 0 && (data.recent_proposals?.length ?? 0) === 0
+          ? <Empty message="No governance proposals yet. The auditor and sentinel raise proposals automatically when they detect a tuning, policy, or safety concern." icon={<Vote size={32} />} />
+          : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                A proposal must clear a minimum participation floor before quorum can auto-enact or auto-reject it —
+                a single unanimous vote can't decide on its own. This view is read-only.
+              </p>
+              {(data.proposals ?? []).map(p => <ProposalCard key={p.id} p={p} />)}
+              {(data.recent_proposals?.length ?? 0) > 0 && (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginTop: 8 }}>Recently resolved</div>
+                  {(data.recent_proposals ?? []).map(p => <ProposalCard key={p.id} p={p} />)}
+                </>
+              )}
             </div>
           )
       )}
@@ -395,6 +417,90 @@ function scoreColor(score: number): string {
   if (score >= 0.8) return '#34d399'
   if (score >= 0.5) return '#fbbf24'
   return '#f87171'
+}
+
+function trackBadge(track: string): string {
+  if (track === 'safety') return 'badge-red'
+  if (track === 'policy') return 'badge-yellow'
+  return 'badge-blue'
+}
+
+function statusBadge(status: string): string {
+  if (status === 'enacted') return 'badge-green'
+  if (status === 'rejected') return 'badge-red'
+  if (status === 'open') return 'badge-blue'
+  return 'badge-gray'
+}
+
+function ProposalCard({ p }: { p: GovernanceProposal }) {
+  const yesPct = Math.round((p.yes_ratio ?? 0) * 100)
+  const quorumPct = Math.round((p.quorum_threshold ?? 0) * 100)
+  const quorumMet = p.total_effective > 0 && (p.yes_ratio ?? 0) >= (p.quorum_threshold ?? 0)
+  const part = p.participation
+  // When a weight floor is active, the meter tracks the binding constraint (the
+  // dimension furthest from being met) so it never reads "full" while one of the
+  // two floor dimensions is still short.
+  const partProgress = part
+    ? (part.min_weight > 0 ? Math.min(part.voters_progress, part.weight_progress) : part.voters_progress)
+    : 0
+  const partPct = Math.round(partProgress * 100)
+  const hasVotes = p.total_effective > 0 || p.vote_count > 0
+  return (
+    <div className="glass-card" style={{ padding: '14px 18px', opacity: p.status === 'open' ? 1 : 0.7 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11.5, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{p.proposal_id}</span>
+        <span className={`badge ${trackBadge(p.track)}`}>{p.track}</span>
+        <span className={`badge ${statusBadge(p.status)}`}>{p.status}</span>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>{fmtDate(p.created_at)}</span>
+      </div>
+      <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)', marginBottom: p.proposed_action ? 2 : 10 }}>{p.title}</div>
+      {p.proposed_action && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>→ {p.proposed_action}</div>
+      )}
+      {hasVotes ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
+          <Meter
+            label={`${yesPct}% yes`}
+            sub={`quorum ${quorumPct}% · ${p.vote_count} vote${p.vote_count === 1 ? '' : 's'}`}
+            fillPct={yesPct}
+            markerPct={quorumPct}
+            met={quorumMet}
+          />
+          <Meter
+            label={`${part?.participation_voters ?? 0}/${part?.min_voters ?? 0} voters`}
+            sub={
+              (part && part.min_weight > 0 ? `wt ${part.participation_weight}/${part.min_weight} · ` : '') +
+              (part?.participation_met ? 'floor met' : 'held open below floor')
+            }
+            fillPct={partPct}
+            met={!!part?.participation_met}
+          />
+        </div>
+      ) : (
+        <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>No votes yet.</p>
+      )}
+    </div>
+  )
+}
+
+function Meter({ label, sub, fillPct, markerPct, met }: {
+  label: string; sub: string; fillPct: number; markerPct?: number; met: boolean
+}) {
+  const clamped = Math.max(0, Math.min(100, fillPct))
+  return (
+    <div>
+      <div style={{ position: 'relative', height: 8, background: 'rgba(255,255,255,0.08)', border: '1px solid var(--border, rgba(255,255,255,0.1))', borderRadius: 4, overflow: 'hidden' }}>
+        <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, width: `${clamped}%`, background: met ? '#34d399' : '#60a5fa' }} />
+        {typeof markerPct === 'number' && (
+          <div style={{ position: 'absolute', top: 0, bottom: 0, left: `${Math.max(0, Math.min(100, markerPct))}%`, width: 2, background: 'var(--text-primary)' }} title={`Quorum ${markerPct}%`} />
+        )}
+      </div>
+      <div style={{ fontSize: 11.5, marginTop: 4 }}>
+        <span style={{ fontWeight: 600, color: met ? '#34d399' : 'var(--text-secondary)' }}>{label}</span>
+        <span style={{ color: 'var(--text-muted)' }}> · {sub}</span>
+      </div>
+    </div>
+  )
 }
 
 function Stat({ value, label, color }: { value: string; label: string; color?: string }) {

@@ -863,6 +863,50 @@ async def api_governance(request: Request, _=Depends(require_auth)):
                 "avg_rating": round(r.avg_rating, 2) if r.avg_rating is not None else None,
             })
         total_metrics = db.query(ProviderMetric).count()
+
+        # Governance proposals (read-only) with quorum + participation progress.
+        from src.models import GovernanceProposal
+        from src.swarm.governance_engine import GovernanceEngine
+        _ge = GovernanceEngine()
+
+        def _ser_proposal(p):
+            try:
+                tally = _ge._resolve_vote_tally(db, p.id)
+            except Exception:
+                tally = {
+                    "yes": 0.0, "no": 0.0, "abstain": 0.0, "total_effective": 0.0,
+                    "participation_weight": 0.0, "yes_ratio": 0.0, "vote_count": 0,
+                    "delegation_map": {},
+                }
+            participation = _ge.participation_status(tally, p.track)
+            return {
+                "id": p.id, "proposal_id": p.proposal_id, "title": p.title,
+                "track": p.track, "origin": p.origin, "status": p.status,
+                "proposed_action": p.proposed_action or "",
+                "quorum_threshold": p.quorum_threshold or 0.0,
+                "yes": tally["yes"], "no": tally["no"], "abstain": tally["abstain"],
+                "yes_ratio": tally["yes_ratio"],
+                "total_effective": tally["total_effective"],
+                "vote_count": tally["vote_count"],
+                "participation": participation,
+                "created_at": _dt(p.created_at),
+            }
+
+        open_props = (
+            db.query(GovernanceProposal)
+            .filter(GovernanceProposal.status == "open")
+            .order_by(GovernanceProposal.created_at.desc())
+            .limit(50).all()
+        )
+        recent_props = (
+            db.query(GovernanceProposal)
+            .filter(GovernanceProposal.status != "open")
+            .order_by(GovernanceProposal.created_at.desc())
+            .limit(15).all()
+        )
+        proposals = [_ser_proposal(p) for p in open_props]
+        recent_proposals = [_ser_proposal(p) for p in recent_props]
+        open_proposals = len(open_props)
     finally:
         db.close()
 
@@ -900,6 +944,9 @@ async def api_governance(request: Request, _=Depends(require_auth)):
         "governance_proposal_failures": governance_proposal_failures,
         "metrics_reset_at": metrics_reset_at,
         "metrics_reset_by": metrics_reset_by,
+        "proposals": proposals,
+        "recent_proposals": recent_proposals,
+        "open_proposals": open_proposals,
     }
 
 

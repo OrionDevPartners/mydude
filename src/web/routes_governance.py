@@ -189,12 +189,14 @@ async def governance(request: Request, _=Depends(require_auth)):
         for p in proposals:
             try:
                 tally = _ge._resolve_vote_tally(db, p.id)
+                tally["participation"] = _ge.participation_status(tally, p.track)
                 proposal_tallies[p.id] = tally
             except Exception:
                 proposal_tallies[p.id] = {
                     "yes": 0.0, "no": 0.0, "abstain": 0.0,
-                    "total_effective": 0.0, "yes_ratio": 0.0,
-                    "vote_count": 0, "delegation_map": {},
+                    "total_effective": 0.0, "participation_weight": 0.0,
+                    "yes_ratio": 0.0, "vote_count": 0, "delegation_map": {},
+                    "participation": _ge.participation_status({}, p.track),
                 }
 
         enactments = (

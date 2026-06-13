@@ -29,3 +29,4 @@
 - [Secret/env staleness](secret-env-staleness.md) — agent bash snapshots env; read live secret from workflow /proc/PID/environ, compare SHA fingerprints; Gemini disabled-API gotcha.
 - [Non-secret settings → env mirror](settings-env-mirror.md) — app_settings values mirrored to os.environ on write+boot so swarm picks them up restart-free; patch settings_store.SessionLocal to test.
 - [Orchestrator→dashboard shape](orchestrator-dashboard-shape.md) — run endpoint must collapse list/dict governance scores to 0..1 numbers + SYNTHESIS text or the result panel shows raw JSON.
+- [Governance participation floor](governance-participation-floor.md) — auto-resolve gates BOTH enact+reject on a live-env voter/weight floor; fail-safe to default; abstain participates but can't decide.

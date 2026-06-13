@@ -17,6 +17,7 @@ Track quorum thresholds:
 """
 import json
 import logging
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,38 @@ TRACK_QUORUM: Dict[str, float] = {
     "policy": 0.66,
     "safety": 0.75,
 }
+
+# Minimum participation floor defaults. A proposal cannot auto-resolve (enact OR
+# reject) by quorum until at least this many distinct voters AND this much total
+# vote weight have participated — this stops a single unanimous vote from
+# instantly meeting a ratio threshold. Both dimensions are operator-configurable
+# at runtime via environment / AppSetting (read live, no restart needed), either
+# globally or per track:
+#   GOVERNANCE_MIN_VOTERS, GOVERNANCE_MIN_VOTERS_<TRACK>
+#   GOVERNANCE_MIN_WEIGHT, GOVERNANCE_MIN_WEIGHT_<TRACK>
+# A floor of 0 disables that dimension (reverting to the legacy ratio-only check).
+DEFAULT_MIN_VOTERS = 2
+DEFAULT_MIN_WEIGHT = 0.0
+
+
+def _env_number(name: str, cast, default):
+    """Read a numeric override from the live environment, failing safe.
+
+    Returns ``default`` when the var is unset/blank, and logs + falls back to
+    ``default`` when the value is present but unparseable (rather than crashing a
+    vote cast on a typo'd setting).
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return cast(raw.strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring malformed governance floor setting %s=%r; using %r",
+            name, raw, default,
+        )
+        return default
 
 
 def track_for_meta_claim(category: str, severity: str) -> str:
@@ -283,14 +316,77 @@ class GovernanceEngine:
                 abstain_w += w
 
         total_effective = yes_w + no_w
+        participation_weight = yes_w + no_w + abstain_w
         return {
             "yes": round(yes_w, 3),
             "no": round(no_w, 3),
             "abstain": round(abstain_w, 3),
             "total_effective": round(total_effective, 3),
+            "participation_weight": round(participation_weight, 3),
             "yes_ratio": round(yes_w / total_effective, 4) if total_effective else 0.0,
             "vote_count": len(votes),
             "delegation_map": delegation_map,
+        }
+
+    def participation_floor(self, track: Optional[str] = None) -> Dict[str, float]:
+        """Resolve the live minimum-participation floor for a track.
+
+        Reads a per-track override first (e.g. GOVERNANCE_MIN_VOTERS_POLICY),
+        then the global setting, then the built-in default. Values are read from
+        the process environment on every call so operator changes mirrored into
+        env (via settings_store) take effect without a restart. Negative values
+        are clamped to 0 (= that dimension disabled).
+        """
+        track_key = (track or "").strip().upper()
+
+        voters_default = _env_number("GOVERNANCE_MIN_VOTERS", int, DEFAULT_MIN_VOTERS)
+        weight_default = _env_number("GOVERNANCE_MIN_WEIGHT", float, DEFAULT_MIN_WEIGHT)
+
+        min_voters = voters_default
+        min_weight = weight_default
+        if track_key:
+            min_voters = _env_number(
+                "GOVERNANCE_MIN_VOTERS_%s" % track_key, int, voters_default
+            )
+            min_weight = _env_number(
+                "GOVERNANCE_MIN_WEIGHT_%s" % track_key, float, weight_default
+            )
+
+        return {
+            "min_voters": max(0, int(min_voters)),
+            "min_weight": max(0.0, float(min_weight)),
+        }
+
+    def participation_status(
+        self, tally: Dict[str, Any], track: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Combine a vote tally with the track's floor into a progress view.
+
+        Used by _maybe_enact() to gate auto-resolution and by the dashboard to
+        render participation progress alongside the quorum meter.
+        """
+        floor = self.participation_floor(track)
+        min_voters = floor["min_voters"]
+        min_weight = floor["min_weight"]
+        voters = int(tally.get("vote_count", 0) or 0)
+        weight = float(tally.get("participation_weight", 0.0) or 0.0)
+
+        voters_met = voters >= min_voters
+        weight_met = weight >= min_weight
+        return {
+            "min_voters": min_voters,
+            "min_weight": round(min_weight, 3),
+            "participation_voters": voters,
+            "participation_weight": round(weight, 3),
+            "voters_met": voters_met,
+            "weight_met": weight_met,
+            "participation_met": voters_met and weight_met,
+            "voters_progress": (
+                round(min(voters / min_voters, 1.0), 4) if min_voters > 0 else 1.0
+            ),
+            "weight_progress": (
+                round(min(weight / min_weight, 1.0), 4) if min_weight > 0 else 1.0
+            ),
         }
 
     def _maybe_enact(self, db: Any, prop: Any) -> None:
@@ -305,6 +401,21 @@ class GovernanceEngine:
         total = tally["total_effective"]
         if total == 0:
             return
+
+        # Minimum participation floor: a single unanimous vote must not be able to
+        # instantly meet quorum. Hold the proposal open (no auto-enact AND no
+        # auto-reject) until enough distinct voters and total weight participate.
+        participation = self.participation_status(tally, prop.track)
+        if not participation["participation_met"]:
+            logger.info(
+                "Proposal %s held open below participation floor "
+                "(voters %d/%d, weight %.2f/%.2f)",
+                prop.proposal_id,
+                participation["participation_voters"], participation["min_voters"],
+                participation["participation_weight"], participation["min_weight"],
+            )
+            return
+
         yes_ratio = tally["yes_ratio"]
         no_ratio = tally["no"] / total if total else 0.0
         quorum = prop.quorum_threshold or 0.50
@@ -324,11 +435,19 @@ class GovernanceEngine:
                     "method": "quorum",
                     "applied_settings": applied,
                     "delegation_map": tally["delegation_map"],
+                    "participation": {
+                        "voters": participation["participation_voters"],
+                        "min_voters": participation["min_voters"],
+                        "weight": participation["participation_weight"],
+                        "min_weight": participation["min_weight"],
+                    },
                 }),
             ))
             logger.info(
-                "Proposal %s auto-enacted by quorum (yes=%.1f%%, quorum=%.0f%%, applied=%s)",
-                prop.proposal_id, yes_ratio * 100, quorum * 100, applied,
+                "Proposal %s auto-enacted by quorum (yes=%.1f%%, quorum=%.0f%%, "
+                "voters=%d, applied=%s)",
+                prop.proposal_id, yes_ratio * 100, quorum * 100,
+                participation["participation_voters"], applied,
             )
         elif no_ratio > (1.0 - quorum):
             prop.status = "rejected"

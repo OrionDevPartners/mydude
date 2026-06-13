@@ -182,10 +182,14 @@ def test_tuning_proposal_auto_enacts_at_quorum_and_writes_appsetting():
     dbid = _raise("tuning", "compliance correction required after cs degradation")
 
     eng = GovernanceEngine()
-    # A single yes vote => yes_ratio 1.0 >= tuning quorum (0.50) => auto-enact.
+    # A single yes vote does NOT clear the minimum participation floor (default 2
+    # voters), so one unanimous vote can't instantly enact — the proposal stays open.
     assert eng.cast_vote(dbid, "operator", "yes") is True
+    assert _prop_status(dbid) == "open", "single vote must not enact below the participation floor"
 
-    assert _prop_status(dbid) == "enacted", "tuning proposal must auto-enact at quorum"
+    # A second yes vote clears the floor; yes_ratio 1.0 >= tuning quorum (0.50) => auto-enact.
+    assert eng.cast_vote(dbid, "reviewer", "yes") is True
+    assert _prop_status(dbid) == "enacted", "tuning proposal must auto-enact once floor + quorum are met"
     assert _setting("swarm.min_cs_threshold") == "50", "mapped AppSetting not written"
 
     changes = _enactment_changes(dbid)

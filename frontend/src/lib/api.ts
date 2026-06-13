@@ -557,7 +557,9 @@ export interface AuditEntry { provider: string; label: string; action: string; a
 export interface DirectoryData { grouped: { category: string; services: ServiceEntry[] }[] }
 export interface ConnectedData { rows: ConnectedRow[]; proxy_available: boolean; connected_count: number; total_count: number }
 export interface ConnectedRow { name: string; category: string; connector: string; connected: boolean; created_at: string | null; description?: string }
-export interface GovernanceData { alerts: Alert[]; open_alerts: number; ledger: LedgerEntry[]; metrics: MetricRow[]; total_metrics: number; cloud_shift_active: boolean; exec_locus_dist: unknown[]; failed_indexes: number; governance_proposal_failures: number; metrics_reset_at: string; metrics_reset_by: string }
+export interface ParticipationStatus { min_voters: number; min_weight: number; participation_voters: number; participation_weight: number; voters_met: boolean; weight_met: boolean; participation_met: boolean; voters_progress: number; weight_progress: number }
+export interface GovernanceProposal { id: number; proposal_id: string; title: string; track: string; origin: string; status: string; proposed_action: string; quorum_threshold: number; yes: number; no: number; abstain: number; yes_ratio: number; total_effective: number; vote_count: number; participation: ParticipationStatus; created_at: string }
+export interface GovernanceData { alerts: Alert[]; open_alerts: number; ledger: LedgerEntry[]; metrics: MetricRow[]; total_metrics: number; cloud_shift_active: boolean; exec_locus_dist: unknown[]; failed_indexes: number; governance_proposal_failures: number; metrics_reset_at: string; metrics_reset_by: string; proposals: GovernanceProposal[]; recent_proposals: GovernanceProposal[]; open_proposals: number }
 export interface Alert { id: number; rule: string; severity: string; detail: string; acknowledged: boolean; created_at: string }
 export interface EpistemicPoint { run_id: string; created_at: string | null; counts: Record<string, number>; total: number; pct: Record<string, number>; aborted: boolean }
 export interface EpistemicWindowOption { key: string; label: string }

@@ -202,6 +202,20 @@
                             {% endif %}
                         </div>
                     </div>
+                    {% set part = tally.get('participation', {}) %}
+                    {% if part %}
+                    {% set part_pct = (part.voters_progress * 100)|round|int %}
+                    <div class="quorum-meter" title="Participation {{ part.participation_voters }}/{{ part.min_voters }} voters" style="margin-top:5px;">
+                        <div class="quorum-meter-track">
+                            <div class="quorum-meter-fill {% if part.participation_met %}met{% endif %}" style="width:{{ part_pct }}%;"></div>
+                        </div>
+                        <div class="quorum-meter-label">
+                            <span class="{% if part.participation_met %}meter-met{% endif %}">{{ part.participation_voters }}/{{ part.min_voters }} voters</span>
+                            {% if part.min_weight and part.min_weight > 0 %}<span class="meta">· wt {{ part.participation_weight }}/{{ part.min_weight }}</span>{% endif %}
+                            {% if not part.participation_met %}<span class="meta">· held open</span>{% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
                     {% else %}
                     <span class="meta">no votes</span>
                     {% endif %}
