@@ -328,14 +328,28 @@ def test_ask_insufficient_data_short_circuits_before_llm():
 # -- Private-Mode at the memory substrate ------------------------------------
 
 class _FakeStore:
-    """Records every add() so we can prove which store an entry reached."""
+    """Records every add()/delete() so we can prove which store an entry reached
+    or was purged from.
 
-    def __init__(self):
+    ``delete_returns`` controls the truthiness the local-count logic keys off of;
+    ``delete_raises`` lets a test simulate one store failing so we can prove the
+    purge is fail-soft (the other store is still attempted)."""
+
+    def __init__(self, delete_returns=True, delete_raises=None):
         self.added = []
+        self.deleted = []
+        self._delete_returns = delete_returns
+        self._delete_raises = delete_raises
 
     def add(self, entry):
         self.added.append(entry)
         return entry
+
+    def delete(self, memory_id):
+        self.deleted.append(memory_id)
+        if self._delete_raises is not None:
+            raise self._delete_raises
+        return self._delete_returns
 
 
 def _bare_substrate(local, cloud):
@@ -392,6 +406,64 @@ def test_write_claim_default_reaches_cloud():
         "audit must mark the default write as local+cloud"
 
 
+# -- right-to-be-forgotten purge (forget wipes BOTH stores) ------------------
+
+def test_forget_deletes_from_both_stores_and_audits():
+    local, cloud = _FakeStore(), _FakeStore()
+    sub = _bare_substrate(local, cloud)
+
+    deleted = sub.forget(["m1", "m2"])
+
+    assert local.deleted == ["m1", "m2"], \
+        "purge must delete each id from the LOCAL store"
+    assert cloud.deleted == ["m1", "m2"], \
+        "purge must ALSO delete each id from the CLOUD store (right to be forgotten)"
+    assert deleted == 2, "returned count must reflect successful LOCAL deletions"
+
+    audit = sub.audit_events(limit=5)
+    assert audit, "a purge audit event must be recorded"
+    assert "purge" in audit[0]["detail"].lower(), \
+        "audit must mark the operation as a Private-Mode purge"
+    assert "2" in audit[0]["detail"], "audit must report the deleted count"
+
+
+def test_forget_skips_blank_ids():
+    local, cloud = _FakeStore(), _FakeStore()
+    sub = _bare_substrate(local, cloud)
+
+    deleted = sub.forget(["", None, "real"])
+
+    assert local.deleted == ["real"], "blank/None ids must be skipped on local"
+    assert cloud.deleted == ["real"], "blank/None ids must be skipped on cloud"
+    assert deleted == 1, "only the real id should count toward deletions"
+
+
+def test_forget_is_fail_soft_across_stores():
+    # Local delete blows up; the cloud store must STILL be attempted so
+    # forgotten data can't be left stranded in the cloud.
+    local = _FakeStore(delete_raises=RuntimeError("local KG down"))
+    cloud = _FakeStore()
+    sub = _bare_substrate(local, cloud)
+
+    deleted = sub.forget(["m1"])
+
+    assert local.deleted == ["m1"], "local delete must have been attempted"
+    assert cloud.deleted == ["m1"], \
+        "a local failure must not prevent the cloud delete attempt"
+    assert deleted == 0, "a failed local delete must not be counted"
+
+    # And the inverse: cloud delete blows up, local must still succeed + count.
+    local2 = _FakeStore()
+    cloud2 = _FakeStore(delete_raises=RuntimeError("cloud down"))
+    sub2 = _bare_substrate(local2, cloud2)
+
+    deleted2 = sub2.forget(["m9"])
+
+    assert local2.deleted == ["m9"], "local delete must be attempted"
+    assert cloud2.deleted == ["m9"], "cloud delete must be attempted even though it fails"
+    assert deleted2 == 1, "the successful local delete must still be counted"
+
+
 def _run_all():
     tests = [
         test_request_creates_pending_and_sends_nothing,
@@ -406,6 +478,9 @@ def _run_all():
         test_ask_insufficient_data_short_circuits_before_llm,
         test_write_claim_local_only_never_touches_cloud,
         test_write_claim_default_reaches_cloud,
+        test_forget_deletes_from_both_stores_and_audits,
+        test_forget_skips_blank_ids,
+        test_forget_is_fail_soft_across_stores,
     ]
     failed = 0
     for t in tests:

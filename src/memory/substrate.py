@@ -118,10 +118,12 @@ class MemorySubstrate:
         """Delete memory nodes from BOTH stores by id (Private-Mode purge / right
         to be forgotten). Returns the count successfully removed from the local KG."""
         deleted = 0
+        attempted: List[str] = []
         with self._lock:
             for mid in memory_ids:
                 if not mid:
                     continue
+                attempted.append(mid)
                 local_ok = False
                 try:
                     local_ok = bool(self._local.delete(mid))
@@ -136,7 +138,7 @@ class MemorySubstrate:
         event = MemoryEvent(
             event_type=MemoryEventType.PERSIST,
             detail=f"Forgot {deleted} memory node(s) (Private-Mode purge)",
-            memory_ids=list(memory_ids)[:5],
+            memory_ids=attempted[:5],
         )
         self._record_event(event)
         logger.info(event.to_log_str())
