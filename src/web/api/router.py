@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta
 
 from fastapi import (
-    APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile,
+    APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile,
 )
 from fastapi.responses import JSONResponse
 
@@ -992,18 +992,25 @@ async def api_reset_swarm_metrics(metric: str = Form("all"), auth=Depends(requir
 
 
 @router.get("/governance/epistemic-trend")
-async def api_epistemic_trend(window: str = "30", _=Depends(require_auth)):
+async def api_epistemic_trend(
+    window: str = "30",
+    date_from: str = Query("", alias="from"),
+    date_to: str = Query("", alias="to"),
+    _=Depends(require_auth),
+):
     """Epistemic-label trend + windowed summary totals for the Governance page.
 
     ``window`` is a run-count ("10"/"30"/"100") or date-range ("24h"/"7d"/"30d")
-    key; unknown keys fall back to the default window. Both the per-run trend and
-    the summary ratios recompute for the chosen window.
+    key; unknown keys fall back to the default window. ``from``/``to``
+    (``YYYY-MM-DD`` or ``YYYY-MM-DDTHH:MM``) scope the trend to an explicit
+    calendar range and take precedence over ``window`` when supplied. Both the
+    per-run trend and the summary ratios recompute for the chosen window/range.
     """
     from src.database import SessionLocal
     from src.web.routes_governance import _epistemic_trend
     db = SessionLocal()
     try:
-        trend = _epistemic_trend(db, window=window)
+        trend = _epistemic_trend(db, window=window, date_from=date_from, date_to=date_to)
     finally:
         db.close()
     trend["points"] = [

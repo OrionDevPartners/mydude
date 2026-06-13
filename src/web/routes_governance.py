@@ -49,6 +49,42 @@ def _resolve_window(window):
     return EPISTEMIC_WINDOWS[0]
 
 
+def _parse_range_bound(raw, end_of_day=False):
+    """Parse an operator-supplied date/datetime bound into a datetime (or None).
+
+    Accepts ``YYYY-MM-DD`` (calendar date) plus the ``YYYY-MM-DDTHH:MM[:SS]``
+    forms that ``<input type="date"/"datetime-local">`` emit. A bare date used as
+    the upper bound is widened to the end of that day so the range is inclusive.
+    Unparseable / empty input returns None (that side of the range is open).
+    """
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        if fmt == "%Y-%m-%d" and end_of_day:
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return dt
+    return None
+
+
+def _custom_range_label(start, end):
+    """Human label for a custom from/to range, tolerating open-ended sides."""
+    fmt = "%b %-d, %Y"
+    if start and end:
+        return f"{start.strftime(fmt)} – {end.strftime(fmt)}"
+    if start:
+        return f"Since {start.strftime(fmt)}"
+    if end:
+        return f"Up to {end.strftime(fmt)}"
+    return "Custom range"
+
+
 def _parse_epistemic(raw):
     """Parse an epistemic_summary_json blob into a {label: count} dict."""
     ep = {}
@@ -67,13 +103,16 @@ def _parse_epistemic(raw):
     return out
 
 
-def _epistemic_trend(db, window=DEFAULT_EPISTEMIC_WINDOW):
+def _epistemic_trend(db, window=DEFAULT_EPISTEMIC_WINDOW, date_from=None, date_to=None):
     """Build epistemic-label trend + totals for a selectable run/time window.
 
     ``window`` is a key from ``EPISTEMIC_WINDOWS`` (e.g. "10"/"30"/"100" runs or
-    "24h"/"7d"/"30d" date ranges). Unknown keys fall back to the default. Both the
+    "24h"/"7d"/"30d" date ranges). Unknown keys fall back to the default. When
+    ``date_from`` and/or ``date_to`` are supplied (``YYYY-MM-DD`` or
+    ``YYYY-MM-DDTHH:MM``), they take precedence over ``window``: the trend scopes
+    to that explicit calendar range (either bound may be left open). Both the
     per-run trend AND the summary totals/ratios are computed over the SAME windowed
-    set, so the summary cards recompute when the operator changes the window.
+    set, so the summary cards recompute when the operator changes the window/range.
 
     Returns a dict with:
       - points: chronological list of {created_at, total, counts{label:n}, pct{label:n}}
@@ -82,15 +121,31 @@ def _epistemic_trend(db, window=DEFAULT_EPISTEMIC_WINDOW):
       - verified_ratio / unknown_ratio: windowed share of verified vs. unknown
       - run_count: number of runs in the window
       - window / window_label: the resolved window key and human label
+      - date_from / date_to: echoed custom-range bounds (empty unless custom)
       - windows: the full list of selectable windows ({key, label})
     """
-    spec = _resolve_window(window)
+    start = _parse_range_bound(date_from, end_of_day=False)
+    end = _parse_range_bound(date_to, end_of_day=True)
+    custom = start is not None or end is not None
+
     query = db.query(SwarmRunIndex).order_by(SwarmRunIndex.created_at.desc())
-    if spec["mode"] == "range":
-        cutoff = datetime.utcnow() - timedelta(hours=spec["hours"])
-        recent = query.filter(SwarmRunIndex.created_at >= cutoff).all()
+    if custom:
+        if start is not None:
+            query = query.filter(SwarmRunIndex.created_at >= start)
+        if end is not None:
+            query = query.filter(SwarmRunIndex.created_at <= end)
+        recent = query.all()
+        window_key = "custom"
+        window_label = _custom_range_label(start, end)
     else:
-        recent = query.limit(spec["count"]).all()
+        spec = _resolve_window(window)
+        window_key = spec["key"]
+        window_label = spec["label"]
+        if spec["mode"] == "range":
+            cutoff = datetime.utcnow() - timedelta(hours=spec["hours"])
+            recent = query.filter(SwarmRunIndex.created_at >= cutoff).all()
+        else:
+            recent = query.limit(spec["count"]).all()
 
     points = []
     totals = {label: 0 for label in EPISTEMIC_LABELS}
@@ -123,8 +178,10 @@ def _epistemic_trend(db, window=DEFAULT_EPISTEMIC_WINDOW):
         "verified_ratio": verified_ratio,
         "unknown_ratio": unknown_ratio,
         "run_count": len(points),
-        "window": spec["key"],
-        "window_label": spec["label"],
+        "window": window_key,
+        "window_label": window_label,
+        "date_from": date_from.strip() if (custom and date_from) else "",
+        "date_to": date_to.strip() if (custom and date_to) else "",
         "windows": [{"key": w["key"], "label": w["label"]} for w in EPISTEMIC_WINDOWS],
     }
 
@@ -207,7 +264,12 @@ async def governance(request: Request, _=Depends(require_auth)):
         )
 
         epistemic_window = request.query_params.get("window", DEFAULT_EPISTEMIC_WINDOW)
-        epistemic_trend = _epistemic_trend(db, window=epistemic_window)
+        epistemic_from = request.query_params.get("from", "")
+        epistemic_to = request.query_params.get("to", "")
+        epistemic_trend = _epistemic_trend(
+            db, window=epistemic_window,
+            date_from=epistemic_from, date_to=epistemic_to,
+        )
     finally:
         db.close()
 

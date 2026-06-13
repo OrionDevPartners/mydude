@@ -156,9 +156,12 @@ export const resetSwarmMetrics = (metric: string = 'all') =>
     body: formBody({ metric }),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
-export const getEpistemicTrend = (window?: string) => {
+export const getEpistemicTrend = (params?: { window?: string; from?: string; to?: string }) => {
   const p = new URLSearchParams()
-  if (window) p.set('window', window)
+  if (params?.from) p.set('from', params.from)
+  if (params?.to) p.set('to', params.to)
+  // When a custom range is supplied it takes precedence; only send window otherwise.
+  if (params?.window && !params.from && !params.to) p.set('window', params.window)
   return request<EpistemicTrendData>(`/governance/epistemic-trend?${p}`)
 }
 export const getProvenance = (params?: { q?: string; page?: number }) => {
@@ -572,6 +575,8 @@ export interface EpistemicTrendData {
   run_count: number
   window: string
   window_label: string
+  date_from: string
+  date_to: string
   windows: EpistemicWindowOption[]
 }
 export interface LedgerEntry { id: number; agent_role: string; provider: string; score: number; detail: string; created_at: string }

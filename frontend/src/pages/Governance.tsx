@@ -18,11 +18,16 @@ const EP_LABELS = ['verified', 'derived', 'hypothesis', 'unknown'] as const
 
 export function Governance() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const epWindow = searchParams.get('window') || '30'
-  const [tab, setTab] = useState(searchParams.get('window') ? 'Epistemic' : 'Alerts')
+  const epFrom = searchParams.get('from') || ''
+  const epTo = searchParams.get('to') || ''
+  const isCustomRange = Boolean(epFrom || epTo)
+  const epWindow = isCustomRange ? 'custom' : (searchParams.get('window') || '30')
+  const [tab, setTab] = useState(
+    searchParams.get('window') || epFrom || epTo ? 'Epistemic' : 'Alerts'
+  )
   const { data, loading, error, refetch } = useApi(getGovernance, [])
   const { data: trend, loading: trendLoading, error: trendError } =
-    useApi(() => getEpistemicTrend(epWindow), [epWindow])
+    useApi(() => getEpistemicTrend({ window: epWindow, from: epFrom, to: epTo }), [epWindow, epFrom, epTo])
   const [shiftBusy, setShiftBusy] = useState(false)
   const [shiftMsg, setShiftMsg] = useState<string | null>(null)
   const [shiftErr, setShiftErr] = useState<string | null>(null)
@@ -33,6 +38,16 @@ export function Governance() {
   function setWindow(w: string) {
     const next = new URLSearchParams(searchParams)
     next.set('window', w)
+    next.delete('from')
+    next.delete('to')
+    setSearchParams(next, { replace: true })
+  }
+
+  function setCustomRange(from: string, to: string) {
+    const next = new URLSearchParams(searchParams)
+    next.delete('window')
+    if (from) next.set('from', from); else next.delete('from')
+    if (to) next.set('to', to); else next.delete('to')
     setSearchParams(next, { replace: true })
   }
 
@@ -279,6 +294,44 @@ export function Governance() {
                 {w.label}
               </button>
             ))}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', marginRight: 4 }}>
+              Custom range:
+            </span>
+            <input
+              type="date"
+              className="input"
+              aria-label="From date"
+              value={epFrom}
+              max={epTo || undefined}
+              onChange={e => setCustomRange(e.target.value, epTo)}
+              style={{ width: 'auto', padding: '4px 8px', fontSize: 13 }}
+            />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>to</span>
+            <input
+              type="date"
+              className="input"
+              aria-label="To date"
+              value={epTo}
+              min={epFrom || undefined}
+              onChange={e => setCustomRange(epFrom, e.target.value)}
+              style={{ width: 'auto', padding: '4px 8px', fontSize: 13 }}
+            />
+            {isCustomRange && (
+              <button
+                className="btn btn-sm btn-secondary"
+                onClick={() => setWindow('30')}
+              >
+                Clear
+              </button>
+            )}
+            {isCustomRange && (
+              <span className="badge badge-blue" style={{ fontSize: 11 }}>
+                Custom range active
+              </span>
+            )}
           </div>
 
           {trendLoading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
