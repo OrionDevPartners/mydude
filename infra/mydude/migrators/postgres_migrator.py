@@ -206,7 +206,23 @@ def main():
         action="store_true",
         help="Validate and check scope gates without applying DDL",
     )
+    parser.add_argument(
+        "--from-keyvault",
+        action="store_true",
+        help="Source the DSNs + BCS secret from Key Vault into the env before "
+             "migrating (governance pillar #3). Requires running inside the VNet.",
+    )
     args = parser.parse_args()
+
+    if args.from_keyvault:
+        local_dir = str(Path(__file__).parent.parent / "local")
+        if local_dir not in sys.path:
+            sys.path.insert(0, local_dir)
+        import azure_common as az  # type: ignore
+
+        status = az.hydrate_env_from_keyvault(overwrite=False)
+        for env_var, state in status.items():
+            logger.info("Key Vault hydration: %s -> %s", env_var, state)
 
     targets = list(DATABASES.keys()) if args.db == "all" else [args.db]
     errors = []

@@ -177,6 +177,19 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-cosmos"
+version = "4.16.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fe/2a/0f2bba256e56626ba2cec97ab81dd002ff47ead1329767760b619afd927a/azure_cosmos-4.16.1.tar.gz", hash = "sha256:fa15d13702b470265a67e2dd9c0794021e6b776856dac6c223dcacc4d8e1d8d1", size = 2377651, upload-time = "2026-06-02T01:08:07.656Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/b4/9c984ad33ca9e5c378ea472fc9aa38e719c245a4fa58a99d6dabbe0f9a17/azure_cosmos-4.16.1-py3-none-any.whl", hash = "sha256:43717215ec1433c1ea0f0e3d465f9182fb5afff3ae2331e595367122297872f1", size = 499044, upload-time = "2026-06-02T01:08:10.111Z" },
+]
+
+[[package]]
 name = "azure-identity"
 version = "1.25.3"
 source = { registry = "https://pypi.org/simple" }
@@ -190,6 +203,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c5/0e/3a63efb48aa4a5ae2cfca61ee152fbcb668092134d3eb8bfda472dd5c617/azure_identity-1.25.3.tar.gz", hash = "sha256:ab23c0d63015f50b630ef6c6cf395e7262f439ce06e5d07a64e874c724f8d9e6", size = 286304, upload-time = "2026-03-13T01:12:20.892Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/49/9a/417b3a533e01953a7c618884df2cb05a71e7b68bdbce4fbdb62349d2a2e8/azure_identity-1.25.3-py3-none-any.whl", hash = "sha256:f4d0b956a8146f30333e071374171f3cfa7bdb8073adb8c3814b65567aa7447c", size = 192138, upload-time = "2026-03-13T01:12:22.951Z" },
+]
+
+[[package]]
+name = "azure-keyvault-secrets"
+version = "4.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f1/b8/03c7b4edd1e3355ad5fffb70e68af70cd09542963f45cf3a2aa9fb3930b5/azure_keyvault_secrets-4.11.0.tar.gz", hash = "sha256:ac14727b9159cca353173ec5a454d8d7b192a6f2f5e7eb540f9fbcf914fa0ca0", size = 112291, upload-time = "2026-04-17T00:52:12.422Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/78/76/41c513917c0e8dc68de0c33578c6a0668b4a09eb4dc3e2782d382dc2947f/azure_keyvault_secrets-4.11.0-py3-none-any.whl", hash = "sha256:d8543b710423569bd00ada2a2533fe83d52d8e1fe026e1c47f41a3bc0fc73ef5", size = 103148, upload-time = "2026-04-17T00:52:13.796Z" },
 ]
 
 [[package]]
@@ -1813,7 +1840,9 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "azure-cosmos" },
     { name = "azure-identity" },
+    { name = "azure-keyvault-secrets" },
     { name = "azure-mgmt-cognitiveservices" },
     { name = "azure-mgmt-resource" },
     { name = "azure-mgmt-resource-deployments" },
@@ -1845,7 +1874,9 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.79.0" },
+    { name = "azure-cosmos", specifier = ">=4.16.1" },
     { name = "azure-identity", specifier = ">=1.25.3" },
+    { name = "azure-keyvault-secrets", specifier = ">=4.11.0" },
     { name = "azure-mgmt-cognitiveservices", specifier = ">=14.1.0" },
     { name = "azure-mgmt-resource", specifier = ">=25.0.0" },
     { name = "azure-mgmt-resource-deployments", specifier = ">=1.0.0b2" },

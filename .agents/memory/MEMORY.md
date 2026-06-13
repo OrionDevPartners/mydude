@@ -34,3 +34,4 @@
 - [Azure SP scope](azure-sp-scope.md) — MyDude SP is Owner on RG `mydude` (lowercase) only, not subscription; deploy must skip `az group create` and target existing RG.
 - [Docker inside Replit](docker-in-replit-container.md) — daemon works but `docker exec`/compose healthchecks fail (setns); host port 5000 is the dev workflow. Use entrypoint DB-wait, map to 5050.
 - [Cognee KG save coalescing](cognee-kg-save-coalescing.md) — KG JSON save must stay deferred/debounced + batched (never per-node inline writes); DB is source of truth; instance captures its own file path.
+- [Azure post-provision wiring](azure-postprovision-wiring.md) — deployed stack is private-only; KV/migrator/Cosmos/doctor wiring must run from inside the VNet, not the workspace.

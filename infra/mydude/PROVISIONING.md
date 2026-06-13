@@ -155,12 +155,47 @@ private endpoint and does not depend on the managed runtime to function.
 
 ## Post-provision steps (separate build tasks)
 
-1. Populate Key Vault secrets — full Postgres DSNs for `agents_home_writer` / `provider_home_writer`,
-   plus the BCS idempotency key.
-2. Run Postgres migrations (`governance/agents_home_schema.sql` + `provider_home_schema.sql` via
-   `migrators/postgres_migrator.py`) once the DSNs exist.
-3. Seed / verify the Cosmos containers from the application.
-4. Update GitHub and push the application code to Azure after CI.
+> **Run location:** all four services are private (public network access disabled + private
+> endpoints), so these steps must run from **inside the `mydude` VNet** — a jump box or a
+> VNet-integrated container — NOT from a workspace outside Azure. The scripts use
+> `DefaultAzureCredential`, so they pick up a user-assigned managed identity on the VNet host
+> (preferred) or the `AZURE_*` service-principal env. The identity needs: Key Vault get/set
+> (e.g. `mydude-bcs-gate`), Cosmos "Built-in Data Contributor" (`mydude-agents-home-db`), and
+> Cognitive Services OpenAI User (`mydude-foundry-agent`). All scripts are fail-loud and idempotent.
+
+1. **Populate Key Vault secrets** — full Postgres DSNs (`agents-home-pg-dsn`,
+   `provider-home-pg-dsn`) + the BCS idempotency key (`bcs-idempotency-key`):
+   ```bash
+   # writer-role passwords are read from the env, never hardcoded:
+   export PG_AGENTS_HOME_WRITER_PASSWORD=... PG_PROVIDER_HOME_WRITER_PASSWORD=...
+   python3 infra/mydude/local/populate_keyvault.py --dry-run   # preview (no writes)
+   python3 infra/mydude/local/populate_keyvault.py             # set the 3 secrets
+   ```
+2. **Run Postgres migrations** (`governance/*_schema.sql` via `migrators/postgres_migrator.py`).
+   Pass `--from-keyvault` to source the DSNs + `BCS_LEASE_SECRET` from the vault (pillar #3);
+   set the reader/writer role-password envs so the role credential bootstrap can run:
+   ```bash
+   export PG_ADMIN_PASSWORD=... \
+          PG_AGENTS_HOME_WRITER_PASSWORD=... PG_AGENTS_HOME_READER_PASSWORD=... \
+          PG_PROVIDER_HOME_WRITER_PASSWORD=... PG_PROVIDER_HOME_READER_PASSWORD=...
+   python3 infra/mydude/migrators/postgres_migrator.py --from-keyvault --dry-run
+   python3 infra/mydude/migrators/postgres_migrator.py --from-keyvault
+   ```
+3. **Seed / verify the Cosmos containers** from the app (`agents_memory`: `episodic`, `vectors`,
+   `documents` — created by `cosmos.bicep`; the script verifies + probe-writes, never creates):
+   ```bash
+   python3 infra/mydude/local/seed_cosmos.py --verify-only   # read-only
+   python3 infra/mydude/local/seed_cosmos.py                 # verify + probe write/read
+   ```
+4. **Verify end-to-end reachability** (AOAI + Cosmos + Postgres over the private endpoints):
+   ```bash
+   python3 infra/mydude/local/dataplane_doctor.py --no-spend  # skip the billed AOAI call
+   python3 infra/mydude/local/dataplane_doctor.py             # full check
+   ```
+5. Update GitHub and push the application code to Azure after CI.
+
+Shared wiring helper: `infra/mydude/local/azure_common.py` (credential, ARM-output resolution,
+Key Vault get/set, DSN builder, `hydrate_env_from_keyvault()`).
 
 ---
 
