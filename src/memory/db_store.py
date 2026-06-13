@@ -76,6 +76,115 @@ def load_entries(adapter: str) -> List[MemoryEntry]:
         db.close()
 
 
+def search_entries(
+    adapter: Optional[str] = None,
+    q: Optional[str] = None,
+    category: Optional[str] = None,
+    after_ts: Optional[float] = None,
+    before_ts: Optional[float] = None,
+    page: int = 1,
+    per_page: int = 25,
+) -> dict:
+    """Server-side search/filter/pagination over persisted memory entries.
+
+    Filters (all optional, combined with AND):
+      - ``adapter``  : "local" | "cloud" side that wrote the row
+      - ``q``        : case-insensitive substring over content + source
+      - ``category`` : exact category match
+      - ``after_ts`` : only entries created at/after this epoch second
+      - ``before_ts``: only entries created at/before this epoch second
+
+    Pagination is 1-based; ``per_page`` is clamped to [1, 200]. Newest entries
+    (by ``entry_created_at``) come first. Returns a dict with the page of
+    ``entries`` plus ``total`` (matching the filters), ``page``, ``per_page``,
+    ``total_pages``, and the distinct ``categories``/``adapters`` present across
+    ALL rows (so filter dropdowns stay stable regardless of the active filter).
+
+    Degrades safely: an unavailable DB returns an empty, well-formed result.
+    """
+    try:
+        page = max(1, int(page))
+    except Exception:
+        page = 1
+    try:
+        per_page = int(per_page)
+    except Exception:
+        per_page = 25
+    per_page = max(1, min(200, per_page))
+
+    empty = {
+        "entries": [],
+        "total": 0,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": 1,
+        "categories": [],
+        "adapters": [],
+    }
+
+    db = _session()
+    if db is None:
+        return empty
+    try:
+        from src.models import MemoryEntryRecord
+        query = db.query(MemoryEntryRecord)
+        if adapter:
+            query = query.filter(MemoryEntryRecord.adapter == adapter)
+        if category:
+            query = query.filter(MemoryEntryRecord.category == category)
+        if q:
+            like = f"%{q}%"
+            query = query.filter(
+                MemoryEntryRecord.content.ilike(like)
+                | MemoryEntryRecord.source.ilike(like)
+            )
+        if after_ts is not None:
+            query = query.filter(MemoryEntryRecord.entry_created_at >= after_ts)
+        if before_ts is not None:
+            query = query.filter(MemoryEntryRecord.entry_created_at <= before_ts)
+
+        total = query.count()
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        rows = (
+            query.order_by(
+                MemoryEntryRecord.entry_created_at.desc().nullslast(),
+                MemoryEntryRecord.id.desc(),
+            )
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+            .all()
+        )
+        categories = [
+            r[0]
+            for r in db.query(MemoryEntryRecord.category).distinct().all()
+            if r[0]
+        ]
+        adapters = [
+            r[0]
+            for r in db.query(MemoryEntryRecord.adapter).distinct().all()
+            if r[0]
+        ]
+        entries = []
+        for r in rows:
+            entry = _record_to_entry(r)
+            setattr(entry, "adapter", r.adapter)
+            entries.append(entry)
+        return {
+            "entries": entries,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+            "categories": sorted(categories),
+            "adapters": sorted(adapters),
+        }
+    except Exception as e:
+        logger.warning("memory db_store.search_entries failed: %s", e)
+        return empty
+    finally:
+        db.close()
+
+
 def upsert_entry(adapter: str, entry: MemoryEntry) -> bool:
     """Insert or update one entry row for the given adapter side."""
     if not entry or not entry.memory_id:

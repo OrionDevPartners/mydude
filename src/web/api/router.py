@@ -66,6 +66,45 @@ def _dt(val) -> str | None:
     return str(val)
 
 
+def _epoch_to_iso(val) -> str | None:
+    """Format an epoch-second float (or datetime) as an ISO 8601 string."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val.isoformat()
+    try:
+        ts = float(val)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    try:
+        return datetime.utcfromtimestamp(ts).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _date_to_epoch(val: str, end_of_day: bool = False) -> float | None:
+    """Parse a 'YYYY-MM-DD' (or full ISO) date string into an epoch second.
+
+    Returns None for empty/unparseable input so callers can treat it as "no
+    bound". When ``end_of_day`` is set, a bare date resolves to 23:59:59.999999
+    of that day so a ``before`` filter is inclusive of the whole day.
+    """
+    if not val:
+        return None
+    try:
+        dt = datetime.fromisoformat(val)
+    except ValueError:
+        try:
+            dt = datetime.strptime(val, "%Y-%m-%d")
+        except ValueError:
+            return None
+    if end_of_day and len(val) <= 10:
+        dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return dt.timestamp()
+
+
 # ---------------------------------------------------------------------------
 # Auth / Branding
 # ---------------------------------------------------------------------------
@@ -1221,11 +1260,71 @@ async def api_memory(request: Request, _=Depends(require_auth)):
     except Exception as e:
         logger.warning("api_memory substrate status failed: %s", e)
 
+    # Durable long-term memory entries (memory_entries table) — server-side
+    # search / category / adapter / date filtering with pagination so the page
+    # never has to load the whole store into the browser.
+    category = (request.query_params.get("category") or "").strip()
+    adapter = (request.query_params.get("adapter") or "").strip()
+    after_raw = (request.query_params.get("after") or "").strip()
+    before_raw = (request.query_params.get("before") or "").strip()
+    try:
+        page = max(1, int(request.query_params.get("page") or 1))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = int(request.query_params.get("per_page") or 25)
+    except (TypeError, ValueError):
+        per_page = 25
+    per_page = max(1, min(200, per_page))
+
+    after_ts = _date_to_epoch(after_raw, end_of_day=False)
+    before_ts = _date_to_epoch(before_raw, end_of_day=True)
+
+    entries_result: dict = {
+        "entries": [], "total": 0, "page": page, "per_page": per_page,
+        "total_pages": 1, "categories": [], "adapters": [],
+    }
+    try:
+        from src.memory import db_store
+        entries_result = db_store.search_entries(
+            adapter=adapter or None,
+            q=q or None,
+            category=category or None,
+            after_ts=after_ts,
+            before_ts=before_ts,
+            page=page,
+            per_page=per_page,
+        )
+    except Exception as e:
+        logger.warning("api_memory durable entries query failed: %s", e)
+
+    entry_rows = [{
+        "memory_id": e.memory_id,
+        "adapter": getattr(e, "adapter", "") or "",
+        "content": e.content,
+        "category": e.category,
+        "confidence": e.confidence,
+        "source": e.source,
+        "verified": bool(e.verified),
+        "access_count": e.access_count,
+        "created_at": _epoch_to_iso(e.created_at),
+        "updated_at": _epoch_to_iso(e.updated_at),
+    } for e in entries_result.get("entries", [])]
+
     return {
         "layers": rows, "layer_types": layer_types, "q": q, "layer": layer,
         "total": total,
         "substrate": substrate_status,
         "substrate_events": substrate_events,
+        "entries": entry_rows,
+        "entry_total": entries_result.get("total", 0),
+        "entry_page": entries_result.get("page", page),
+        "entry_per_page": entries_result.get("per_page", per_page),
+        "entry_total_pages": entries_result.get("total_pages", 1),
+        "entry_categories": entries_result.get("categories", []),
+        "entry_adapters": entries_result.get("adapters", []),
+        "category": category, "adapter": adapter,
+        "after": after_raw, "before": before_raw,
     }
 
 

@@ -170,10 +170,19 @@ export const getProvenance = (params?: { q?: string; page?: number }) => {
   if (params?.page) p.set('page', String(params.page))
   return request<ProvenanceData>(`/provenance?${p}`)
 }
-export const getMemory = (params?: { q?: string; layer?: string }) => {
+export const getMemory = (params?: {
+  q?: string; layer?: string; category?: string; adapter?: string;
+  after?: string; before?: string; page?: number; per_page?: number;
+}) => {
   const p = new URLSearchParams()
   if (params?.q) p.set('q', params.q)
   if (params?.layer) p.set('layer', params.layer)
+  if (params?.category) p.set('category', params.category)
+  if (params?.adapter) p.set('adapter', params.adapter)
+  if (params?.after) p.set('after', params.after)
+  if (params?.before) p.set('before', params.before)
+  if (params?.page) p.set('page', String(params.page))
+  if (params?.per_page) p.set('per_page', String(params.per_page))
   return request<MemoryData>(`/memory?${p}`)
 }
 export const getSystem = () => request<SystemData>('/system')
@@ -583,8 +592,19 @@ export interface LedgerEntry { id: number; agent_role: string; provider: string;
 export interface MetricRow { provider: string; calls: number; avg_latency: number; success_rate: number; avg_rating: number | null }
 export interface ProvenanceData { records: ProvenanceRecord[]; q: string; page: number; total_pages: number; total: number }
 export interface ProvenanceRecord { id: number; claim_text: string; origin_role: string; origin_provider: string; confidence: number; verified: boolean; created_at: string }
-export interface MemoryData { layers: MemoryLayer[]; layer_types: string[]; q: string; layer: string; total: number; substrate?: SubstrateStatus; substrate_events?: SubstrateEvent[] }
+export interface MemoryData {
+  layers: MemoryLayer[]; layer_types: string[]; q: string; layer: string; total: number;
+  substrate?: SubstrateStatus; substrate_events?: SubstrateEvent[];
+  entries: MemoryEntry[]; entry_total: number; entry_page: number; entry_per_page: number;
+  entry_total_pages: number; entry_categories: string[]; entry_adapters: string[];
+  category: string; adapter: string; after: string; before: string;
+}
 export interface MemoryLayer { id: number; layer_type: string; topic: string; summary: string; content: string; created_at: string }
+export interface MemoryEntry {
+  memory_id: string; adapter: string; content: string; category: string | null;
+  confidence: number; source: string; verified: boolean; access_count: number;
+  created_at: string | null; updated_at: string | null;
+}
 export interface SubstrateStatus { local?: Record<string, unknown>; cloud?: Record<string, unknown>; last_sync?: number | null; audit_events?: number }
 export interface SubstrateEvent { type: string; detail: string; memory_ids: string[]; timestamp: number; log: string }
 export interface SystemData { results: Record<string, unknown>; error: string | null }
