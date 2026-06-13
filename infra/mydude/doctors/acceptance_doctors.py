@@ -212,14 +212,40 @@ class AcceptanceDoctors:
         evidence = []
         passed = True
 
-        # Check foundry.bicep — foundryAgentIdentity should not appear in contributor role
+        # Check foundry.bicep — foundryAgentIdentity must NOT hold Blob Contributor on the
+        # governance catalog (ADLS / mydudestg). It is ALLOWED to hold Blob Contributor on
+        # its own dedicated Hub workspace storage (foundryStorage) — AML doesn't auto-grant
+        # this for user-assigned-identity Hubs. We check by finding each role-assignment
+        # block and confirming it is scoped to `foundryStorage`, not the catalog ADLS.
         foundry_bicep = BICEP_DIR / "modules" / "foundry.bicep"
         if foundry_bicep.exists():
             content = foundry_bicep.read_text()
             contributor_role = "ba92f5b4-2d11-453d-a403-e96b0029c9fe"
             if contributor_role in content:
-                passed = False
-                evidence.append("FAIL: foundry.bicep contains a Storage Blob Data Contributor assignment.")
+                # Verify every occurrence is scoped to foundryStorage (Hub workspace),
+                # not to the governance catalog ADLS. Split on role assignments blocks and
+                # check that any block containing the contributor GUID uses foundryStorage.
+                bad_scope = False
+                for block_match in re.finditer(
+                    r"resource\s+\w+\s+'Microsoft\.Authorization/roleAssignments[^']*'[^{]*\{([^}]+)\}",
+                    content, re.DOTALL
+                ):
+                    block = block_match.group(0)
+                    if contributor_role not in block:
+                        continue
+                    if "scope: foundryStorage" not in block:
+                        bad_scope = True
+                        evidence.append(
+                            "FAIL: foundry.bicep has a Storage Blob Data Contributor assignment "
+                            "NOT scoped to foundryStorage (Hub workspace storage): %.120s" % block[:120]
+                        )
+                if bad_scope:
+                    passed = False
+                else:
+                    evidence.append(
+                        "PASS: foundry.bicep Blob Contributor assignments are scoped to foundryStorage "
+                        "(Hub workspace storage, not governance catalog). Catalog write withheld."
+                    )
             else:
                 evidence.append("PASS: foundry.bicep has no Blob Contributor assignments.")
 
