@@ -31,6 +31,15 @@ function ResultPanel({ task, prompt }: { task: Task; prompt: string }) {
   const sources = parsed?.['SOURCES'] || parsed?.['sources']
   const codeBlocks = parsed?.['CODE'] || parsed?.['code'] || parsed?.['CODE_BLOCK']
 
+  const dissent = Array.isArray(parsed?.['DISSENT_LOG'])
+    ? (parsed!['DISSENT_LOG'] as unknown[]).map(d => (typeof d === 'string' ? d : JSON.stringify(d))).filter(d => d.trim())
+    : []
+  const ledgerRaw = parsed?.['CLAIM_LEDGER']
+  const ledger = typeof ledgerRaw === 'string' && ledgerRaw.trim() && ledgerRaw.trim().toLowerCase() !== 'no claims recorded'
+    ? ledgerRaw.trim()
+    : ''
+  const hasDebate = dissent.length > 0 || ledger !== ''
+
   const fallbackText = task.result ?? '(no output)'
 
   const ts = fmtMs(task.execution_time_ms ?? 0)
@@ -74,6 +83,38 @@ function ResultPanel({ task, prompt }: { task: Task; prompt: string }) {
       {reasoning && (
         <ReasoningMessage>
           {typeof reasoning === 'object' ? JSON.stringify(reasoning, null, 2) : String(reasoning)}
+        </ReasoningMessage>
+      )}
+
+      {hasDebate && (
+        <ReasoningMessage title="Reasoning & debate">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {ledger && (
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: 6 }}>
+                  Claim ledger
+                </p>
+                <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{ledger}</div>
+              </div>
+            )}
+            {dissent.length > 0 && (
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: 6 }}>
+                  Debate &amp; dissent ({dissent.length})
+                </p>
+                <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 5, lineHeight: 1.55 }}>
+                  {dissent.slice(0, 12).map((d, i) => (
+                    <li key={i} style={{ whiteSpace: 'pre-wrap' }}>{d}</li>
+                  ))}
+                </ul>
+                {dissent.length > 12 && (
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                    +{dissent.length - 12} more in the full report
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
         </ReasoningMessage>
       )}
 
