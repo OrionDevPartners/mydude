@@ -55,6 +55,12 @@
       "skillPath": "skills/baoyu-comic/SKILL.md",
       "computedHash": "b89c17fc16725a79905e4c59a10ac0947cde43c45164eabc37125df6d5be90f6"
     },
+    "baoyu-compress-image": {
+      "source": "jimliu/baoyu-skills",
+      "sourceType": "github",
+      "skillPath": "skills/baoyu-compress-image/SKILL.md",
+      "computedHash": "30bc37968d803621e7833a469b722da6349665d7e80efb9a43d2f38b4928c570"
+    },
     "bash-defensive-patterns": {
       "source": "wshobson/agents",
       "sourceType": "github",
@@ -114,6 +120,12 @@
       "sourceType": "github",
       "skillPath": "skills/commit-work/SKILL.md",
       "computedHash": "88cec816d028de357ae7ede3ace36a2bc235a225e3e7d2bb18cdb5190ab6c482"
+    },
+    "content-strategy": {
+      "source": "coreyhaines31/marketingskills",
+      "sourceType": "github",
+      "skillPath": "skills/content-strategy/SKILL.md",
+      "computedHash": "13824c129ab70874c57d766c2d844f8dac7a0b366845f108a73527c9d094c4f6"
     },
     "context-driven-development": {
       "source": "wshobson/agents",
@@ -307,6 +319,12 @@
       "skillPath": "skills/humanizer/SKILL.md",
       "computedHash": "34a38e6acc60d4529612d41ffe740bca0060d3c5e89e2a0d24ae795f67157fbb"
     },
+    "image-to-video": {
+      "source": "skill-zero/s",
+      "sourceType": "github",
+      "skillPath": "tools/video/image-to-video/SKILL.md",
+      "computedHash": "a45bd007115626cbcfd5b9057a5853b4d607ba4c5542fbca375b99c2ebfa1eb4"
+    },
     "instaclaw": {
       "source": "napoleond/instaclaw",
       "sourceType": "github",
@@ -348,6 +366,12 @@
       "sourceType": "github",
       "skillPath": "plugins/llm-application-dev/skills/llm-evaluation/SKILL.md",
       "computedHash": "3dc8a6570a2d6c0ae39f86f68cf9f7c815d54e26d28743ef1cc0fcb989961e64"
+    },
+    "marketing-psychology": {
+      "source": "coreyhaines31/marketingskills",
+      "sourceType": "github",
+      "skillPath": "skills/marketing-psychology/SKILL.md",
+      "computedHash": "50d735eb0f5c36f379ed2200f21aeacc9b9ad85667b5d33ec6111857352a1340"
     },
     "mastra": {
       "source": "mastra-ai/skills",
@@ -601,6 +625,12 @@
       "skillPath": "plugins/cloud-infrastructure/skills/terraform-module-library/SKILL.md",
       "computedHash": "0cef0ea4f217dd30f7b3b22aeac2a3bbdfa0649e3b7fcece5d5fb0ea87306647"
     },
+    "threejs-interaction": {
+      "source": "cloudai-x/threejs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/threejs-interaction/SKILL.md",
+      "computedHash": "988d235b7ebd85276a584c6f81ce7c801280ebc45b401017b334136dc8a7ec82"
+    },
     "tsdown": {
       "source": "antfu/skills",
       "sourceType": "github",
@@ -618,6 +648,12 @@
       "sourceType": "github",
       "skillPath": "plugins/expo/skills/upgrading-expo/SKILL.md",
       "computedHash": "98d228925a442126789d90783fdd4ae5de33ab690024b575698057d2ffc44b40"
+    },
+    "using-git-worktrees": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "skillPath": "skills/using-git-worktrees/SKILL.md",
+      "computedHash": "bd10bc57c23040630b17c877a9bc7b4be40c35161a2e2f110d770d78e3b0a4ff"
     },
     "uv-package-manager": {
       "source": "wshobson/agents",
