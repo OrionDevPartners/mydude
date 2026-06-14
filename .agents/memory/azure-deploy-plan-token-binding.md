@@ -23,9 +23,9 @@ missing/empty — never treat one as optional):
 3. **params_hash** — parameters carry deployment effects AND secrets not fully
    represented by the template or the value-free delta.
 
-**Why:** Architect failed this task twice. First the token bound only
-`{change_type, resource_id}`; then template/params binding was added but params
-was still optional and the success output echoed `params_hash`. A partial binding
+**Why:** Two earlier attempts shipped partial bindings: the first bound only
+`{change_type, resource_id}`; the second added template/params binding but left
+params optional and echoed `params_hash` back to the caller. A partial binding
 lets a drifted or unpinned payload reach the irreversible action.
 
 **How to apply:**

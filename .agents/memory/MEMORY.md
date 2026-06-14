@@ -1,6 +1,6 @@
 - [Capability governance gates](capability-gates.md) — how MyDude's browser/SSH capabilities must enforce allow-lists; pitfalls that bypass them.
 - [Two-phase cancel gate](two-phase-cancel-gate.md) — irreversible-action confirm gate must be decoupled from best-effort review login, or it goes invisible/untestable.
-- [Deploy plan-token binding](azure-deploy-plan-token-binding.md) — billable/irreversible apply token must bind FULL payload (plan+template+params hashes, delta-aware); all required at mint+apply; never echo fingerprints back.
+- [Deploy plan-token binding](azure-deploy-plan-token-binding.md) — billable IaC apply token must bind the FULL payload (plan+template+params hashes, delta-aware); never echo the fingerprints back.
 - [Local Playwright in this container](playwright-local-env.md) — local Chromium can't launch (missing system libs); Browserbase is the prod path.
 - [uv re-lock blocked by pytorch-cpu sources](uv-relock-pytorch-cpu-sources.md) — `uv lock`/`uv sync` fails on PyPI-available pkgs; vestigial `[tool.uv.sources]` vs lock; deploy uses `uv sync --frozen`.
 - [Governed degraded-fallback rule](governed-degraded-fallback.md) — fallbacks must use live approved prompt + mark/audit degraded; never a hardcoded copy or raw ungoverned output.
