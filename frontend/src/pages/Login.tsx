@@ -1,8 +1,8 @@
-import { useState, FormEvent } from 'react'
+import { useState, FormEvent, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { login, ApiError } from '@/lib/api'
+import { login, devLogin, getAuthDevInfo, ApiError } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
-import { Shield, Eye, EyeOff, AlertCircle } from 'lucide-react'
+import { Shield, Eye, EyeOff, AlertCircle, Terminal } from 'lucide-react'
 
 export function Login() {
   const [username, setUsername] = useState('')
@@ -10,8 +10,16 @@ export function Login() {
   const [error, setError]       = useState<string | null>(null)
   const [loading, setLoading]   = useState(false)
   const [showPw, setShowPw]     = useState(false)
+  const [devAvailable, setDevAvailable] = useState(false)
+  const [devLoading, setDevLoading]     = useState(false)
   const navigate = useNavigate()
   const { refetch, branding } = useAuth()
+
+  useEffect(() => {
+    getAuthDevInfo()
+      .then(r => setDevAvailable(r.available))
+      .catch(() => setDevAvailable(false))
+  }, [])
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -27,6 +35,21 @@ export function Login() {
       else setError('Login failed')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleDevLogin() {
+    setDevLoading(true)
+    setError(null)
+    try {
+      await devLogin()
+      await refetch()
+      navigate('/')
+    } catch (err) {
+      if (err instanceof ApiError) setError(err.message)
+      else setError('Developer login failed')
+    } finally {
+      setDevLoading(false)
     }
   }
 
@@ -159,6 +182,59 @@ export function Login() {
         <p style={{ textAlign: 'center', marginTop: 16, fontSize: 11.5, color: 'var(--text-muted)', letterSpacing: '0.02em' }}>
           Session secured with signed cookies
         </p>
+
+        {devAvailable && (
+          <div style={{ marginTop: 20 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+            }}>
+              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.07)' }} />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+                Development only
+              </span>
+              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.07)' }} />
+            </div>
+            <button
+              type="button"
+              onClick={handleDevLogin}
+              disabled={devLoading}
+              style={{
+                width: '100%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                padding: '10px 18px',
+                fontSize: 13,
+                fontWeight: 600,
+                background: 'rgba(124,92,191,0.12)',
+                border: '1px solid rgba(124,92,191,0.35)',
+                borderRadius: 10,
+                color: 'rgba(180,155,230,0.9)',
+                cursor: devLoading ? 'not-allowed' : 'pointer',
+                transition: 'background 0.15s, border-color 0.15s',
+                opacity: devLoading ? 0.6 : 1,
+              }}
+              onMouseEnter={e => {
+                if (!devLoading) {
+                  (e.currentTarget as HTMLButtonElement).style.background = 'rgba(124,92,191,0.22)'
+                  ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(124,92,191,0.55)'
+                }
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLButtonElement).style.background = 'rgba(124,92,191,0.12)'
+                ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(124,92,191,0.35)'
+              }}
+            >
+              {devLoading ? (
+                <div className="spinner" style={{ width: 15, height: 15 }} />
+              ) : (
+                <Terminal size={15} strokeWidth={1.75} />
+              )}
+              Developer sign-in
+            </button>
+            <p style={{ textAlign: 'center', marginTop: 8, fontSize: 10.5, color: 'var(--text-muted)', letterSpacing: '0.02em' }}>
+              Password-free. Not available in production.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   )

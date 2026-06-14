@@ -163,6 +163,37 @@ async def api_me(request: Request):
     }
 
 
+@router.get("/auth/dev-info")
+async def api_auth_dev_info():
+    """Public endpoint — tells the login page whether the developer bypass is
+    available.  Returns ``available: true`` only outside a deployment so the
+    button is never rendered on the live production site.
+    """
+    from src.web.auth import _in_deployment
+    return {"available": not _in_deployment()}
+
+
+@router.post("/auth/dev-login")
+async def api_auth_dev_login(request: Request):
+    """One-click developer sign-in for the workspace / dev environment.
+
+    Double-gated:
+    - Returns 403 when ``REPLIT_DEPLOYMENT=1`` — the endpoint is inert in production.
+    - Issues a signed session cookie carrying the dev-bypass identity so the
+      React SPA recognises the user as authenticated without a password.
+    """
+    from src.web.auth import _in_deployment, make_dev_session_token, _set_session_cookie
+    if _in_deployment():
+        raise HTTPException(
+            status_code=403,
+            detail="Developer login is not available in the production deployment.",
+        )
+    token = make_dev_session_token()
+    resp = JSONResponse({"ok": True, "username": "dev-bypass", "is_admin": True, "dev_bypass": True})
+    _set_session_cookie(resp, token)
+    return resp
+
+
 def _actor(auth: dict) -> dict:
     """Audit attribution for the currently authenticated identity."""
     return {

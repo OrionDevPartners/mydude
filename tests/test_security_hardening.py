@@ -421,6 +421,72 @@ def test_anonymous_me_is_unauthorized():
 
 
 # --------------------------------------------------------------------------- #
+# Dev-bypass endpoints  (src/web/api/router.py  ->  /api/auth/dev-*)
+# --------------------------------------------------------------------------- #
+#
+# Rules under test:
+#   1. /auth/dev-info returns available:true when REPLIT_DEPLOYMENT is unset.
+#   2. /auth/dev-info returns available:false when REPLIT_DEPLOYMENT=1.
+#   3. /auth/dev-login grants a session cookie + 200 when not in a deployment.
+#   4. /auth/dev-login returns 403 when REPLIT_DEPLOYMENT=1.
+#   5. The session cookie issued by /auth/dev-login is accepted by /api/me
+#      (resolve_session honours dev-bypass cookies outside deployments).
+#   6. A dev-bypass cookie is REJECTED (401) when REPLIT_DEPLOYMENT=1.
+
+def test_dev_info_available_outside_deployment():
+    with _env(REPLIT_DEPLOYMENT=None):
+        r = _client().get("/api/auth/dev-info")
+    assert r.status_code == 200, r.text
+    assert r.json().get("available") is True, r.json()
+
+
+def test_dev_info_unavailable_in_deployment():
+    with _env(REPLIT_DEPLOYMENT="1"):
+        r = _client().get("/api/auth/dev-info")
+    assert r.status_code == 200, r.text
+    assert r.json().get("available") is False, r.json()
+
+
+def test_dev_login_grants_session_outside_deployment():
+    with _env(REPLIT_DEPLOYMENT=None):
+        r = _client().post("/api/auth/dev-login")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("ok") is True, body
+    assert body.get("dev_bypass") is True, body
+    assert "session_token" in r.cookies or "set-cookie" in {k.lower() for k in r.headers}
+
+
+def test_dev_login_blocked_in_deployment():
+    with _env(REPLIT_DEPLOYMENT="1"):
+        r = _client().post("/api/auth/dev-login")
+    assert r.status_code == 403, (r.status_code, r.text)
+
+
+def test_dev_bypass_cookie_accepted_by_me_outside_deployment():
+    with _env(REPLIT_DEPLOYMENT=None):
+        from src.web.auth import make_dev_session_token
+        token = make_dev_session_token()
+        c = _client()
+        c.cookies.set("session_token", token)
+        r = c.get("/api/me")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("authenticated") is True, body
+    assert body.get("dev_bypass") is True, body
+
+
+def test_dev_bypass_cookie_rejected_in_deployment():
+    with _env(REPLIT_DEPLOYMENT="1", DEV_AUTH_BYPASS=None):
+        from src.web.auth import make_dev_session_token
+        token = make_dev_session_token()
+        c = _client()
+        c.cookies.set("session_token", token)
+        r = c.get("/api/me")
+    assert r.status_code == 401, (r.status_code, r.text)
+
+
+# --------------------------------------------------------------------------- #
 # Standalone runner (mirrors the other suites in tests/)
 # --------------------------------------------------------------------------- #
 

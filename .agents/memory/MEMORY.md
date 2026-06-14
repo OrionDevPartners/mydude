@@ -36,3 +36,4 @@
 - [Cognee KG save coalescing](cognee-kg-save-coalescing.md) — KG JSON save must stay deferred/debounced + batched (never per-node inline writes); DB is source of truth; instance captures its own file path.
 - [Azure post-provision wiring](azure-postprovision-wiring.md) — deployed stack is private-only; KV/migrator/Cosmos/doctor wiring must run from inside the VNet, not the workspace.
 - [Swarm-result UI e2e without a live run](swarm-result-ui-e2e.md) — a live swarm run = ~240 provider calls; verify result rendering via an injected completed TaskRun row + throwaway User instead.
+- [Developer access gate](developer-access-gate.md) — login page must show a one-click dev bypass in dev; endpoints double-gated so they're inert when REPLIT_DEPLOYMENT=1.

@@ -13,6 +13,7 @@ MyDude.io is a web-based AI business automation platform built with FastAPI. It 
 - Robust error handling, self-healing capabilities, clear audit trails
 - Prevention of unverified claims; risk mitigation for LLM outputs
 - Dark theme UI, self-contained (no external CDN dependencies)
+- **Developer access principle (permanent):** An access/beta gate must NEVER lock the developer out of the site in the dev/workspace environment. The login page shows a one-click "Developer sign-in" button when `REPLIT_DEPLOYMENT` is not `1`. That button and its backing endpoints (`/api/auth/dev-info`, `/api/auth/dev-login`) are hard-gated to return 403 / `available: false` when `REPLIT_DEPLOYMENT=1` — production stays fully locked. Never remove this affordance or weaken the production gate.
 
 ## Governance Pillars (HARD — apply perpetually, in planning AND building, dev AND prod)
 These are non-negotiable foundational cores for MyDude.io and every sub-stack built on it. Honor them in every plan and every change; they also govern MyDude's own LLM swarm (cloud and self-hosted full-weight models on our VMs).

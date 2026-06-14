@@ -74,6 +74,12 @@ export const login = (username: string, password: string) =>
   })
 export const logout = () =>
   request<{ ok: boolean }>('/logout', { method: 'POST' })
+export const getAuthDevInfo = () =>
+  request<{ available: boolean }>('/auth/dev-info')
+export const devLogin = () =>
+  request<{ ok: boolean; username: string; is_admin: boolean; dev_bypass: boolean }>('/auth/dev-login', {
+    method: 'POST',
+  })
 
 // User management (admin only)
 export interface AppUser {

@@ -165,6 +165,18 @@ def make_session_token(user) -> str:
     )
 
 
+def make_dev_session_token() -> str:
+    """Issue a signed session cookie carrying the dev-bypass identity.
+
+    Used by the /auth/dev-login endpoint so the React SPA can authenticate
+    via a one-click button in the development environment.  The cookie is
+    structurally identical to a normal session cookie; ``resolve_session``
+    recognises it by ``dev_bypass=True`` + ``uid=None`` and re-validates
+    the deployment gate before honouring it.
+    """
+    return _serializer.dumps(_dev_bypass_identity())
+
+
 def resolve_session(request: Request):
     """Return the live identity dict for the request, or None if not authed.
 
@@ -185,6 +197,10 @@ def resolve_session(request: Request):
         return None
     uid = data.get("uid")
     if uid is None:
+        # Accept a dev-bypass cookie (issued by /auth/dev-login) only when
+        # the deployment gate passes — never in production.
+        if data.get("dev_bypass") and not _in_deployment():
+            return _dev_bypass_identity()
         return None  # legacy shared-password session — force re-login
     from src.database import SessionLocal
     from src.models import User
