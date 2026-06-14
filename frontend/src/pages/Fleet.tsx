@@ -5,8 +5,10 @@ import {
   listProvisioning, planProvision, approveProvision,
   setSalesConfig, getSalesBookingStatus,
   startSalesConversation, postSalesMessage,
+  getFleetVoices, getFleetTelephonyStatus, setBotVoice, placeBotCall, listBotCalls,
   FleetBot, FleetTeam, ProvisioningJob, ProvisionedResource,
   SalesConfig, SalesConversation,
+  FleetVoicesData, FleetTelephonyStatus, CallRow,
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, PageHeader, Badge, Empty } from '@/components/ui'
@@ -14,8 +16,13 @@ import { fmtDate } from '@/lib/utils'
 import {
   Bot, Users, Server, Play, Square, Trash2, Plus, ChevronDown, ChevronRight,
   CheckCircle, AlertCircle, Clock, Zap, Package, GitBranch, Cpu, TrendingUp,
-  MessageSquare, Send, Calendar, ShieldCheck
+  MessageSquare, Send, Calendar, ShieldCheck, Phone, PhoneOutgoing, Mic
 } from 'lucide-react'
+
+const CALL_STATUS_COLOR: Record<string, string> = {
+  queued: 'gray', ringing: 'orange', in_progress: 'green',
+  completed: 'blue', failed: 'red', no_answer: 'orange', busy: 'orange', canceled: 'gray',
+}
 
 const LIFECYCLE_COLOR: Record<string, string> = {
   defined: 'gray', running: 'green', stopped: 'orange', failed: 'red',
@@ -558,11 +565,166 @@ function SalesPanel({ bot, onAction }: { bot: FleetBot; onAction: () => void }) 
   )
 }
 
-function BotCard({ bot, onAction }: { bot: FleetBot; onAction: () => void }) {
+function VoicePanel({
+  bot, voices, telephony, onAction,
+}: {
+  bot: FleetBot
+  voices: FleetVoicesData | null
+  telephony: FleetTelephonyStatus | null
+  onAction: () => void
+}) {
+  const [voiceId, setVoiceId] = useState(bot.voice_id || '')
+  const [phone, setPhone] = useState(bot.phone_number || '')
+  const [toNumber, setToNumber] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [calling, setCalling] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [ok, setOk] = useState<string | null>(null)
+  const [calls, setCalls] = useState<CallRow[]>([])
+  const [callsLoading, setCallsLoading] = useState(false)
+
+  const voiceConnected = !!voices?.connected
+  const telConnected = !!telephony?.telephony?.connected
+  const activeCalls = telephony?.by_bot?.[String(bot.id)]?.active_calls || 0
+
+  async function refreshCalls() {
+    setCallsLoading(true)
+    try { const r = await listBotCalls(bot.id, 20); setCalls(r.calls) }
+    catch { /* recent-calls list is best-effort; errors surface on actions */ }
+    finally { setCallsLoading(false) }
+  }
+
+  useEffect(() => { refreshCalls() }, [bot.id])
+
+  async function saveVoice() {
+    setSaving(true); setErr(null); setOk(null)
+    try {
+      await setBotVoice(bot.id, { voice_id: voiceId, phone_number: phone })
+      setOk('Voice settings saved.')
+      onAction()
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : 'Save failed') }
+    finally { setSaving(false) }
+  }
+
+  async function placeCall() {
+    if (!toNumber.trim()) { setErr('Enter a destination number (E.164, e.g. +14155552671).'); return }
+    setCalling(true); setErr(null); setOk(null)
+    try {
+      const r = await placeBotCall(bot.id, toNumber.trim())
+      if (!r.allowed) {
+        setErr(`Call blocked: ${r.reason || 'not permitted'}`)
+      } else {
+        setOk(`Call placed${r.status ? ` (${r.status})` : ''}${r.degraded ? ' — degraded mode' : ''}.`)
+        setToNumber('')
+      }
+      onAction(); refreshCalls()
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : 'Call failed') }
+    finally { setCalling(false) }
+  }
+
+  return (
+    <div style={{ marginTop: 10, padding: 12, background: 'var(--surface-2)', borderRadius: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        <Phone size={14} style={{ color: 'var(--accent)' }} />
+        <span style={{ fontSize: 12.5, fontWeight: 700 }}>Voice &amp; telephony</span>
+        <Badge color={voiceConnected ? 'green' : 'orange'}>
+          <Mic size={10} style={{ marginRight: 3 }} />
+          Voice: {voiceConnected ? 'connected' : 'not connected'}
+        </Badge>
+        <Badge color={telConnected ? 'green' : 'orange'}>
+          <Phone size={10} style={{ marginRight: 3 }} />
+          Telephony: {telConnected ? 'connected' : 'not connected'}
+        </Badge>
+        {activeCalls > 0 && (
+          <Badge color="green"><PhoneOutgoing size={10} style={{ marginRight: 3 }} />{activeCalls} active</Badge>
+        )}
+      </div>
+
+      {err && <Alert type="error" onClose={() => setErr(null)}>{err}</Alert>}
+      {ok && <Alert type="success" onClose={() => setOk(null)}>{ok}</Alert>}
+
+      {!voiceConnected && (
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+          {voices?.detail || 'No voice provider connected.'} Add an ElevenLabs key (connector or ELEVENLABS_API_KEY) in the API Vault to enable speech.
+        </p>
+      )}
+      {!telConnected && (
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+          {telephony?.telephony?.detail || 'No telephony provider connected.'} Add Twilio credentials (connector or TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN) to place and receive calls.
+        </p>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+        <div>
+          <p className="form-label" style={{ marginBottom: 4 }}>Voice</p>
+          {voiceConnected && (voices?.voices.length ?? 0) > 0 ? (
+            <select className="form-input" style={{ fontSize: 12 }} value={voiceId} onChange={e => setVoiceId(e.target.value)}>
+              <option value="">— No voice —</option>
+              {voices?.voices.map(v => <option key={v.voice_id} value={v.voice_id}>{v.name || v.voice_id}</option>)}
+            </select>
+          ) : (
+            <input className="form-input" style={{ fontSize: 12 }} value={voiceId} onChange={e => setVoiceId(e.target.value)}
+              placeholder="Voice ID (provider not connected)" />
+          )}
+        </div>
+        <div>
+          <p className="form-label" style={{ marginBottom: 4 }}>Caller-ID number</p>
+          <input className="form-input" style={{ fontSize: 12 }} value={phone} onChange={e => setPhone(e.target.value)}
+            placeholder="+14155552671 (E.164)" />
+        </div>
+      </div>
+      <button className="btn btn-primary btn-sm" disabled={saving} onClick={saveVoice} style={{ gap: 5 }}>
+        {saving ? <Spinner size={12} /> : <CheckCircle size={12} />} Save voice settings
+      </button>
+
+      <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+        <p className="form-label" style={{ marginBottom: 4 }}>Place an outbound call</p>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input className="form-input" style={{ flex: 1, fontSize: 12 }} value={toNumber} onChange={e => setToNumber(e.target.value)}
+            placeholder="Destination number, +14155552671" />
+          <button className="btn btn-sm" disabled={calling} onClick={placeCall} style={{ gap: 5, background: 'var(--accent)', color: '#fff' }}>
+            {calling ? <Spinner size={12} /> : <PhoneOutgoing size={12} />} Call
+          </button>
+        </div>
+        <p style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 5 }}>
+          Every call is broker-gated, capability-audited, and recorded with a decision trace.
+        </p>
+      </div>
+
+      <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <p className="form-label" style={{ margin: 0 }}>Recent calls</p>
+          <button className="btn btn-ghost btn-sm" onClick={refreshCalls} style={{ padding: '2px 7px' }}>Refresh</button>
+        </div>
+        {callsLoading && <p style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</p>}
+        {!callsLoading && calls.length === 0 && <p style={{ fontSize: 11, color: 'var(--text-muted)' }}>No calls yet.</p>}
+        {calls.map(c => (
+          <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 8px', background: 'var(--surface-1)', borderRadius: 6, marginBottom: 5, flexWrap: 'wrap' }}>
+            <Badge color={CALL_STATUS_COLOR[c.status] || 'gray'}>{c.status}</Badge>
+            <Badge color="gray">{c.direction}</Badge>
+            <span style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>{c.to_number || c.from_number || '—'}</span>
+            {c.turns > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>· {c.turns} turns</span>}
+            {c.degraded && <Badge color="orange">degraded</Badge>}
+            {c.error && <span style={{ fontSize: 11, color: 'var(--error)' }}>· {c.error}</span>}
+            <span style={{ fontSize: 10.5, color: 'var(--text-muted)', marginLeft: 'auto' }}>{fmtDate(c.created_at)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function BotCard({ bot, onAction, voices, telephony }: {
+  bot: FleetBot
+  onAction: () => void
+  voices: FleetVoicesData | null
+  telephony: FleetTelephonyStatus | null
+}) {
   const [expanded, setExpanded] = useState(false)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [goalInput, setGoalInput] = useState('')
+  const activeCalls = telephony?.by_bot?.[String(bot.id)]?.active_calls || 0
 
   async function start() {
     setLoading(true); setErr(null)
@@ -597,6 +759,8 @@ function BotCard({ bot, onAction }: { bot: FleetBot; onAction: () => void }) {
             <StatusBadge status={bot.lifecycle} />
             {bot.spawned_by_id && <Badge color="purple">spawned</Badge>}
             {bot.team_id && <Badge color="gray">team #{bot.team_id}</Badge>}
+            {bot.voice_enabled && <Badge color="blue"><Mic size={10} style={{ marginRight: 3 }} />voice</Badge>}
+            {activeCalls > 0 && <Badge color="green"><PhoneOutgoing size={10} style={{ marginRight: 3 }} />{activeCalls} on call</Badge>}
           </div>
           {bot.goal && <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bot.goal}</p>}
         </div>
@@ -665,6 +829,7 @@ function BotCard({ bot, onAction }: { bot: FleetBot; onAction: () => void }) {
               {bot.last_task_run_id && <> · Task #{bot.last_task_run_id}</>}
             </p>
           )}
+          <VoicePanel bot={bot} voices={voices} telephony={telephony} onAction={onAction} />
           <SalesPanel bot={bot} onAction={onAction} />
         </div>
       )}
@@ -914,11 +1079,13 @@ export function Fleet() {
   const { data: botsData, loading: botsLoading, error: botsError, refetch: refetchBots } = useApi(listBots, [])
   const { data: teamsData, loading: teamsLoading, error: teamsError, refetch: refetchTeams } = useApi(listTeams, [])
   const { data: provData, loading: provLoading, error: provError, refetch: refetchProv } = useApi(listProvisioning, [])
+  const { data: voicesData } = useApi(getFleetVoices, [])
+  const { data: telephonyData, refetch: refetchTelephony } = useApi(getFleetTelephonyStatus, [])
   const [actionErr, setActionErr] = useState<string | null>(null)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
 
   function refetchAll() {
-    refetchBots(); refetchTeams(); refetchProv(); refetchStatus()
+    refetchBots(); refetchTeams(); refetchProv(); refetchStatus(); refetchTelephony()
   }
 
   async function handleApprove(jobId: number) {
@@ -957,7 +1124,7 @@ export function Fleet() {
           {!botsLoading && bots.length === 0 && (
             <Empty message="No bots defined yet. Create your first bot above." icon={<Bot size={32} />} />
           )}
-          {bots.map(b => <BotCard key={b.id} bot={b} onAction={refetchAll} />)}
+          {bots.map(b => <BotCard key={b.id} bot={b} onAction={refetchAll} voices={voicesData} telephony={telephonyData} />)}
         </div>
       )}
 

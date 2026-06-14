@@ -431,6 +431,213 @@ class Integrations:
         )
         return json.dumps(result)
 
+    async def voice_synthesize(self, params: Dict[str, Any]) -> str:
+        """Governed text-to-speech. Called only by the broker after contract+policy
+        validation. Synthesizes via the provider-agnostic voice facade and parks
+        the audio behind a short-lived token (for telephony playback / previews).
+        Provider errors fail loud (no silent/mock audio) and are audited."""
+        import json
+        from src.avatar.voice import (
+            synthesize, AvatarNotConfigured,
+        )
+        from src.avatar.providers import AvatarAuthError, AvatarProviderError
+        from src.telephony.audio_store import store_audio
+        source = params.get("source")
+        text = (params.get("text") or "").strip()
+        voice_id = (params.get("voice_id") or "").strip()
+        governed = params.get("governed") is True
+        decision_trace_id = params.get("decision_trace_id")
+        if not text or not voice_id:
+            audit_capability("voice_synthesize", status="error",
+                             detail="missing text or voice_id", source=source)
+            return json.dumps({"ok": False, "error": "text and voice_id are required."})
+        # Proof-of-governance gate (pillar #4): TTS must only voice text that has
+        # already passed a governance gate. The contract requires governed=True,
+        # but re-check here so a direct (non-broker) call path can never synthesize
+        # arbitrary ungoverned text. Rejections are audited as blocked.
+        if not governed:
+            audit_capability("voice_synthesize", target="voice=%s" % voice_id,
+                             status="blocked",
+                             detail="ungoverned synthesis rejected (governed flag not set)",
+                             source=source)
+            return json.dumps({
+                "ok": False,
+                "error": "voice_synthesize requires governed text "
+                         "(governed=True with a decision trace).",
+            })
+        try:
+            # synthesize + store both do blocking I/O — keep the loop free.
+            audio, content_type = await asyncio.to_thread(synthesize, text, voice_id)
+            token = await asyncio.to_thread(
+                store_audio, audio, content_type, params.get("call_session_id")
+            )
+            _detail = "bytes=%d" % len(audio)
+            if decision_trace_id:
+                _detail += " trace=%s" % decision_trace_id
+            audit_capability("voice_synthesize", target="voice=%s" % voice_id,
+                             backend="elevenlabs", status="ok",
+                             detail=_detail, source=source)
+            return json.dumps({"ok": True, "audio_token": token,
+                               "content_type": content_type, "bytes": len(audio)})
+        except (AvatarNotConfigured, AvatarAuthError, AvatarProviderError) as e:
+            audit_capability("voice_synthesize", target="voice=%s" % voice_id,
+                             backend="elevenlabs", status="error",
+                             detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False, "error": str(e)})
+
+    async def telephony_place_call(self, params: Dict[str, Any]) -> str:
+        """Governed outbound call. Called only by the broker after contract+policy
+        validation. Creates a CallSession, asks the provider to dial, and records
+        the provider call SID. Provider errors fail loud (no mock SID)."""
+        import json
+        from datetime import datetime
+        from src.database import SessionLocal
+        from src.models import Bot, CallSession
+        from src.telephony.facade import (
+            place_call, public_base_url,
+            TelephonyNotConfigured, TelephonyAuthError, TelephonyProviderError,
+        )
+        source = params.get("source")
+        bot_id = params.get("bot_id")
+        to_number = (params.get("to_number") or "").strip()
+
+        db = SessionLocal()
+        try:
+            bot = db.query(Bot).filter(Bot.id == bot_id).first()
+            if not bot:
+                audit_capability("telephony_place_call", status="error",
+                                 detail="unknown bot_id=%s" % bot_id, source=source)
+                return json.dumps({"ok": False, "error": "Unknown bot_id %s." % bot_id})
+            from_number = (params.get("from_number") or bot.phone_number or "").strip() or None
+            cs = CallSession(
+                bot_id=bot.id, provider="twilio", direction="outbound",
+                status="queued", to_number=to_number, from_number=from_number,
+            )
+            db.add(cs)
+            db.commit()
+            call_session_id = cs.id
+        finally:
+            db.close()
+
+        # Webhooks must be absolute, externally-reachable URLs (fail loud if not).
+        try:
+            base = public_base_url()
+        except TelephonyNotConfigured as e:
+            _mark_call_failed(call_session_id, str(e))
+            audit_capability("telephony_place_call", target=to_number, status="error",
+                             detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False, "error": str(e), "call_session_id": call_session_id})
+        answer_url = "%s/api/telephony/voice?cs=%d" % (base, call_session_id)
+        status_cb = "%s/api/telephony/status?cs=%d" % (base, call_session_id)
+
+        try:
+            res = await asyncio.to_thread(
+                place_call, to_number, answer_url,
+                from_number, status_cb,
+            )
+        except (TelephonyNotConfigured, TelephonyAuthError, TelephonyProviderError) as e:
+            _mark_call_failed(call_session_id, str(e))
+            audit_capability("telephony_place_call", target=to_number, backend="twilio",
+                             status="error", detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False, "error": str(e), "call_session_id": call_session_id})
+
+        # Record the provider SID + initial status on the session.
+        db = SessionLocal()
+        try:
+            cs = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+            if cs:
+                cs.provider_call_sid = res.get("sid")
+                cs.status = (res.get("status") or "queued")
+                cs.started_at = datetime.utcnow()
+                db.commit()
+        finally:
+            db.close()
+        audit_capability("telephony_place_call", target=to_number, backend="twilio",
+                         status="ok", detail="sid=%s" % res.get("sid"), source=source)
+        return json.dumps({"ok": True, "call_sid": res.get("sid"),
+                           "status": res.get("status"), "call_session_id": call_session_id})
+
+    async def telephony_receive_call(self, params: Dict[str, Any]) -> str:
+        """Governed inbound call acceptance. Called only by the broker after
+        contract+policy validation. Routes the dialed number to the owning bot and
+        opens a CallSession. Fails loud (honestly) when no bot owns the number."""
+        import json
+        from datetime import datetime
+        from src.database import SessionLocal
+        from src.models import Bot, CallSession
+        source = params.get("source")
+        to_number = (params.get("to_number") or "").strip()
+        from_number = (params.get("from_number") or "").strip() or None
+        call_sid = (params.get("call_sid") or "").strip() or None
+
+        db = SessionLocal()
+        try:
+            bot = db.query(Bot).filter(Bot.phone_number == to_number).first() if to_number else None
+            if not bot:
+                audit_capability("telephony_receive_call", target=to_number, backend="twilio",
+                                 status="error", detail="no bot owns this number", source=source)
+                return json.dumps({"ok": False,
+                                   "error": "No bot is assigned to %s." % (to_number or "(unknown)")})
+            cs = CallSession(
+                bot_id=bot.id, provider="twilio", direction="inbound",
+                status="in_progress", to_number=to_number, from_number=from_number,
+                provider_call_sid=call_sid, started_at=datetime.utcnow(),
+            )
+            db.add(cs)
+            db.commit()
+            call_session_id = cs.id
+            bot_id = bot.id
+        finally:
+            db.close()
+        audit_capability("telephony_receive_call", target=to_number, backend="twilio",
+                         status="ok", detail="bot_id=%d sid=%s" % (bot_id, call_sid or ""),
+                         source=source)
+        return json.dumps({"ok": True, "call_session_id": call_session_id, "bot_id": bot_id})
+
+    async def telephony_turn(self, params: Dict[str, Any]) -> str:
+        """Governed single conversation turn on a live call. Called only by the
+        broker after contract+policy validation. Delegates to the telephony
+        conversation engine, which governs the reply (CS/HR), writes a
+        DecisionTrace, and synthesizes the spoken line."""
+        import json
+        from src.telephony.conversation import run_turn
+        source = params.get("source")
+        call_session_id = params.get("call_session_id")
+        caller_text = params.get("caller_text")
+        try:
+            result = await run_turn(call_session_id, caller_text=caller_text)
+        except Exception as e:  # noqa: BLE001 — surface as a governed error, audited
+            audit_capability("telephony_turn", target=str(call_session_id), status="error",
+                             detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False, "error": str(e)})
+        audit_capability(
+            "telephony_turn", target=str(call_session_id), status="ok",
+            detail="degraded=%s end=%s trace=%s" % (
+                result.get("degraded"), result.get("end_call"), result.get("trace_id")),
+            source=source,
+        )
+        return json.dumps(result)
+
+
+def _mark_call_failed(call_session_id, error):
+    """Mark a CallSession failed with an error reason. Best-effort; never raises."""
+    try:
+        from datetime import datetime
+        from src.database import SessionLocal
+        from src.models import CallSession
+        db = SessionLocal()
+        try:
+            cs = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+            if cs:
+                cs.status = "failed"
+                cs.error = str(error)[:2000]
+                cs.ended_at = datetime.utcnow()
+                db.commit()
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to mark call %s failed: %s", call_session_id, e)
+
 
 async def _run_cmd(cmd: List[str]) -> str:
     def run():

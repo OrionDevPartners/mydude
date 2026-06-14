@@ -121,6 +121,20 @@ def _precond_item_not_inline_secret(params: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+_E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+
+
+def _precond_e164_destination(params: Dict[str, Any]) -> Optional[str]:
+    """Outbound call destination must be a valid E.164 number (+ then 7-15 digits)."""
+    num = (params.get("to_number") or "").strip()
+    if num and not _E164_RE.match(num):
+        return (
+            "to_number must be E.164 format (e.g. +14155550123). "
+            "Got: '%s'" % num[:40]
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Contract dataclass
 # ---------------------------------------------------------------------------
@@ -387,6 +401,79 @@ _CONTRACTS: Dict[str, CapabilityContract] = {
             "ENABLE_SALES_CAPABILITY must not be set to false",
         ],
         enforced_preconditions=[],
+    ),
+    "telephony_place_call": CapabilityContract(
+        capability="telephony_place_call",
+        category=CapabilityCategory.TOOL,
+        description="Place an outbound phone call from a Fleet bot to a destination number.",
+        required_fields=["bot_id", "to_number"],
+        optional_fields=["from_number", "source", "domain", "team"],
+        input_schema={"bot_id": "int", "to_number": "str", "from_number": "str",
+                      "source": "str"},
+        output_schema={"ok": "bool", "call_sid": "str", "status": "str",
+                       "call_session_id": "int"},
+        epistemic_preconditions=[
+            "to_number must be a valid E.164 phone number",
+            "A telephony provider (e.g. Twilio) must be connected or vault-configured",
+            "ENABLE_TELEPHONY_CAPABILITY must not be set to false",
+            "Production environment requires ALLOW_PROD_CAPABILITIES=true",
+        ],
+        enforced_preconditions=[
+            ("e164_destination", _precond_e164_destination),
+        ],
+    ),
+    "telephony_receive_call": CapabilityContract(
+        capability="telephony_receive_call",
+        category=CapabilityCategory.TOOL,
+        description="Accept an inbound phone call routed to a Fleet bot's number.",
+        required_fields=["to_number"],
+        optional_fields=["from_number", "call_sid", "source"],
+        input_schema={"to_number": "str", "from_number": "str", "call_sid": "str",
+                      "source": "str"},
+        output_schema={"ok": "bool", "call_session_id": "int", "bot_id": "int"},
+        epistemic_preconditions=[
+            "to_number must map to an existing bot's phone_number",
+            "A telephony provider must be connected or vault-configured",
+            "ENABLE_TELEPHONY_CAPABILITY must not be set to false",
+        ],
+        enforced_preconditions=[],
+    ),
+    "telephony_turn": CapabilityContract(
+        capability="telephony_turn",
+        category=CapabilityCategory.TOOL,
+        description="Run one governed conversation turn on a live call (draft, score, speak).",
+        required_fields=["call_session_id"],
+        optional_fields=["caller_text", "source"],
+        input_schema={"call_session_id": "int", "caller_text": "str", "source": "str"},
+        output_schema={"ok": "bool", "reply_text": "str", "audio_token": "str",
+                       "end_call": "bool", "degraded": "bool", "trace_id": "int"},
+        epistemic_preconditions=[
+            "call_session_id must reference an active call session",
+            "Each spoken reply is compliance/hallucination governed before playback",
+            "A DecisionTrace is recorded for every turn",
+        ],
+        enforced_preconditions=[],
+    ),
+    "voice_synthesize": CapabilityContract(
+        capability="voice_synthesize",
+        category=CapabilityCategory.TOOL,
+        description="Synthesize speech audio from text via the voice provider (ElevenLabs).",
+        required_fields=["text", "voice_id", "governed"],
+        optional_fields=["source", "decision_trace_id", "call_session_id"],
+        input_schema={"text": "str", "voice_id": "str", "source": "str",
+                      "governed": "bool", "decision_trace_id": "int",
+                      "call_session_id": "int"},
+        output_schema={"ok": "bool", "content_type": "str", "bytes": "int"},
+        epistemic_preconditions=[
+            "A voice provider must be connected or vault-configured",
+            "Text must be governed/operator-aligned before synthesis",
+        ],
+        enforced_preconditions=[
+            # Proof-of-governance: TTS only synthesizes text that has already
+            # passed a governance gate. `governed` is a required field above and
+            # must be True (the contract rejects missing/False), so arbitrary
+            # ungoverned text cannot reach the synthesizer via any path.
+        ],
     ),
     "read_secret_raw": CapabilityContract(
         capability="read_secret_raw",

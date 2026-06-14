@@ -19,6 +19,8 @@ _AUDITED_CAPABILITIES = {
     "imap_read_receipts", "gmail_fetch_code",
     "bot_spawn", "fleet_provision_plan", "fleet_provision_approve",
     "calendly_book",
+    "telephony_place_call", "telephony_receive_call", "telephony_turn",
+    "voice_synthesize",
 }
 
 
@@ -167,6 +169,22 @@ class CapabilityBroker:
 
         if capability == "calendly_book":
             out = await self.integrations.calendly_book(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "voice_synthesize":
+            out = await self.integrations.voice_synthesize(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "telephony_place_call":
+            out = await self.integrations.telephony_place_call(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "telephony_receive_call":
+            out = await self.integrations.telephony_receive_call(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "telephony_turn":
+            out = await self.integrations.telephony_turn(params)
             return BrokerResult(True, decision, out)
 
         # A genuinely-new (unimplemented) capability is being requested.

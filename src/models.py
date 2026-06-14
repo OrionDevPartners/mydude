@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Text, Boolean, DateTime, Float, JSON,
+    LargeBinary,
     UniqueConstraint,
     ForeignKey
 )
@@ -657,6 +658,11 @@ class Bot(Base):
     # closing prompt, question cap, AI-disclosure text, qualification threshold).
     # Null when the bot is not configured for sales conversations.
     sales_config = Column(JSON, nullable=True)
+    # Voice + telephony (Task #66). voice_id selects the ElevenLabs voice used for
+    # TTS on calls; phone_number is the bot's provider-owned E.164 caller-ID and the
+    # number inbound calls are routed from. Both null until the operator assigns them.
+    voice_id = Column(String(120), nullable=True)
+    phone_number = Column(String(40), nullable=True, index=True)
     lifecycle = Column(String(30), default="defined", index=True)
     last_run_at = Column(DateTime, nullable=True)
     last_task_run_id = Column(Integer, nullable=True)
@@ -693,6 +699,58 @@ class SalesConversation(Base):
     booking_ref = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CallSession(Base):
+    """A governed phone call conducted by a bot via the telephony layer (Task #66).
+
+    Every call is broker-gated and capability-audited like all other bot actions.
+    The turn-based conversation (provider speech-gather for STT, ElevenLabs TTS
+    played back) is governed through Cogitation, so each spoken reply is backed by
+    a DecisionTrace (``last_decision_trace_id``).
+
+    direction — inbound | outbound
+    status    — queued | ringing | in_progress | completed | failed | busy
+                | no_answer | canceled
+    transcript — JSON list of {role, text, governance, degraded, trace_id, ts}
+    """
+    __tablename__ = "call_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
+    provider = Column(String(40), nullable=False, default="twilio")
+    direction = Column(String(20), nullable=False, default="outbound", index=True)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    from_number = Column(String(40), nullable=True)
+    to_number = Column(String(40), nullable=True)
+    provider_call_sid = Column(String(120), nullable=True, unique=True, index=True)
+    transcript = Column(JSON, nullable=True)
+    last_decision_trace_id = Column(Integer, nullable=True)
+    turns = Column(Integer, default=0)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CallAudio(Base):
+    """Short-lived TTS audio served to the telephony provider by public URL.
+
+    Telephony providers (e.g. Twilio ``<Play>``) fetch audio over HTTP, so each
+    synthesized MP3 is parked here behind a high-entropy token with a TTL and
+    served ``no-store``. Rows are disposable and pruned after expiry; they hold no
+    secrets and the token is unguessable.
+    """
+    __tablename__ = "call_audio"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    token = Column(String(64), nullable=False, unique=True, index=True)
+    call_session_id = Column(Integer, ForeignKey("call_sessions.id"), nullable=True, index=True)
+    content_type = Column(String(60), nullable=False, default="audio/mpeg")
+    audio_bytes = Column(LargeBinary, nullable=False)
+    expires_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class FinanceVendor(Base):

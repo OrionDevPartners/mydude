@@ -491,6 +491,24 @@ export const stopBot = (id: number) =>
   request<{ ok: boolean; msg: string }>(`/fleet/bots/${id}/stop`, { method: 'POST' })
 export const deleteBot = (id: number) =>
   request<{ ok: boolean; msg: string }>(`/fleet/bots/${id}/delete`, { method: 'POST' })
+
+// Voice + telephony (Task #66)
+export const getFleetVoices = () => request<FleetVoicesData>('/fleet/voices')
+export const getFleetTelephonyStatus = () => request<FleetTelephonyStatus>('/fleet/telephony/status')
+export const setBotVoice = (id: number, data: { voice_id?: string; phone_number?: string }) =>
+  request<{ ok: boolean; bot: FleetBot }>(`/fleet/bots/${id}/voice`, {
+    method: 'POST',
+    body: formBody({ voice_id: data.voice_id ?? '', phone_number: data.phone_number ?? '' }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const placeBotCall = (id: number, toNumber: string) =>
+  request<PlaceCallResult>(`/fleet/bots/${id}/call`, {
+    method: 'POST',
+    body: formBody({ to_number: toNumber }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const listBotCalls = (id: number, limit = 20) =>
+  request<{ calls: CallRow[] }>(`/fleet/bots/${id}/calls?limit=${limit}`)
 export const listTeams = () => request<{ teams: FleetTeam[] }>('/fleet/teams')
 export const createTeam = (data: Record<string, string>) =>
   request<{ ok: boolean; team: FleetTeam }>('/fleet/teams', {
@@ -829,6 +847,7 @@ export interface FleetBot {
   id: number; name: string; description: string | null; team_id: number | null; spawned_by_id: number | null;
   identity_schema: Record<string, string>; prompt_cards: string[]; goal: string | null; protocols: string[];
   allowed_caps: string[]; sales_config: SalesConfig | null; sales_enabled: boolean;
+  voice_id: string | null; phone_number: string | null; voice_enabled: boolean; telephony_enabled: boolean;
   lifecycle: string; last_run_at: string | null; last_task_run_id: number | null;
   created_at: string; updated_at: string;
 }
@@ -851,6 +870,29 @@ export interface ProvisionedResource {
 export interface FleetStatus {
   total_bots: number; total_teams: number; total_resources: number; jobs_awaiting_approval: number;
   bot_lifecycle: Record<string, number>; team_status: Record<string, number>; resource_status: Record<string, number>;
+}
+
+// Voice + telephony (Task #66)
+export interface FleetVoice { voice_id: string; name: string; [k: string]: unknown }
+export interface FleetVoicesData { connected: boolean; voices: FleetVoice[]; detail: string | null }
+export interface CallRow {
+  id: number; bot_id: number; provider: string; direction: string; status: string;
+  from_number: string | null; to_number: string | null; provider_call_sid: string | null;
+  turns: number; degraded: boolean; last_decision_trace_id: number | null; error: string | null;
+  started_at: string | null; ended_at: string | null; created_at: string;
+}
+export interface TelephonyProviderStatus {
+  connected: boolean; provider?: string | null; source?: string | null; detail?: string | null;
+  [k: string]: unknown;
+}
+export interface FleetTelephonyStatus {
+  telephony: TelephonyProviderStatus; voice: TelephonyProviderStatus;
+  active_total: number;
+  by_bot: Record<string, { active_calls: number; calls: CallRow[] }>;
+}
+export interface PlaceCallResult {
+  allowed: boolean; reason: string; call_session_id?: number; provider_call_sid?: string;
+  status?: string; degraded?: boolean; [k: string]: unknown;
 }
 
 // Prompt Engine (self-evolving prompts)

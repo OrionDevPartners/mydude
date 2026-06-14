@@ -235,6 +235,29 @@ class PolicyEngine:
         if capability == "calendly_book":
             return self._evaluate_calendly_book(params)
 
+        if capability in ("telephony_place_call", "telephony_receive_call",
+                          "telephony_turn", "voice_synthesize"):
+            return self._evaluate_telephony(capability, params)
+
+        return PolicyDecision(True, "Allowed by policy.")
+
+    def _evaluate_telephony(self, capability: str, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for the voice + telephony capabilities (Task #66).
+
+        Enabled by default so voice/telephony is usable out of the box once a
+        provider is connected; operators hard-disable ALL voice + call actions
+        via ENABLE_TELEPHONY_CAPABILITY=false. Provider credential presence
+        (Twilio / ElevenLabs connected) is enforced downstream and fails loud —
+        never mocked. Outbound calls additionally require explicit production
+        opt-in: a caller targeting production (env="prod") is gated by the
+        ALLOW_PROD_CAPABILITIES check above (calls cost money / reach real PSTN).
+        """
+        if not _env_flag("ENABLE_TELEPHONY_CAPABILITY", default=True):
+            return PolicyDecision(
+                False,
+                "Telephony capability is disabled. Set "
+                "ENABLE_TELEPHONY_CAPABILITY=true to enable voice + calls.",
+            )
         return PolicyDecision(True, "Allowed by policy.")
 
     def _evaluate_calendly_book(self, params: Dict[str, Any]) -> PolicyDecision:

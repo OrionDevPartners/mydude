@@ -36,12 +36,14 @@ from src.web.ratelimit import client_ip
 from src.fleet.api_routes import router as fleet_router
 from src.web.api.prompts_routes import router as prompts_router
 from src.web.api.evolution_routes import router as evolution_router
+from src.telephony.api_routes import router as telephony_router
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 router.include_router(fleet_router)
 router.include_router(prompts_router)
 router.include_router(evolution_router)
+router.include_router(telephony_router)
 
 import secrets
 

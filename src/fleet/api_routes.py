@@ -67,6 +67,10 @@ def _bot_row(b) -> Dict[str, Any]:
         "allowed_caps": b.allowed_caps or [],
         "sales_config": b.sales_config or None,
         "sales_enabled": bool(b.sales_config),
+        "voice_id": b.voice_id,
+        "phone_number": b.phone_number,
+        "voice_enabled": bool(b.voice_id),
+        "telephony_enabled": bool(b.phone_number),
         "lifecycle": b.lifecycle,
         "last_run_at": _dt(b.last_run_at),
         "last_task_run_id": b.last_task_run_id,
@@ -133,6 +137,51 @@ def _parse_json_field(raw: Optional[str], default=None):
         return json.loads(raw)
     except Exception:
         return default
+
+
+import re as _re
+
+_E164_RE = _re.compile(r"^\+[1-9]\d{6,14}$")
+
+
+def _normalize_e164(raw: Optional[str]) -> Optional[str]:
+    """Validate + normalize a phone number to E.164, or fail loud.
+
+    An empty value clears the number (returns None). A non-empty value that is
+    not valid E.164 raises 400 rather than silently storing junk (pillar #1).
+    """
+    val = (raw or "").strip()
+    if not val:
+        return None
+    compact = _re.sub(r"[\s\-().]", "", val)
+    if not _E164_RE.match(compact):
+        raise HTTPException(
+            400,
+            "Phone number must be E.164 format, e.g. +14155552671.",
+        )
+    return compact
+
+
+def _call_row(c) -> Dict[str, Any]:
+    return {
+        "id": c.id,
+        "bot_id": c.bot_id,
+        "provider": c.provider,
+        "direction": c.direction,
+        "status": c.status,
+        "from_number": c.from_number,
+        "to_number": c.to_number,
+        "provider_call_sid": c.provider_call_sid,
+        "turns": c.turns,
+        "degraded": any(
+            (t or {}).get("degraded") for t in (c.transcript or []) if isinstance(t, dict)
+        ),
+        "last_decision_trace_id": c.last_decision_trace_id,
+        "error": c.error,
+        "started_at": _dt(c.started_at),
+        "ended_at": _dt(c.ended_at),
+        "created_at": _dt(c.created_at),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +267,8 @@ async def update_bot(
     prompt_cards: Optional[str] = Form(None),
     protocols: Optional[str] = Form(None),
     allowed_caps: Optional[str] = Form(None),
+    voice_id: Optional[str] = Form(None),
+    phone_number: Optional[str] = Form(None),
     _=Depends(require_auth),
 ):
     from src.database import SessionLocal
@@ -243,6 +294,10 @@ async def update_bot(
             bot.protocols = _parse_json_field(protocols, bot.protocols)
         if allowed_caps is not None:
             bot.allowed_caps = _parse_json_field(allowed_caps, bot.allowed_caps)
+        if voice_id is not None:
+            bot.voice_id = voice_id.strip() or None
+        if phone_number is not None:
+            bot.phone_number = _normalize_e164(phone_number)
         db.commit()
         db.refresh(bot)
         return {"ok": True, "bot": _bot_row(bot)}
@@ -843,5 +898,156 @@ async def fleet_status(_=Depends(require_auth)):
             "team_status": team_counts,
             "resource_status": resource_counts,
         }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Voice + telephony (Task #66) — operator controls (session-authed). The actual
+# call/turn actions run through the capability broker so every one is contract-
+# checked, policy-gated, and audited; provider credentials fail loud downstream.
+# ---------------------------------------------------------------------------
+
+_LIVE_CALL_STATES = ("queued", "ringing", "in_progress")
+
+
+@router.get("/voices")
+async def fleet_voices(_=Depends(require_auth)):
+    """Available TTS voices for the voice picker. Honest status, never raises.
+
+    When no voice provider is connected we report ``connected: false`` with an
+    empty list and the reason, so the UI can prompt the operator to connect a
+    provider rather than showing a broken control.
+    """
+    import asyncio
+    from src.avatar.voice import list_voices
+    from src.avatar.providers import (
+        AvatarNotConfigured, AvatarAuthError, AvatarProviderError,
+    )
+    try:
+        voices = await asyncio.to_thread(list_voices)
+    except AvatarNotConfigured as e:
+        return {"connected": False, "voices": [], "detail": str(e)}
+    except (AvatarAuthError, AvatarProviderError) as e:
+        return {"connected": False, "voices": [], "detail": str(e)}
+    return {"connected": True, "voices": voices, "detail": None}
+
+
+@router.get("/telephony/status")
+async def fleet_telephony_status(_=Depends(require_auth)):
+    """Honest provider status + live/recent call activity for the Fleet UI."""
+    from src.database import SessionLocal
+    from src.models import CallSession
+    from src.telephony.facade import telephony_status
+    from src.avatar.voice import voice_status
+
+    tstatus = telephony_status()
+    try:
+        vstatus = voice_status()
+    except Exception:  # noqa: BLE001 — status must never raise
+        vstatus = {"connected": False}
+
+    db = SessionLocal()
+    try:
+        live = (
+            db.query(CallSession)
+            .filter(CallSession.status.in_(_LIVE_CALL_STATES))
+            .order_by(CallSession.id.desc())
+            .all()
+        )
+        by_bot: Dict[int, Dict[str, Any]] = {}
+        for c in live:
+            slot = by_bot.setdefault(c.bot_id, {"active_calls": 0, "calls": []})
+            slot["active_calls"] += 1
+            slot["calls"].append(_call_row(c))
+        return {
+            "telephony": tstatus,
+            "voice": vstatus,
+            "active_total": len(live),
+            "by_bot": by_bot,
+        }
+    finally:
+        db.close()
+
+
+@router.post("/bots/{bot_id}/voice")
+async def set_bot_voice(
+    bot_id: int,
+    voice_id: Optional[str] = Form(None),
+    phone_number: Optional[str] = Form(None),
+    _=Depends(require_auth),
+):
+    """Assign (or clear) a bot's TTS voice and/or telephony caller-ID number."""
+    from src.database import SessionLocal
+    from src.models import Bot
+    db = SessionLocal()
+    try:
+        bot = db.query(Bot).filter(Bot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(404, "Bot not found.")
+        if voice_id is not None:
+            bot.voice_id = voice_id.strip() or None
+        if phone_number is not None:
+            bot.phone_number = _normalize_e164(phone_number)
+        db.commit()
+        db.refresh(bot)
+        return {"ok": True, "bot": _bot_row(bot)}
+    finally:
+        db.close()
+
+
+@router.post("/bots/{bot_id}/call")
+async def place_bot_call(
+    bot_id: int,
+    to_number: str = Form(...),
+    _=Depends(require_auth),
+):
+    """Place a governed outbound call from a bot. Broker-gated + audited.
+
+    The number is validated to E.164 before dispatch (fail loud). In a deployed
+    environment the call is tagged ``env="prod"`` so it additionally requires the
+    production capability opt-in (real PSTN calls cost money)."""
+    import os
+    dest = _normalize_e164(to_number)
+    if not dest:
+        raise HTTPException(400, "A destination phone number is required.")
+
+    from src.web.routes_capabilities import _broker
+    params = {"bot_id": bot_id, "to_number": dest, "source": "fleet-ui"}
+    if os.environ.get("REPLIT_DEPLOYMENT") == "1":
+        params["env"] = "prod"
+    res = await _broker().request("telephony_place_call", params)
+    data = {}
+    if res.output:
+        try:
+            data = json.loads(res.output)
+        except (ValueError, TypeError):
+            data = {}
+    return {
+        "allowed": res.decision.allowed,
+        "reason": res.decision.reason,
+        **data,
+    }
+
+
+@router.get("/bots/{bot_id}/calls")
+async def list_bot_calls(bot_id: int, limit: int = 20, _=Depends(require_auth)):
+    """Recent call sessions for a bot (most recent first)."""
+    from src.database import SessionLocal
+    from src.models import Bot, CallSession
+    limit = max(1, min(int(limit or 20), 100))
+    db = SessionLocal()
+    try:
+        bot = db.query(Bot).filter(Bot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(404, "Bot not found.")
+        rows = (
+            db.query(CallSession)
+            .filter(CallSession.bot_id == bot_id)
+            .order_by(CallSession.id.desc())
+            .limit(limit)
+            .all()
+        )
+        return {"calls": [_call_row(c) for c in rows]}
     finally:
         db.close()
