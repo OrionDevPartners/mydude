@@ -556,6 +556,9 @@ export const recordAvatarConsent = (id: number, granted: boolean, detail?: strin
     body: formBody({ granted, detail: detail || '' }),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
+export const startAvatarStream = (id: number) =>
+  request<{ ok: boolean; session: AvatarSessionStreamStatus }>(
+    `/avatar/session/${id}/stream-start`, { method: 'POST' })
 export const endAvatarSession = (id: number) =>
   request<{ ok: boolean; session: AvatarSession }>(`/avatar/session/${id}/end`, { method: 'POST' })
 
@@ -852,6 +855,9 @@ export interface AvatarData {
 }
 export interface AvatarSessionStartResult {
   ok: boolean; session: AvatarSession; disclosure: string | null; consent_prompt: string | null;
+}
+export interface AvatarSessionStreamStatus {
+  id: number; status: string; mode: string | null; provider: string | null;
 }
 
 // Fleet

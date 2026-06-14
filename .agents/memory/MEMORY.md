@@ -39,3 +39,4 @@
 - [Finance action audit](finance-action-audit.md) — governed connection endpoints (Plaid link/exchange/remove) must audit every outcome incl. failures, secret-free detail, via to_thread.
 - [Swarm-result UI e2e without a live run](swarm-result-ui-e2e.md) — a live swarm run = ~240 provider calls; verify result rendering via an injected completed TaskRun row + throwaway User instead.
 - [Developer access gate](developer-access-gate.md) — login page must show a one-click dev bypass in dev; endpoints double-gated so they're inert when REPLIT_DEPLOYMENT=1.
+- [Avatar connection-token persistence](avatar-connection-token.md) — avatar room tokens go to the immediate response only; persist an allowlisted non-secret routing subset (session_id), never the token.

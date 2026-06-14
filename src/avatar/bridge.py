@@ -252,3 +252,55 @@ def create_session(provider, persona=None, avatar_config=None, voice_id=None):
         return _bridge_new_session(p, persona=persona, avatar_config=avatar_config,
                                    voice_id=voice_id)
     raise AvatarNotConfigured("Unknown avatar provider '%s'." % provider)
+
+
+def _heygen_start_stream(connection):
+    """Tell HeyGen to begin publishing avatar media into the negotiated room.
+
+    The browser connects to the LiveKit room first; HeyGen only publishes the
+    avatar's video/audio tracks AFTER ``streaming.start``, which requires the
+    server-side API key (it must never reach the browser). Fails loud; returns
+    nothing sensitive.
+    """
+    key, _source = _heygen_key()
+    if not key:
+        raise AvatarNotConfigured("HeyGen is not configured.")
+    session_id = connection.get("session_id") if isinstance(connection, dict) else None
+    if not session_id:
+        raise AvatarProviderError(
+            "No HeyGen session_id available to start the stream.")
+    url = "%s/v1/streaming.start" % _HEYGEN_BASE
+    try:
+        resp = httpx.post(url, json={"session_id": session_id},
+                          headers={"x-api-key": key, "Content-Type": "application/json",
+                                   "Accept": "application/json"},
+                          timeout=_TIMEOUT)
+    except httpx.HTTPError as e:
+        raise AvatarProviderError("HeyGen streaming.start request failed: %s" % e)
+    if resp.status_code in (401, 403):
+        raise AvatarAuthError(
+            "HeyGen rejected streaming.start (HTTP %d). Check HEYGEN_API_KEY."
+            % resp.status_code)
+    if resp.status_code >= 400:
+        raise AvatarProviderError(
+            "HeyGen streaming.start error (HTTP %d): %s"
+            % (resp.status_code, resp.text[:300]))
+    return True
+
+
+def start_stream(provider, connection):
+    """Begin provider media publishing for an already-negotiated session.
+
+    Called AFTER the browser has connected to the negotiated room/peer so the
+    avatar tracks actually flow. HeyGen needs an explicit ``streaming.start``;
+    the external (Azure) bridge starts on WebRTC connect, so this is a no-op for
+    those slugs. Raises ``AvatarNotConfigured`` for an unknown provider. The
+    ``connection`` descriptor may carry session tokens — it is NEVER logged.
+    """
+    p = (provider or "").lower().strip()
+    if p == "heygen":
+        return _heygen_start_stream(connection if isinstance(connection, dict) else {})
+    if p in _BRIDGE_SLUGS:
+        # The external bridge publishes media on WebRTC connect — nothing to do.
+        return True
+    raise AvatarNotConfigured("Unknown avatar provider '%s'." % provider)

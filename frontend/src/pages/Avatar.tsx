@@ -8,6 +8,7 @@ import {
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, FormField, Toggle } from '@/components/ui'
+import { AvatarCall, VoiceOnlyCall } from '@/components/AvatarCall'
 import { fmtDate } from '@/lib/utils'
 import {
   UserSquare, ShieldAlert, Plus, Trash2, Pencil, Play, Square,
@@ -387,8 +388,33 @@ function Sessions({ data, working, action, setMsg, setErr }: {
   const [profileId, setProfileId] = useState('')
   const [consent, setConsent] = useState<AvatarSessionStartResult | null>(null)
   const [starting, setStarting] = useState(false)
+  const [activeCall, setActiveCall] = useState<AvatarSession | null>(null)
+  const [ending, setEnding] = useState(false)
 
   const activeProfiles = data.profiles.filter(p => p.active)
+  const callProfile = activeCall
+    ? data.profiles.find(p => p.id === activeCall.avatar_profile_id) : undefined
+
+  function openIfActive(session: AvatarSession) {
+    if (session.status === 'active') setActiveCall(session)
+  }
+
+  async function endCall() {
+    if (!activeCall) return
+    const sid = activeCall.id
+    setActiveCall(null) // unmount the call panel → local media torn down immediately
+    setEnding(true)
+    await action(() => endAvatarSession(sid), `Session #${sid} ended`)
+    setEnding(false)
+  }
+
+  async function endSessionRow(sid: number) {
+    // Ending a row from the table must also tear down the call panel if that
+    // same session is the one currently open — otherwise its live media keeps
+    // running after the backend session has ended.
+    if (activeCall && activeCall.id === sid) setActiveCall(null)
+    await action(() => endAvatarSession(sid), `Session #${sid} ended`)
+  }
 
   async function start() {
     if (!profileId) { setErr('Select a profile to start a session.'); return }
@@ -399,6 +425,7 @@ function Sessions({ data, working, action, setMsg, setErr }: {
         setConsent(res)
       } else {
         setMsg(`Session #${res.session.id} ${res.session.status} (${res.session.mode || 'voice_only'}).`)
+        openIfActive(res.session)
       }
     } catch (e: unknown) { setErr(e instanceof Error ? e.message : 'Error') }
     finally { setStarting(false) }
@@ -406,6 +433,11 @@ function Sessions({ data, working, action, setMsg, setErr }: {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {activeCall && (
+        activeCall.mode === 'avatar_video'
+          ? <AvatarCall session={activeCall} onEnd={endCall} ending={ending} />
+          : <VoiceOnlyCall session={activeCall} profile={callProfile} onEnd={endCall} ending={ending} />
+      )}
       <Card style={{ padding: '14px 18px' }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Start a session</div>
         {activeProfiles.length === 0
@@ -453,7 +485,7 @@ function Sessions({ data, working, action, setMsg, setErr }: {
                       <td>
                         {endable && (
                           <button className="btn btn-ghost btn-sm" disabled={working}
-                            onClick={() => action(() => endAvatarSession(s.id), `Session #${s.id} ended`)}>
+                            onClick={() => endSessionRow(s.id)}>
                             <Square size={12} /> End
                           </button>
                         )}
@@ -470,12 +502,18 @@ function Sessions({ data, working, action, setMsg, setErr }: {
         <ConsentModal start={consent} onClose={() => setConsent(null)}
           onDecision={async (granted) => {
             const sid = consent.session.id
+            let started: AvatarSession | null = null
             const ok = await action(async () => {
               const r = await recordAvatarConsent(sid, granted)
-              if (granted) setMsg(`Session #${sid} ${r.session.status} (${r.session.mode || 'voice_only'}).`)
-              else setMsg(`Session #${sid} consent denied.`)
+              if (granted) {
+                setMsg(`Session #${sid} ${r.session.status} (${r.session.mode || 'voice_only'}).`)
+                started = r.session
+              } else setMsg(`Session #${sid} consent denied.`)
             })
-            if (ok) setConsent(null)
+            if (ok) {
+              setConsent(null)
+              if (started) openIfActive(started)
+            }
           }} working={working} />
       )}
     </div>

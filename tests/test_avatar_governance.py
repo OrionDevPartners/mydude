@@ -32,8 +32,10 @@ Runnable two ways:
   * ``python tests/test_avatar_governance.py``  (standalone, exits non-zero on failure)
   * ``pytest tests/test_avatar_governance.py``   (test_* functions; no plugins needed)
 """
+import json
 import os
 import sys
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -288,6 +290,44 @@ def test_bridge_success_activates_video_and_never_audits_token():
     assert "session_active" in _audit_actions(db)
 
 
+def test_active_session_never_persists_room_token_to_db():
+    """The browser gets the full descriptor in the RESPONSE, but the room token
+    must never be written to the DB (pillar #3 / criterion 4). Only non-secret
+    routing the server reuses later (the HeyGen session_id) is persisted."""
+    db = _FakeDB(_mk_profile(consent=True, avatar_provider="heygen"))
+    restore = _patch_provider_checks(voice_ok=True, avatar_ok=True)
+    saved = bridge_mod.create_session
+    secret = "ROOM-TOKEN-MUST-NOT-PERSIST-77"
+
+    def _fake_create(provider, **kw):
+        return {"provider": "heygen", "transport": "livekit",
+                "connection": {"session_id": "sess_x", "url": "wss://x",
+                               "access_token": secret},
+                "detail": "negotiated"}
+
+    bridge_mod.create_session = _fake_create
+    try:
+        started = sess.start_session(db, 1)
+        sid = started["session"]["id"]
+        res = sess.record_consent(db, sid, True)
+    finally:
+        bridge_mod.create_session = saved
+        restore()
+    # The browser (THIS response) still receives the full descriptor + token.
+    assert res["connection"]["access_token"] == secret, "browser gets the token"
+    # The persisted DB row must NOT contain the token...
+    stored = db.sessions[sid].connection_json
+    assert secret not in (stored or ""), "room token must never be persisted to the DB"
+    parsed = json.loads(stored)
+    assert parsed == {"session_id": "sess_x"}, parsed
+    assert "access_token" not in parsed and "url" not in parsed
+    # ...and a LATER read (a fresh request, no in-memory descriptor) never
+    # surfaces a token either — start_stream still has the session_id it needs.
+    later = sess.get_session(db, sid, include_connection=True)
+    assert secret not in json.dumps(later), "a later read must never expose the token"
+    assert later["connection"]["session_id"] == "sess_x"
+
+
 def test_bridge_error_marks_needs_provider_and_keeps_consent():
     db = _FakeDB(_mk_profile(consent=True, avatar_provider="heygen"))
     restore = _patch_provider_checks(voice_ok=True, avatar_ok=True)
@@ -346,6 +386,128 @@ def test_bridge_refuses_non_https_url():
         bridge_mod._bridge_config = saved
 
 
+# -- live stream-start (media publish) ----------------------------------------
+
+def _add_active_session(db, mode="avatar_video", provider="heygen", connection=None):
+    s = AvatarSession(
+        avatar_profile_id=1, status="active", mode=mode, provider=provider,
+        consent_status="granted",
+        connection_json=json.dumps(connection) if connection is not None else None,
+    )
+    db.add(s)
+    return s
+
+
+def test_stream_start_publishes_media_and_never_returns_or_audits_token():
+    db = _FakeDB(_mk_profile(consent=True, avatar_provider="heygen"))
+    secret = "LK-TOKEN-DO-NOT-LEAK-99"
+    s = _add_active_session(db, connection={
+        "session_id": "sess_x", "access_token": secret, "url": "wss://x"})
+    saved = bridge_mod.start_stream
+    captured = {}
+
+    def _fake_start(provider, connection):
+        captured["provider"] = provider
+        captured["connection"] = connection
+        return True
+
+    bridge_mod.start_stream = _fake_start
+    try:
+        res = sess.start_stream(db, s.id)
+    finally:
+        bridge_mod.start_stream = saved
+    assert res == {"id": s.id, "status": "active", "mode": "avatar_video",
+                   "provider": "heygen"}, res
+    assert "connection" not in res and secret not in json.dumps(res), \
+        "sanitized status must never echo the connection token"
+    assert captured["provider"] == "heygen"
+    assert captured["connection"]["session_id"] == "sess_x", \
+        "the bridge gets the stored session_id to publish media"
+    assert secret not in _audit_blob(db), "tokens must never reach the audit log"
+    assert "session_stream_started" in _audit_actions(db)
+
+
+def test_stream_start_refused_on_voice_only_and_bridge_not_called():
+    db = _FakeDB(_mk_profile(consent=True))
+    s = _add_active_session(db, mode="voice_only", provider=None, connection=None)
+    saved = bridge_mod.start_stream
+    called = {"n": 0}
+
+    def _fake_start(provider, connection):
+        called["n"] += 1
+        return True
+
+    bridge_mod.start_stream = _fake_start
+    raised = False
+    try:
+        sess.start_stream(db, s.id)
+    except PermissionError:
+        raised = True
+    finally:
+        bridge_mod.start_stream = saved
+    assert raised, "stream-start on a non-video session must fail loud"
+    assert called["n"] == 0, "the provider must not be told to publish media"
+    assert "session_stream_blocked" in _audit_actions(db)
+    assert "session_stream_started" not in _audit_actions(db)
+
+
+def test_heygen_start_stream_posts_only_session_id_with_server_key():
+    saved_key = bridge_mod._heygen_key
+    real_httpx = bridge_mod.httpx
+    bridge_mod._heygen_key = lambda: ("SERVER-KEY", "vault")
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        text = "{}"
+
+    def _fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return _Resp()
+
+    bridge_mod.httpx = types.SimpleNamespace(post=_fake_post,
+                                             HTTPError=real_httpx.HTTPError)
+    try:
+        ok = bridge_mod._heygen_start_stream(
+            {"session_id": "sess_x", "access_token": "BROWSER-TOKEN-LEAK"})
+    finally:
+        bridge_mod._heygen_key = saved_key
+        bridge_mod.httpx = real_httpx
+    assert ok is True
+    assert captured["url"].endswith("/v1/streaming.start")
+    assert captured["json"] == {"session_id": "sess_x"}, captured["json"]
+    assert "BROWSER-TOKEN-LEAK" not in json.dumps(captured["json"]), \
+        "the browser's room token must never be re-sent to the provider"
+    assert captured["headers"]["x-api-key"] == "SERVER-KEY", \
+        "streaming.start must authenticate with the server-side key"
+
+
+def test_heygen_start_stream_fails_loud_without_session_id():
+    saved_key = bridge_mod._heygen_key
+    bridge_mod._heygen_key = lambda: ("SERVER-KEY", "vault")
+    raised = False
+    try:
+        bridge_mod._heygen_start_stream({})
+    except prov.AvatarProviderError:
+        raised = True
+    finally:
+        bridge_mod._heygen_key = saved_key
+    assert raised, "no session_id must fail loud, never a placeholder start"
+
+
+def test_bridge_start_stream_slug_is_noop_and_unknown_fails_loud():
+    assert bridge_mod.start_stream("azure", {}) is True, \
+        "external bridge publishes on WebRTC connect — start_stream is a no-op"
+    raised = False
+    try:
+        bridge_mod.start_stream("bogus", {})
+    except prov.AvatarNotConfigured:
+        raised = True
+    assert raised, "an unknown provider must fail loud"
+
+
 # -- profile validation -------------------------------------------------------
 
 def test_profile_create_rejects_duplicate_name():
@@ -397,9 +559,15 @@ def _run_all():
         test_double_consent_is_refused,
         test_compliance_gate_fails_loud,
         test_bridge_success_activates_video_and_never_audits_token,
+        test_active_session_never_persists_room_token_to_db,
         test_bridge_error_marks_needs_provider_and_keeps_consent,
         test_bridge_create_session_fails_loud_when_unconfigured,
         test_bridge_refuses_non_https_url,
+        test_stream_start_publishes_media_and_never_returns_or_audits_token,
+        test_stream_start_refused_on_voice_only_and_bridge_not_called,
+        test_heygen_start_stream_posts_only_session_id_with_server_key,
+        test_heygen_start_stream_fails_loud_without_session_id,
+        test_bridge_start_stream_slug_is_noop_and_unknown_fails_loud,
         test_profile_create_rejects_duplicate_name,
         test_profile_create_rejects_bad_config_and_unknown_provider,
         test_profile_create_ok,

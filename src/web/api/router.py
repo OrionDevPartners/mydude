@@ -3022,6 +3022,38 @@ async def api_avatar_session_consent(
         db.close()
 
 
+@router.post("/avatar/session/{session_id}/stream-start")
+async def api_avatar_session_stream_start(session_id: int, _=Depends(require_auth)):
+    """Begin provider media publishing for an active avatar_video session.
+
+    The browser connects to the negotiated room first, then calls this so the
+    avatar's tracks actually flow (e.g. HeyGen ``streaming.start``, which needs the
+    server-side key). Returns a sanitized status — never the connection tokens.
+    """
+    from src.database import SessionLocal
+    from src.avatar.sessions import start_stream
+    from src.avatar.providers import (
+        AvatarNotConfigured, AvatarAuthError, AvatarProviderError,
+    )
+    db = SessionLocal()
+    try:
+        try:
+            res = await asyncio.to_thread(start_stream, db, session_id)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except AvatarNotConfigured as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except AvatarAuthError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except AvatarProviderError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"ok": True, "session": res}
+    finally:
+        db.close()
+
+
 @router.post("/avatar/session/{session_id}/end")
 async def api_avatar_session_end(session_id: int, _=Depends(require_auth)):
     from src.database import SessionLocal

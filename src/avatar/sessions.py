@@ -82,9 +82,30 @@ def _avatar_ok(provider):
     return avatar_configured(provider)
 
 
+# A negotiated connection descriptor can carry provider ROOM SECRETS (a LiveKit
+# ``access_token``, a WHEP bearer token, TURN credentials, an SDP offer). Those
+# must NEVER be written to the database — the browser receives the FULL
+# descriptor in the start/consent RESPONSE only (in-memory). Only this minimal,
+# non-secret routing subset — what the SERVER itself needs later, e.g. the
+# HeyGen ``session_id`` for ``streaming.start`` — is persisted.
+_PERSISTABLE_CONNECTION_KEYS = ("session_id", "provider", "transport")
+
+
+def _persistable_connection(conn):
+    """Strip every token-bearing field from a connection descriptor before it is
+    stored, keeping only non-secret routing the server reuses later (pillar #3)."""
+    if not isinstance(conn, dict):
+        return {}
+    return {k: conn[k] for k in _PERSISTABLE_CONNECTION_KEYS if k in conn}
+
+
 def _activate(db, session, profile):
     """Negotiate the bridge (if an avatar backend is configured) or degrade to
-    voice-only. Consent is already committed before this runs."""
+    voice-only. Consent is already committed before this runs.
+
+    Returns the FULL connection descriptor (incl. any room token) for the active
+    avatar_video response, or ``None`` for voice-only. The returned descriptor is
+    for the immediate HTTP response ONLY; it is never persisted or logged."""
     # Defense-in-depth: re-check the STORED session against the profile's policy.
     try:
         ensure_call_compliance(profile, session)
@@ -123,10 +144,12 @@ def _activate(db, session, profile):
                    "new session." % session.id)
             raise
         else:
+            full_conn = conn.get("connection") or {}
             session.status = "active"
             session.mode = "avatar_video"
             session.provider = conn.get("provider")
-            session.connection_json = json.dumps(conn.get("connection") or {})
+            # Persist ONLY non-secret routing — the room token never touches the DB.
+            session.connection_json = json.dumps(_persistable_connection(full_conn))
             session.result_detail = conn.get("detail")
             session.started_at = datetime.utcnow()
             db.commit()
@@ -135,7 +158,8 @@ def _activate(db, session, profile):
             _audit(db, "session_active", "ok",
                    "Session #%d active (avatar_video via %s)."
                    % (session.id, session.provider))
-            return
+            # Full descriptor (incl. token) returned for THIS response only.
+            return full_conn
 
     # No avatar backend (configured or reachable) — degrade honestly to voice-only.
     if voice_ok:
@@ -153,7 +177,7 @@ def _activate(db, session, profile):
         db.refresh(session)
         _audit(db, "session_voice_only", "ok",
                "Session #%d active (voice_only)." % session.id)
-        return
+        return None
 
     # Nothing usable — fail loud.
     session.status = "needs_provider"
@@ -204,9 +228,13 @@ def start_session(db, profile_id):
         "disclosure": disclosure_text() if profile.disclosure_required else None,
         "consent_prompt": consent_prompt() if consent_needed else None,
     }
+    live_conn = None
     if not consent_needed:
-        _activate(db, session, profile)
-    result["session"] = _serialize(session, include_connection=True)
+        live_conn = _activate(db, session, profile)
+    result["session"] = _serialize(session)
+    # Full descriptor (incl. token) goes ONLY to this response, never the DB.
+    if live_conn:
+        result["session"]["connection"] = live_conn
     return result
 
 
@@ -247,8 +275,12 @@ def record_consent(db, session_id, granted, detail=None):
            "Session #%d consent granted." % session.id)
 
     profile = _load_profile(db, session.avatar_profile_id)
-    _activate(db, session, profile)
-    return _serialize(session, include_connection=True)
+    live_conn = _activate(db, session, profile)
+    out = _serialize(session)
+    # Full descriptor (incl. token) goes ONLY to this response, never the DB.
+    if live_conn:
+        out["connection"] = live_conn
+    return out
 
 
 def end_session(db, session_id):
@@ -272,6 +304,46 @@ def end_session(db, session_id):
     db.refresh(session)
     _audit(db, "session_ended", "ok", "Session #%d ended." % session.id)
     return _serialize(session)
+
+
+def start_stream(db, session_id):
+    """Begin provider media publishing for an already-active avatar_video session.
+
+    The browser connects to the negotiated room/peer first, THEN calls this so the
+    provider actually publishes the avatar's tracks (e.g. HeyGen ``streaming.start``,
+    which needs the server-side key). Returns a SANITIZED status dict — the stored
+    connection descriptor can hold session tokens, so it is never returned, logged,
+    or written to the audit trail.
+    """
+    session = (db.query(AvatarSession)
+               .filter(AvatarSession.id == session_id)
+               .first())
+    if session is None:
+        raise ValueError("Session %s not found." % session_id)
+    if session.status != "active" or session.mode != "avatar_video":
+        _audit(db, "session_stream_blocked", "blocked",
+               "Refused stream-start on session #%d (status '%s', mode %s)."
+               % (session.id, session.status, session.mode))
+        raise PermissionError(
+            "Session #%d is '%s'/%s, not an active avatar_video call."
+            % (session.id, session.status, session.mode))
+    connection = None
+    if session.connection_json:
+        try:
+            connection = json.loads(session.connection_json)
+        except (json.JSONDecodeError, ValueError):
+            connection = None
+    from src.avatar.bridge import start_stream as bridge_start_stream
+    bridge_start_stream(session.provider, connection or {})
+    # connection (tokens) deliberately excluded from the audit detail.
+    _audit(db, "session_stream_started", "ok",
+           "Session #%d media stream started (%s)." % (session.id, session.provider))
+    return {
+        "id": session.id,
+        "status": session.status,
+        "mode": session.mode,
+        "provider": session.provider,
+    }
 
 
 def get_session(db, session_id, include_connection=False):
