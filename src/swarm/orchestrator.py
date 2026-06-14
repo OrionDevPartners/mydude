@@ -488,6 +488,43 @@ class WaveOrchestrator:
             "The governed swarm completed but produced no structured findings for this prompt."
         )
 
+        # ── Governed synthesizer (thinking role) ──────────────────────────────
+        # Replace the mechanical bullet builder above with a governed, optimizable
+        # synthesis. Same trace/scoring seam as the judge -> feeds the same
+        # MIPROv2/GEPA optimize + approve-to-promote / audited-rollback gate. The
+        # mechanical text remains the fail-loud fallback (no placeholder).
+        synthesis_source = "mechanical"
+        syn_risk_directive = ""
+        if aborted:
+            syn_risk_directive = (
+                "Pipeline halted early on repeated CRITICAL hallucination risk; flag "
+                "low-confidence findings and avoid over-stating certainty."
+            )
+        elif tier is not None:
+            syn_risk_directive = (
+                f"Average hallucination risk tier: {tier.value}. Preserve epistemic "
+                "labels and keep load-bearing claims evidence-backed."
+            )
+        if LLM_PROVIDER != "stub":
+            try:
+                from src.promptopt.runtime import run_synthesizer
+                governed_syn = await run_synthesizer(
+                    goal=handoff.goal,
+                    facts=syn_facts,
+                    decisions=syn_decisions,
+                    tasks=syn_tasks,
+                    risks=syn_risks,
+                    claim_ledger=handoff.claim_ledger_summary or "",
+                    risk_directive=syn_risk_directive,
+                )
+                if governed_syn and governed_syn.strip():
+                    synthesis_text = governed_syn.strip()
+                    synthesis_source = "governed"
+            except Exception as e:
+                logger.warning(
+                    "Governed synthesizer failed; using mechanical synthesis: %s", e
+                )
+
         final = {
             "SYNTHESIS": synthesis_text,
             "GOAL": handoff.goal,
@@ -536,6 +573,84 @@ class WaveOrchestrator:
                 "Hallucination monitor detected 3+ consecutive CRITICAL risk scores. "
                 "Pipeline halted to prevent unreliable outputs."
             )
+
+        final["SYNTHESIS_SOURCE"] = synthesis_source
+
+        # ── Governed red-team review (thinking role) ──────────────────────────
+        # Adversarially probe the final synthesis. Governed path feeds the same
+        # optimization + promotion/rollback gate; the heuristic RedTeamAgent is the
+        # fail-loud fallback so the swarm is never left un-probed (no placeholder).
+        red_team_report = None
+        red_team_source = None
+        if LLM_PROVIDER != "stub":
+            try:
+                from src.promptopt.runtime import run_red_team
+                rt_text = await run_red_team(
+                    synthesis=synthesis_text,
+                    claim_ledger=handoff.claim_ledger_summary or "",
+                    context=_bullets(syn_facts)[:2000],
+                )
+                if rt_text and rt_text.strip():
+                    red_team_report = rt_text.strip()
+                    red_team_source = "governed"
+            except Exception as e:
+                logger.warning(
+                    "Governed red-team failed; falling back to heuristic probes: %s", e
+                )
+        if red_team_report is None and self.red_team is not None:
+            try:
+                rt_context = (handoff.goal or "") + "\n" + _bullets(syn_facts)[:2000]
+                probes = self.red_team.generate_probes(rt_context, count=5)
+                for p in probes:
+                    self.red_team.evaluate_response(p, synthesis_text)
+                red_team_report = self.red_team.get_vulnerability_report()
+                red_team_source = "heuristic"
+            except Exception as e:
+                logger.warning("Heuristic red-team probes failed: %s", e)
+        if red_team_report is not None:
+            final["RED_TEAM_REPORT"] = {
+                "source": red_team_source, "report": red_team_report,
+            }
+
+        # ── Governed reflexive-audit meta-analysis (thinking role) ────────────
+        # The per-wave heuristic ``audit_wave`` above remains the ALWAYS-ON
+        # governance source (it is what raises proposals). This governed call is a
+        # parallel meta-analysis that feeds the optimizer; it NEVER auto-raises
+        # proposals. Heuristic summary is the fail-loud fallback (no placeholder).
+        if self.auditor is not None:
+            governed_audit = None
+            if LLM_PROVIDER != "stub":
+                try:
+                    from src.promptopt.runtime import run_reflexive_auditor
+                    status = self.auditor.get_status()
+                    existing_mc = "; ".join(
+                        f"[{mc.severity}] {mc.category}: {mc.description[:120]}"
+                        for mc in self.auditor.get_meta_claims()[:8]
+                    ) or "none"
+                    wave_stats = (
+                        f"waves_recorded={status.get('waves_recorded')}, "
+                        f"anomalies={status.get('anomaly_count')}, "
+                        f"avg_hr={round(avg_hr, 3)}, hr_tier={tier.value}, "
+                        f"aborted={aborted}"
+                    )
+                    audit_text = await run_reflexive_auditor(
+                        ledger_summary=self.auditor.to_summary(),
+                        trend_summary=json.dumps(status.get("latest_trend", {})),
+                        wave_stats=wave_stats,
+                        existing_meta_claims=existing_mc,
+                    )
+                    if audit_text and audit_text.strip():
+                        governed_audit = audit_text.strip()
+                except Exception as e:
+                    logger.warning(
+                        "Governed reflexive auditor failed (heuristic audit retained): %s", e
+                    )
+            if governed_audit:
+                final["GOVERNED_AUDIT"] = {"source": "governed", "report": governed_audit}
+            else:
+                final["GOVERNED_AUDIT"] = {
+                    "source": "heuristic", "report": self.auditor.to_summary(),
+                }
 
         # ── Recursive memory: persist load-bearing facts/decisions at task end ──
         memory_events: List[Dict] = []

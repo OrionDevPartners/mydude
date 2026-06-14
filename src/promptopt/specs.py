@@ -166,6 +166,152 @@ ROLE_PROGRAM_NAMES: List[str] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Thinking-role programs (synthesizer, red-team, reflexive auditor).
+#
+# Unlike the worker-format cognitive roles above, these three "thinking" roles
+# do NOT emit the six worker sections — each produces a DISTINCT structured
+# output, so each gets its OWN dspy.Signature (distinct input fields) and its OWN
+# required-section contract. They are registered as governed, optimizable
+# programs exactly like the judge/roles (same MIPROv2/GEPA flow, same
+# approve-to-promote / audited-rollback gate, same dashboard) and their live runs
+# capture PromptTraces that feed that optimizer. Seed text = the previously
+# dormant role prompt (prompts.py) + an explicit output contract so version 1 is
+# fully operative (no placeholder).
+# ---------------------------------------------------------------------------
+
+SYNTHESIZER_PROGRAM = "role_synthesizer"
+SYNTHESIZER_OUTPUT_FIELD = "synthesis"
+SYNTHESIZER_INPUT_FIELDS: List[str] = [
+    "goal", "facts", "decisions", "tasks", "risks", "claim_ledger", "risk_directive",
+]
+SYNTHESIZER_SECTIONS: List[str] = ["GOAL", "FINDINGS", "DECISIONS", "NEXT_STEPS", "RISKS"]
+SYNTHESIZER_OUTPUT_CONTRACT = (
+    "\n\nOUTPUT CONTRACT (MANDATORY):\n"
+    "Synthesize ONLY from the accepted facts, decisions, tasks, risks, claim ledger, "
+    "and risk directive provided as input — introduce NO new claims, evidence, or "
+    "recommendations of your own. Return the final governed handoff with EVERY one of "
+    "these section headers exactly: GOAL, FINDINGS, DECISIONS, NEXT_STEPS, RISKS.\n"
+    "- GOAL: restate the goal under deliberation.\n"
+    "- FINDINGS: the accepted key findings (one bullet per fact; cite claim ids when present).\n"
+    "- DECISIONS: the decisions reached from accepted claims only.\n"
+    "- NEXT_STEPS: the next tasks/actions to take.\n"
+    "- RISKS: residual risks and unknowns (label VERIFIED/DERIVED/HYPOTHESIS/UNKNOWN).\n"
+    "If the accepted inputs are insufficient to synthesize, say so under FINDINGS rather "
+    "than inventing content."
+)
+
+RED_TEAM_PROGRAM = "role_red_team"
+RED_TEAM_OUTPUT_FIELD = "red_team_report"
+RED_TEAM_INPUT_FIELDS: List[str] = ["synthesis", "claim_ledger", "context"]
+RED_TEAM_SECTIONS: List[str] = [
+    "PROMPT_INJECTION", "EVIDENCE_FABRICATION", "CONSTRAINT_BYPASS",
+    "LABEL_CONFUSION", "BOUNDARY_VIOLATION",
+]
+RED_TEAM_OUTPUT_CONTRACT = (
+    "\n\nOUTPUT CONTRACT (MANDATORY):\n"
+    "Adversarially test the provided synthesis and claim ledger against each attack "
+    "vector. Return EXACTLY one entry per section header below, each header used "
+    "verbatim: PROMPT_INJECTION, EVIDENCE_FABRICATION, CONSTRAINT_BYPASS, "
+    "LABEL_CONFUSION, BOUNDARY_VIOLATION.\n"
+    "- For each vector emit either 'VULNERABILITY: <what fails> | FIX: <required_fix>' "
+    "or 'CLEAR: <one-line reason it holds>'.\n"
+    "Describe weaknesses precisely but NEVER include a working exploit, payload, or "
+    "step-by-step attack — only the finding and the fix."
+)
+
+REFLEXIVE_AUDITOR_PROGRAM = "role_reflexive_auditor"
+REFLEXIVE_AUDITOR_OUTPUT_FIELD = "audit_report"
+REFLEXIVE_AUDITOR_INPUT_FIELDS: List[str] = [
+    "ledger_summary", "trend_summary", "wave_stats", "existing_meta_claims",
+]
+REFLEXIVE_AUDITOR_SECTIONS: List[str] = [
+    "META_CLAIMS", "CATEGORY", "SEVERITY", "DESCRIPTION", "EVIDENCE", "PROPOSED_ACTION",
+]
+REFLEXIVE_AUDITOR_OUTPUT_CONTRACT = (
+    "\n\nOUTPUT CONTRACT (MANDATORY):\n"
+    "Perform a meta-cognitive audit of the swarm's OWN process health from the ledger "
+    "summary, trend summary, wave stats, and existing heuristic meta-claims provided as "
+    "input. Judge governance/process quality (drift, anomalies, consensus health) — do "
+    "NOT re-judge the task's subject matter. Return your analysis with EVERY one of these "
+    "section headers exactly: META_CLAIMS, CATEGORY, SEVERITY, DESCRIPTION, EVIDENCE, "
+    "PROPOSED_ACTION.\n"
+    "- META_CLAIMS: count + one-line overview of the meta-claims you assert.\n"
+    "- CATEGORY: drift | performance | anomaly | recommendation.\n"
+    "- SEVERITY: info | warning | critical.\n"
+    "- DESCRIPTION: what you observed about the process.\n"
+    "- EVIDENCE: specific data points (wave indices, CS/HR values, trend labels) — cite them.\n"
+    "- PROPOSED_ACTION: phrase as a governance proposal for operator review; never a silent "
+    "parameter change.\n"
+    "If the data is insufficient, say so under DESCRIPTION rather than fabricating trends."
+)
+
+# program name -> (prompts.py constant, signature name, description, input fields,
+# output field, required sections, output contract). One row per thinking role.
+_THINKING_ROLE_TABLE: Dict[str, Tuple[str, str, str, List[str], str, List[str], str]] = {
+    SYNTHESIZER_PROGRAM: (
+        "SYNTHESIZER_GUARD",
+        "SynthesizerAgent",
+        "Synthesizer: merge the wave's accepted claims into one governed final handoff "
+        "(accepted-claims-only; introduces no new claims).",
+        SYNTHESIZER_INPUT_FIELDS,
+        SYNTHESIZER_OUTPUT_FIELD,
+        SYNTHESIZER_SECTIONS,
+        SYNTHESIZER_OUTPUT_CONTRACT,
+    ),
+    RED_TEAM_PROGRAM: (
+        "RED_TEAM_PROMPT",
+        "RedTeamReview",
+        "Red Team: adversarially probe the swarm's synthesis for prompt-injection, "
+        "evidence-fabrication, constraint-bypass, label-confusion, and boundary weaknesses.",
+        RED_TEAM_INPUT_FIELDS,
+        RED_TEAM_OUTPUT_FIELD,
+        RED_TEAM_SECTIONS,
+        RED_TEAM_OUTPUT_CONTRACT,
+    ),
+    REFLEXIVE_AUDITOR_PROGRAM: (
+        "REFLEXIVE_AUDITOR_PROMPT",
+        "ReflexiveAuditorReview",
+        "Reflexive Auditor: meta-cognitive audit of the swarm's own process health "
+        "(drift, anomalies, consensus) surfaced as reviewable governance proposals.",
+        REFLEXIVE_AUDITOR_INPUT_FIELDS,
+        REFLEXIVE_AUDITOR_OUTPUT_FIELD,
+        REFLEXIVE_AUDITOR_SECTIONS,
+        REFLEXIVE_AUDITOR_OUTPUT_CONTRACT,
+    ),
+}
+
+
+def _build_thinking_role_specs() -> Dict[str, ProgramSpec]:
+    from src.swarm import prompts as _prompts
+    out: Dict[str, ProgramSpec] = {}
+    for name, (const_name, sig_name, desc, in_fields, out_field, sections, contract) in (
+        _THINKING_ROLE_TABLE.items()
+    ):
+        base = getattr(_prompts, const_name, "").strip()
+        if not base:
+            continue
+        out[name] = ProgramSpec(
+            name=name,
+            signature_name=sig_name,
+            description=desc,
+            seed_instructions=base + contract,
+            input_fields=list(in_fields),
+            output_field=out_field,
+            required_sections=list(sections),
+        )
+    return out
+
+
+PROGRAM_SPECS.update(_build_thinking_role_specs())
+
+# Program names of the governed thinking-role agents (each maps to its OWN
+# signature in signatures.py).
+THINKING_ROLE_PROGRAM_NAMES: List[str] = [
+    n for n in _THINKING_ROLE_TABLE if n in PROGRAM_SPECS
+]
+
+
 def role_program_for(cognitive_role_value: str) -> Optional[str]:
     """Return the governed program name for a cognitive role, or None if that role
     is not (yet) registered as an optimizable program."""

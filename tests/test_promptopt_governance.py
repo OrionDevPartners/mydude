@@ -503,6 +503,194 @@ def test_role_program_optimizes_on_its_own_output_field():
 
 
 # --------------------------------------------------------------------------- #
+# Thinking-role program coverage (synthesizer / red-team / reflexive auditor)
+#
+# These three roles are NOT worker format — each has its OWN signature, output
+# field, and required sections. This proves the engine optimizes each on its OWN
+# contract (not the six worker sections), through the SAME optimizer + spec-aware
+# metric + promotion/rollback gate. Throwaway programs mirror the real specs so
+# the real program rows/traces are never polluted.
+# --------------------------------------------------------------------------- #
+
+THINKING_TEST_PROGRAMS = {
+    "__promptopt_synth_test__": specs_mod.SYNTHESIZER_PROGRAM,
+    "__promptopt_redteam_test__": specs_mod.RED_TEAM_PROGRAM,
+    "__promptopt_auditor_test__": specs_mod.REFLEXIVE_AUDITOR_PROGRAM,
+}
+
+# Per-output-field "gold" text: each contains EVERY required section header of its
+# program so format_adherence scores the produced output honestly.
+_THINKING_GOOD = {
+    specs_mod.SYNTHESIZER_OUTPUT_FIELD: (
+        "GOAL: ship the governed platform\n"
+        "FINDINGS: [VERIFIED] inputs validated\n"
+        "DECISIONS: proceed with rollout\n"
+        "NEXT_STEPS: monitor production metrics\n"
+        "RISKS: low — [DERIVED] residual latency"
+    ),
+    specs_mod.RED_TEAM_OUTPUT_FIELD: (
+        "PROMPT_INJECTION: CLEAR: no untrusted instructions surfaced\n"
+        "EVIDENCE_FABRICATION: CLEAR: every claim cites the ledger\n"
+        "CONSTRAINT_BYPASS: CLEAR: budget limits respected\n"
+        "LABEL_CONFUSION: CLEAR: epistemic labels consistent\n"
+        "BOUNDARY_VIOLATION: CLEAR: no capability escalation"
+    ),
+    specs_mod.REFLEXIVE_AUDITOR_OUTPUT_FIELD: (
+        "META_CLAIMS: 1 — process stable\n"
+        "CATEGORY: performance\n"
+        "SEVERITY: info\n"
+        "DESCRIPTION: consensus healthy across waves\n"
+        "EVIDENCE: CS trend stable, avg HR 0.12\n"
+        "PROPOSED_ACTION: no governance change recommended"
+    ),
+}
+
+_THINKING_SAMPLE_INPUTS = {
+    specs_mod.SYNTHESIZER_PROGRAM: {
+        "goal": "ship the governed platform",
+        "facts": "- [VERIFIED] inputs validated",
+        "decisions": "- proceed with rollout",
+        "tasks": "- monitor metrics",
+        "risks": "- [DERIVED] residual latency",
+        "claim_ledger": "C1 VERIFIED",
+        "risk_directive": "",
+    },
+    specs_mod.RED_TEAM_PROGRAM: {
+        "synthesis": _THINKING_GOOD[specs_mod.SYNTHESIZER_OUTPUT_FIELD],
+        "claim_ledger": "C1 VERIFIED",
+        "context": "- [VERIFIED] inputs validated",
+    },
+    specs_mod.REFLEXIVE_AUDITOR_PROGRAM: {
+        "ledger_summary": "waves=3 cs=stable hr=stable",
+        "trend_summary": "{}",
+        "wave_stats": "waves_recorded=3, anomalies=0, avg_hr=0.12, hr_tier=LOW, aborted=False",
+        "existing_meta_claims": "none",
+    },
+}
+
+
+def _register_thinking_test_program(test_name, real_program):
+    """Mirror a real thinking-role program under a throwaway name: same signature,
+    seed, IO contract, and sections — so its OWN (non-worker) output field/sections
+    are exercised end-to-end without touching the real program's rows."""
+    real = specs_mod.get_spec(real_program)
+    spec = ProgramSpec(
+        name=test_name,
+        signature_name=real.signature_name,
+        description="Throwaway thinking-role program for prompt-engine tests.",
+        seed_instructions=real.seed_instructions,
+        input_fields=list(real.input_fields),
+        output_field=real.output_field,
+        required_sections=list(real.required_sections),
+    )
+    specs_mod.PROGRAM_SPECS[test_name] = spec
+    sigs._SIGNATURES[test_name] = sigs._SIGNATURES[real_program]
+
+
+def _cleanup_thinking(test_name):
+    db = SessionLocal()
+    try:
+        prog = db.query(PromptProgram).filter_by(name=test_name).first()
+        if prog is not None:
+            db.query(PromptTrace).filter_by(program_id=prog.id).delete()
+            db.query(PromptOptimizationRun).filter_by(program_id=prog.id).delete()
+            db.query(PromptVersion).filter_by(program_id=prog.id).delete()
+            db.delete(prog)
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+    specs_mod.PROGRAM_SPECS.pop(test_name, None)
+    sigs._SIGNATURES.pop(test_name, None)
+
+
+def _thinking_dummy_lm():
+    import dspy
+    # Superset dict: holds EVERY thinking role's output field, so one DummyLM
+    # serves any of the three programs (each reads only its own field; ChatAdapter
+    # ignores the rest). Plus the MIPRO meta-proposer fields. Infinite -> never
+    # exhausts; the metric still genuinely scores the produced (section-rich) output.
+    answer = {
+        **_THINKING_GOOD,
+        "proposed_instruction": (
+            "Apply the role discipline and return your structured report including "
+            "EVERY required section header exactly as specified by the contract."
+        ),
+        "observations": "Dataset asks a thinking-role agent to fill its own sections.",
+        "summary": "Produce a governed thinking-role report.",
+        "program_description": "Thinking-role agent producing its structured report.",
+        "module_description": "Thinking-role module emitting its required sections.",
+        "rationale": "All required sections present and compliant.",
+        "reasoning": "Include every required section header.",
+    }
+    return dspy.utils.DummyLM(itertools.repeat(answer))
+
+
+def test_thinking_role_programs_optimize_on_own_sections():
+    """Each thinking role (synthesizer / red-team / reflexive auditor) seeds v1
+    with its OWN required sections, captures traces, and produces scored candidates
+    through the SAME optimizer + spec-aware metric on its OWN output field — proving
+    the three non-worker thinking roles are self-improving, not just judge/roles."""
+    for test_name, real_program in THINKING_TEST_PROGRAMS.items():
+        _cleanup_thinking(test_name)
+        _register_thinking_test_program(test_name, real_program)
+        try:
+            spec = specs_mod.get_spec(test_name)
+            store.seed_default_programs()
+            vid, instr, _ = store.get_live_instructions(test_name)
+            assert vid is not None, "%s: no live v1" % real_program
+            assert "OUTPUT CONTRACT" in instr, "%s: seed missing output contract" % real_program
+            # v1 seed must carry this role's OWN (non-worker) sections.
+            for sec in spec.required_sections:
+                assert sec in instr, "%s: seed missing section %s" % (real_program, sec)
+
+            db = SessionLocal()
+            try:
+                pid = db.query(PromptProgram).filter_by(name=test_name).first().id
+            finally:
+                db.close()
+
+            sample = _THINKING_SAMPLE_INPUTS[real_program]
+            good = _THINKING_GOOD[spec.output_field]
+            for _ in range(service.min_traces() + 2):
+                rid = store.record_trace(
+                    test_name, vid, dict(sample), good,
+                    score_info={"score": 0.8, "compliance_score": 90, "hallucination_risk": 0.1},
+                    status="ok",
+                )
+                assert rid is not None
+
+            run = PromptOptimizationRun(
+                program_id=pid, optimizer="mipro+gepa", status="running",
+                trainset_size=0, started_by="tester",
+            )
+            db = SessionLocal()
+            try:
+                db.add(run)
+                db.commit()
+                run_id = run.id
+            finally:
+                db.close()
+
+            budgets = {
+                "mipro_auto": "light", "num_threads": 1,
+                "gepa_max_metric_calls": 4, "gepa_minibatch": 2, "max_tokens": 200,
+                "trace_limit": 50,
+            }
+            service.execute_run(run_id, test_name, budgets=budgets, lm=_thinking_dummy_lm())
+
+            status, error, base, best, candidates = _run_status(run_id)
+            assert status == "completed", "%s optimization failed: %s" % (real_program, error)
+            assert candidates, "%s: no candidate versions persisted" % real_program
+            for c in candidates:
+                assert c["score"] is not None, "%s candidate missing score" % real_program
+            assert best is not None
+        finally:
+            _cleanup_thinking(test_name)
+
+
+# --------------------------------------------------------------------------- #
 # Harness
 # --------------------------------------------------------------------------- #
 
@@ -517,6 +705,7 @@ _TESTS = [
     test_optimization_with_dummy_lm_produces_candidates,
     test_optimization_fail_loud_without_provider,
     test_role_program_optimizes_on_its_own_output_field,
+    test_thinking_role_programs_optimize_on_own_sections,
 ]
 
 

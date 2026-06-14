@@ -26,6 +26,18 @@ The degraded path is the prior approved baseline, never an ad-hoc ungoverned pro
 (cognitive-role value → prompts.py constant name + description). Everything else
 (signature mapping, seeding, API, dashboard, metric) is generic.
 
+**Thinking roles are NON-worker programs (own sections, own signature).** The
+synthesizer / red_team / reflexive_auditor are also governed/optimizable, but they do
+NOT reuse the six worker sections — each has its OWN signature + required sections (a
+separate `_THINKING_ROLE_TABLE` in `specs.py`). They register into `PROGRAM_SPECS`
+(so seeding / `evolution.seed_components` / `list_programs` / dashboard pick them up
+automatically) but are deliberately kept OUT of worker `ROLE_PROGRAM_NAMES`, so the
+worker-only `_parse_worker`/`_call_worker` paths never treat them as workers.
+**Governance constraint:** the governed reflexive auditor writes only `GOVERNED_AUDIT`
+on the run result and must NEVER auto-raise governance proposals — the per-wave
+heuristic `audit_wave` path remains the sole proposal-raiser. Why: two proposal sources
+would double-count and let an ungoverned model output drive enactments.
+
 **Metric is spec-aware:** `metric.make_metric(output_field, sections)` /
 `make_gepa_metric(...)` close over the program's OWN signature output field and required
 sections; `service.run_optimizers` builds them from the spec. Role programs reuse the six

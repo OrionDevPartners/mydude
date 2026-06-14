@@ -13,6 +13,9 @@ from src.promptopt.specs import (
     JUDGE_PROGRAM,
     ROLE_PROGRAM_NAMES,
     SEED_JUDGE_INSTRUCTIONS,
+    SYNTHESIZER_PROGRAM,
+    RED_TEAM_PROGRAM,
+    REFLEXIVE_AUDITOR_PROGRAM,
     get_spec,
 )
 
@@ -59,6 +62,60 @@ class RoleAgent(dspy.Signature):
     )
 
 
+class SynthesizerAgent(dspy.Signature):
+    """Merge the wave's accepted claims into one governed final synthesis.
+
+    A thinking-role program (NOT worker format). Synthesizes ONLY from the
+    accepted inputs — it introduces no new claims. The live, governance-approved
+    instructions are loaded per call (not this docstring)."""
+
+    goal = dspy.InputField(desc="The overall swarm goal under deliberation.")
+    facts = dspy.InputField(desc="Accepted key findings/facts from the debate.")
+    decisions = dspy.InputField(desc="Decisions reached from accepted claims.")
+    tasks = dspy.InputField(desc="Outstanding next tasks/actions.")
+    risks = dspy.InputField(desc="Residual risks and unknowns.")
+    claim_ledger = dspy.InputField(desc="The claim-ledger summary; may be empty.")
+    risk_directive = dspy.InputField(desc="Optional risk-control directive; may be empty.")
+    synthesis = dspy.OutputField(
+        desc="The governed final handoff. MUST include every section header exactly: "
+             "GOAL, FINDINGS, DECISIONS, NEXT_STEPS, RISKS."
+    )
+
+
+class RedTeamReview(dspy.Signature):
+    """Adversarially test the swarm's synthesis for exploitable weaknesses.
+
+    A thinking-role program (NOT worker format). Reports findings + fixes per
+    attack vector; never emits a working exploit. Live instructions are loaded
+    per call (not this docstring)."""
+
+    synthesis = dspy.InputField(desc="The swarm's consolidated synthesis to attack.")
+    claim_ledger = dspy.InputField(desc="The claim-ledger summary; may be empty.")
+    context = dspy.InputField(desc="Supporting facts/context for the probes; may be empty.")
+    red_team_report = dspy.OutputField(
+        desc="One verdict per attack vector. MUST include every section header exactly: "
+             "PROMPT_INJECTION, EVIDENCE_FABRICATION, CONSTRAINT_BYPASS, LABEL_CONFUSION, "
+             "BOUNDARY_VIOLATION."
+    )
+
+
+class ReflexiveAuditorReview(dspy.Signature):
+    """Meta-cognitive audit of the swarm's OWN process/governance health.
+
+    A thinking-role program (NOT worker format). Judges drift/anomalies/consensus
+    health from the swarm's performance summary, never re-judging the task's
+    subject matter. Live instructions are loaded per call (not this docstring)."""
+
+    ledger_summary = dspy.InputField(desc="The reflexive auditor's performance-ledger summary.")
+    trend_summary = dspy.InputField(desc="CS/HR/consensus trend labels for the run.")
+    wave_stats = dspy.InputField(desc="Per-run stats: waves recorded, anomalies, avg HR, abort state.")
+    existing_meta_claims = dspy.InputField(desc="The heuristic meta-claims already raised; may be 'none'.")
+    audit_report = dspy.OutputField(
+        desc="The meta-analysis. MUST include every section header exactly: META_CLAIMS, "
+             "CATEGORY, SEVERITY, DESCRIPTION, EVIDENCE, PROPOSED_ACTION."
+    )
+
+
 _SIGNATURES: Dict[str, Type[dspy.Signature]] = {
     JUDGE_PROGRAM: JudgeSynthesis,
 }
@@ -66,6 +123,22 @@ _SIGNATURES: Dict[str, Type[dspy.Signature]] = {
 # instructions (the role discipline) differ per program and are governed in the DB.
 for _role_name in ROLE_PROGRAM_NAMES:
     _SIGNATURES[_role_name] = RoleAgent
+
+# The three thinking-role programs each use their OWN signature (distinct IO).
+_THINKING_ROLE_SIGNATURES: Dict[str, Type[dspy.Signature]] = {
+    SYNTHESIZER_PROGRAM: SynthesizerAgent,
+    RED_TEAM_PROGRAM: RedTeamReview,
+    REFLEXIVE_AUDITOR_PROGRAM: ReflexiveAuditorReview,
+}
+for _name, _sig in _THINKING_ROLE_SIGNATURES.items():
+    try:
+        _spec = get_spec(_name)
+    except KeyError:
+        continue  # prompt seed absent -> program not registered; skip its signature
+    _SIGNATURES[_name] = _sig
+    # Seed the default docstring to the v1 instructions so a fresh (uncompiled)
+    # signature behaves identically to the seeded live version (judge parity).
+    _sig.__doc__ = _spec.seed_instructions
 
 # Seed the default docstring to the same text used for DB version 1, so a fresh
 # (uncompiled) signature behaves identically to the seeded live version.

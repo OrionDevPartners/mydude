@@ -99,3 +99,78 @@ async def run_role(program_name: str, goal: str, task: str, context: str = "",
         },
         max_tokens=max_tokens,
     )
+
+
+def _as_text(value: Any) -> str:
+    """Coerce list/dict/None inputs to a single string so DSPy always sees text
+    (the same coercion at runtime AND optimization — no train/serve skew)."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "\n".join("- " + str(x).strip() for x in value if str(x).strip())
+    if isinstance(value, dict):
+        import json
+        try:
+            return json.dumps(value, ensure_ascii=False)[:4000]
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+async def run_synthesizer(goal: Any, facts: Any, decisions: Any, tasks: Any,
+                          risks: Any, claim_ledger: Any = "", risk_directive: Any = "",
+                          max_tokens: int = 1500) -> str:
+    """Governed final-synthesis thinking role (replaces the mechanical bullet
+    builder). Synthesizes ONLY from accepted inputs; same trace/scoring path as
+    the judge so it feeds the same optimization + promotion/rollback gate."""
+    from src.promptopt.specs import SYNTHESIZER_PROGRAM
+    return await run_program(
+        SYNTHESIZER_PROGRAM,
+        {
+            "goal": _as_text(goal),
+            "facts": _as_text(facts),
+            "decisions": _as_text(decisions),
+            "tasks": _as_text(tasks),
+            "risks": _as_text(risks),
+            "claim_ledger": _as_text(claim_ledger),
+            "risk_directive": _as_text(risk_directive),
+        },
+        max_tokens=max_tokens,
+    )
+
+
+async def run_red_team(synthesis: Any, claim_ledger: Any = "", context: Any = "",
+                       max_tokens: int = 1200) -> str:
+    """Governed adversarial red-team thinking role over the swarm's synthesis.
+    Same trace/scoring path as the judge -> same optimization + governance flow."""
+    from src.promptopt.specs import RED_TEAM_PROGRAM
+    return await run_program(
+        RED_TEAM_PROGRAM,
+        {
+            "synthesis": _as_text(synthesis),
+            "claim_ledger": _as_text(claim_ledger),
+            "context": _as_text(context),
+        },
+        max_tokens=max_tokens,
+    )
+
+
+async def run_reflexive_auditor(ledger_summary: Any, trend_summary: Any,
+                                wave_stats: Any, existing_meta_claims: Any = "",
+                                max_tokens: int = 1200) -> str:
+    """Governed meta-cognitive audit thinking role over the swarm's own process
+    health. Same trace/scoring path as the judge -> same optimization + governance
+    flow. (It NEVER auto-raises governance proposals; the heuristic auditor does.)"""
+    from src.promptopt.specs import REFLEXIVE_AUDITOR_PROGRAM
+    return await run_program(
+        REFLEXIVE_AUDITOR_PROGRAM,
+        {
+            "ledger_summary": _as_text(ledger_summary),
+            "trend_summary": _as_text(trend_summary),
+            "wave_stats": _as_text(wave_stats),
+            "existing_meta_claims": _as_text(existing_meta_claims),
+        },
+        max_tokens=max_tokens,
+    )
