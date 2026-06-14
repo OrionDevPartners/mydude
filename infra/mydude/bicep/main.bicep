@@ -50,6 +50,18 @@ param aoaiBackgroundCapacity int = 100
 @description('Cosmos DB autoscale MAX RU/s for the agents-memory database.')
 param cosmosMaxThroughput int = 10000
 
+@description('Deploy the Azure MCP Dev Accelerator container app. Default false. Set true once the MCP container image has been built and pushed to a registry the foundry-agent identity can pull from.')
+param deployAzureMcp bool = false
+
+@description('Fully-qualified MCP container image (REQUIRED when deployAzureMcp=true), e.g. myregistry.azurecr.io/mydude-azure-mcp:2026-06-14.')
+param azureMcpImage string = ''
+
+@description('Container registry login server for the MCP image pull (REQUIRED when deployAzureMcp=true), e.g. myregistry.azurecr.io.')
+param azureMcpRegistryServer string = ''
+
+@description('Enable the BILLABLE two-phase deploy APPLY tool inside the MCP server. Default false (default-deny).')
+param azureMcpEnableDeploy bool = false
+
 var prefix = 'mydude'
 var tags = {
   project: 'MyDude'
@@ -181,6 +193,26 @@ module fabric 'modules/fabric.bicep' = if (fabricEnabled) {
   }
 }
 
+// Azure MCP Dev Accelerator — VNet-internal Container App (off by default).
+// Requires the Microsoft.App + Microsoft.OperationalInsights resource providers
+// to be registered (a subscription-admin step). The container image must already
+// be pushed to a registry the foundry-agent identity can pull from.
+module mcp 'modules/mcp.bicep' = if (deployAzureMcp) {
+  name: 'mydude-azure-mcp'
+  params: {
+    location: location
+    prefix: prefix
+    tags: tags
+    acaSubnetId: network.outputs.acaSubnetId
+    logAnalyticsWorkspaceName: monitoring.outputs.logAnalyticsWorkspaceName
+    userAssignedIdentityId: identity.outputs.foundryAgentIdentityId
+    containerImage: azureMcpImage
+    containerRegistryServer: azureMcpRegistryServer
+    subscriptionId: subscription().subscriptionId
+    enableAzureDeploy: azureMcpEnableDeploy
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Outputs (non-secret; reference Key Vault for secrets)
 // ---------------------------------------------------------------------------
@@ -194,3 +226,5 @@ output aoaiEndpoint string = foundry.outputs.aoaiEndpoint
 output cosmosAccountName string = cosmos.outputs.cosmosAccountName
 output cosmosEndpoint string = cosmos.outputs.cosmosEndpoint
 output fabricCapacityName string = fabricEnabled ? fabric.outputs.fabricCapacityName : 'NOT_DEPLOYED (fabricEnabled=false; create capacity as an admin step)'
+output azureMcpAppName string = deployAzureMcp ? mcp.outputs.containerAppName : 'NOT_DEPLOYED (deployAzureMcp=false)'
+output azureMcpUrl string = deployAzureMcp ? mcp.outputs.containerAppInternalUrl : 'NOT_DEPLOYED (deployAzureMcp=false)'

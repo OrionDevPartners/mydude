@@ -239,6 +239,11 @@ class PolicyEngine:
                           "telephony_turn", "voice_synthesize"):
             return self._evaluate_telephony(capability, params)
 
+        if capability in ("azure_cosmos_read", "azure_pg_select",
+                          "azure_deploy_status", "azure_aoai_complete",
+                          "azure_deploy_plan", "azure_deploy_apply"):
+            return self._evaluate_azure(capability, params)
+
         return PolicyDecision(True, "Allowed by policy.")
 
     def _evaluate_telephony(self, capability: str, params: Dict[str, Any]) -> PolicyDecision:
@@ -257,6 +262,32 @@ class PolicyEngine:
                 False,
                 "Telephony capability is disabled. Set "
                 "ENABLE_TELEPHONY_CAPABILITY=true to enable voice + calls.",
+            )
+        return PolicyDecision(True, "Allowed by policy.")
+
+    def _evaluate_azure(self, capability: str, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for the Azure MCP dev-accelerator capabilities (Task #186).
+
+        The read / governed-completion / plan surface is enabled by default
+        (usable once the MCP server is deployed inside the VNet) and is
+        hard-disabled with ENABLE_AZURE_MCP=false. The billable APPLY phase is
+        default-DENY: it additionally requires an explicit ALLOW_AZURE_DEPLOY=true
+        opt-in. The cryptographic two-phase binding (plan token + exact plan-hash
+        + confirm phrase) is verified downstream in the integration handler —
+        that needs the signing secret — so here we enforce only the master
+        enable flag and the destructive opt-in. Provider/credential presence is
+        enforced at the data plane and fails loud (never mocked).
+        """
+        if not _env_flag("ENABLE_AZURE_MCP", default=True):
+            return PolicyDecision(
+                False,
+                "Azure MCP capability is disabled. Set ENABLE_AZURE_MCP=true to enable it.",
+            )
+        if capability == "azure_deploy_apply" and not _env_flag("ALLOW_AZURE_DEPLOY"):
+            return PolicyDecision(
+                False,
+                "Azure deploy apply is blocked by policy (billable, destructive, "
+                "default-deny). Set ALLOW_AZURE_DEPLOY=true to enable the apply phase.",
             )
         return PolicyDecision(True, "Allowed by policy.")
 

@@ -21,6 +21,8 @@ _AUDITED_CAPABILITIES = {
     "calendly_book",
     "telephony_place_call", "telephony_receive_call", "telephony_turn",
     "voice_synthesize",
+    "azure_cosmos_read", "azure_pg_select", "azure_deploy_status",
+    "azure_aoai_complete", "azure_deploy_plan", "azure_deploy_apply",
 }
 
 
@@ -185,6 +187,30 @@ class CapabilityBroker:
 
         if capability == "telephony_turn":
             out = await self.integrations.telephony_turn(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "azure_cosmos_read":
+            out = await self.integrations.azure_cosmos_read(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "azure_pg_select":
+            out = await self.integrations.azure_pg_select(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "azure_deploy_status":
+            out = await self.integrations.azure_deploy_status(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "azure_aoai_complete":
+            out = await self.integrations.azure_aoai_complete(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "azure_deploy_plan":
+            out = await self.integrations.azure_deploy_plan(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "azure_deploy_apply":
+            out = await self.integrations.azure_deploy_apply(params)
             return BrokerResult(True, decision, out)
 
         # A genuinely-new (unimplemented) capability is being requested.

@@ -30,6 +30,74 @@ def audit_capability(capability, target=None, backend=None, status="ok", detail=
         logger.warning("Failed to write capability audit log: %s", e)
 
 
+class AuditUnavailable(RuntimeError):
+    """Raised when a capability's audit record cannot be durably persisted.
+
+    Destructive / irreversible / billable capabilities REFUSE to act when this is
+    raised (governance pillar #4: no ungoverned outbound action). Read-only and
+    reversible capabilities keep using the fail-soft :func:`audit_capability`.
+    """
+
+
+def audit_capability_strict(capability, target=None, backend=None, status="ok",
+                            detail=None, source=None):
+    """Durably record a capability invocation, FAIL-LOUD.
+
+    Unlike :func:`audit_capability` (fail-soft), this RAISES
+    :class:`AuditUnavailable` if the record cannot be committed, and returns the
+    new row id so a follow-up status can be written after the action completes.
+    Use it for irreversible/billable actions that MUST refuse when a durable audit
+    trail cannot be guaranteed BEFORE the action is taken.
+    """
+    try:
+        from src.database import SessionLocal
+        from src.models import CapabilityAuditLog
+        db = SessionLocal()
+        try:
+            row = CapabilityAuditLog(
+                capability=capability,
+                target=(str(target)[:2000] if target is not None else None),
+                backend=backend,
+                status=status,
+                detail=(str(detail)[:2000] if detail is not None else None),
+                source=source,
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return row.id
+        finally:
+            db.close()
+    except Exception as e:  # fail-loud: the caller MUST refuse to proceed
+        raise AuditUnavailable("Audit trail unavailable: %s" % (str(e)[:200])) from e
+
+
+def update_audit_status(audit_id, status, detail=None):
+    """Best-effort update of a previously-committed strict-audit row's final status.
+
+    The durable pre-execution record already exists (and the irreversible action
+    has by now been taken), so a failure here is logged, never raised — losing the
+    final-status update must not turn a successful apply into a reported failure.
+    """
+    if audit_id is None:
+        return
+    try:
+        from src.database import SessionLocal
+        from src.models import CapabilityAuditLog
+        db = SessionLocal()
+        try:
+            row = db.get(CapabilityAuditLog, audit_id)
+            if row is not None:
+                row.status = status
+                if detail is not None:
+                    row.detail = str(detail)[:2000]
+                db.commit()
+        finally:
+            db.close()
+    except Exception as e:  # pragma: no cover - best-effort status update
+        logger.warning("Failed to update capability audit status id=%s: %s", audit_id, e)
+
+
 class Integrations:
     #: Base64 PNG of the most recent successful browser_open (UI render channel).
     last_browser_screenshot: Optional[str] = None
@@ -310,6 +378,243 @@ class Integrations:
     async def terraform_apply(self, params: Dict[str, Any]) -> str:
         env = params.get("env", "dev")
         return f"[STUB] terraform_apply for env={env}. Blocked unless policy allows + has_plan=True."
+
+    # -- Azure MCP dev-accelerator handlers (Task #186) ------------------
+    # Each reaches the provider-agnostic AzureBackends adapter, wraps the
+    # blocking Azure/DB call in asyncio.to_thread to keep the event loop free,
+    # fails loud on any backend error (never mock data) and audits every
+    # invocation. Reached ONLY via the broker after contract + policy gates.
+
+    async def azure_cosmos_read(self, params: Dict[str, Any]) -> str:
+        import json
+        from src.mcp.azure_backends import AzureBackends, AzureBackendError
+        source = params.get("source")
+        database = (params.get("database") or "").strip()
+        container = (params.get("container") or "").strip()
+        query = params.get("query") or ""
+        parameters = params.get("parameters")
+        max_items = params.get("max_items")
+        backends = AzureBackends()
+
+        def run():
+            kwargs: Dict[str, Any] = {}
+            if max_items is not None:
+                kwargs["max_items"] = int(max_items)
+            return backends.cosmos_read(database, container, query,
+                                        parameters=parameters, **kwargs)
+
+        try:
+            result = await asyncio.to_thread(run)
+            audit_capability("azure_cosmos_read", target="%s/%s" % (database, container),
+                             backend="cosmos", status="ok",
+                             detail="count=%d" % result.get("count", 0), source=source)
+            return json.dumps({"ok": True, **result})
+        except AzureBackendError as e:
+            audit_capability("azure_cosmos_read", target="%s/%s" % (database, container),
+                             backend="cosmos", status="error", detail=str(e)[:500],
+                             source=source)
+            return json.dumps({"ok": False, "error": str(e)})
+
+    async def azure_pg_select(self, params: Dict[str, Any]) -> str:
+        import json
+        from src.mcp.azure_backends import AzureBackends, AzureBackendError
+        source = params.get("source")
+        db_key = (params.get("db_key") or "").strip()
+        sql = params.get("sql") or ""
+        sql_params = params.get("params")
+        max_rows = params.get("max_rows")
+        backends = AzureBackends()
+
+        def run():
+            kwargs: Dict[str, Any] = {}
+            if max_rows is not None:
+                kwargs["max_rows"] = int(max_rows)
+            return backends.pg_select(db_key, sql, params=sql_params, **kwargs)
+
+        try:
+            result = await asyncio.to_thread(run)
+            audit_capability("azure_pg_select", target=db_key, backend="postgres",
+                             status="ok", detail="rowcount=%d" % result.get("rowcount", 0),
+                             source=source)
+            return json.dumps({"ok": True, **result})
+        except AzureBackendError as e:
+            audit_capability("azure_pg_select", target=db_key, backend="postgres",
+                             status="error", detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False, "error": str(e)})
+
+    async def azure_deploy_status(self, params: Dict[str, Any]) -> str:
+        import json
+        from src.mcp.azure_backends import AzureBackends, AzureBackendError
+        source = params.get("source")
+        backends = AzureBackends()
+        try:
+            result = await asyncio.to_thread(backends.deploy_status)
+            audit_capability("azure_deploy_status", target=result.get("deployment"),
+                             backend="arm", status="ok",
+                             detail="state=%s" % result.get("state"), source=source)
+            return json.dumps({"ok": True, **result})
+        except AzureBackendError as e:
+            audit_capability("azure_deploy_status", backend="arm", status="error",
+                             detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False, "error": str(e)})
+
+    async def azure_aoai_complete(self, params: Dict[str, Any]) -> str:
+        """GOVERNED completion — routes through the swarm service (full envelope).
+        There is deliberately NO raw Azure OpenAI passthrough (pillar #4)."""
+        import json
+        from src.mcp.azure_backends import AzureBackends, AzureBackendError
+        source = params.get("source")
+        prompt = (params.get("prompt") or "").strip()
+        domain = params.get("domain") or "general"
+        team = params.get("team") or "default"
+        if not prompt:
+            audit_capability("azure_aoai_complete", status="error",
+                             detail="missing prompt", source=source)
+            return json.dumps({"ok": False, "error": "prompt is required."})
+        backends = AzureBackends()
+        try:
+            result = await backends.aoai_complete(prompt, domain=domain, team=team)
+            audit_capability("azure_aoai_complete", target="domain=%s" % domain,
+                             backend="governed_swarm", status="ok",
+                             detail="governed completion returned", source=source)
+            return json.dumps({"ok": True, "result": result}, default=str)
+        except AzureBackendError as e:
+            audit_capability("azure_aoai_complete", target="domain=%s" % domain,
+                             backend="governed_swarm", status="error",
+                             detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False, "error": str(e)})
+        except Exception as e:  # noqa: BLE001 - surface (fail loud), never mock
+            audit_capability("azure_aoai_complete", target="domain=%s" % domain,
+                             backend="governed_swarm", status="error",
+                             detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False,
+                               "error": "Governed completion failed: %s" % str(e)[:300]})
+
+    async def azure_deploy_plan(self, params: Dict[str, Any]) -> str:
+        """PLAN phase: ARM what-if (no resources, no cost) -> short-lived signed
+        token binding the approved plan (and its params fingerprint) to apply."""
+        import json
+        from src.mcp.azure_backends import (
+            AzureBackends, AzureBackendError, compute_plan_hash, sign_plan_token,
+            PLAN_TOKEN_TTL_SECONDS, AZURE_DEPLOY_CONFIRM_PHRASE,
+        )
+        source = params.get("source")
+        actor = params.get("actor") or source
+        backends = AzureBackends()
+        try:
+            plan = await asyncio.to_thread(backends.deploy_what_if)
+            plan_hash = compute_plan_hash(plan.get("changes"))
+            # Guarantee a DURABLE approval record BEFORE minting a token that
+            # authorizes a billable apply (pillar #4). If the audit trail is down,
+            # refuse to issue a token rather than approve an unauditable plan.
+            try:
+                audit_capability_strict(
+                    "azure_deploy_plan", target="mydude-stack", backend="arm",
+                    status="ok",
+                    detail="change_count=%s plan_hash=%s" % (
+                        plan.get("change_count"), plan_hash[:12]),
+                    source=source)
+            except AuditUnavailable as ae:
+                return json.dumps({
+                    "ok": False,
+                    "error": "Refusing to issue a deploy plan token: %s" % str(ae),
+                })
+            token = sign_plan_token(plan_hash=plan_hash,
+                                    params_hash=plan.get("params_hash"),
+                                    template_hash=plan.get("template_hash"),
+                                    actor=actor, source=source)
+            # params_hash + template_hash are bound INSIDE the token only — never
+            # returned to a caller.
+            return json.dumps({
+                "ok": True,
+                "changes": plan.get("changes"),
+                "change_count": plan.get("change_count"),
+                "template_resource_count": plan.get("template_resource_count"),
+                "plan_hash": plan_hash,
+                "plan_token": token,
+                "expires_in": PLAN_TOKEN_TTL_SECONDS,
+                "confirm_phrase": AZURE_DEPLOY_CONFIRM_PHRASE,
+            })
+        except AzureBackendError as e:
+            audit_capability("azure_deploy_plan", target="mydude-stack", backend="arm",
+                             status="error", detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False, "error": str(e)})
+
+    async def azure_deploy_apply(self, params: Dict[str, Any]) -> str:
+        """APPLY phase (BILLABLE): verify the plan token + exact plan hash +
+        confirm phrase, then submit create_or_update with the params fingerprint
+        bound at plan time. Fails loud on tamper/expiry/drift; audits every path."""
+        import json
+        from src.mcp.azure_backends import (
+            AzureBackends, AzureBackendError, verify_plan_token,
+            AZURE_DEPLOY_CONFIRM_PHRASE,
+        )
+        source = params.get("source")
+        plan_token = params.get("plan_token") or ""
+        provided_plan_hash = params.get("plan_hash") or ""
+        confirm = (params.get("confirm") or "").strip()
+        # Defense in depth: the contract already enforces the confirm phrase, but
+        # re-check here so a direct (non-broker) call path can never apply
+        # without the exact, explicit confirmation.
+        if confirm != AZURE_DEPLOY_CONFIRM_PHRASE:
+            audit_capability("azure_deploy_apply", target="mydude-stack", backend="arm",
+                             status="blocked", detail="missing/incorrect confirm phrase",
+                             source=source)
+            return json.dumps({"ok": False,
+                               "error": "Exact confirm phrase required to apply."})
+        try:
+            payload = verify_plan_token(plan_token)
+        except AzureBackendError as e:
+            audit_capability("azure_deploy_apply", target="mydude-stack", backend="arm",
+                             status="blocked", detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False, "error": str(e)})
+        if payload.get("plan_hash") != provided_plan_hash:
+            audit_capability("azure_deploy_apply", target="mydude-stack", backend="arm",
+                             status="blocked",
+                             detail="plan_hash mismatch (token vs supplied)", source=source)
+            return json.dumps({"ok": False,
+                               "error": "plan_hash does not match the approved plan "
+                                        "token; re-plan required."})
+        expected_params_hash = payload.get("params_hash")
+        expected_plan_hash = payload.get("plan_hash")
+        expected_template_hash = payload.get("template_hash")
+        # Guaranteed pre-execution audit (pillar #4): a billable, irreversible apply
+        # must REFUSE if a durable record of the attempt cannot be written BEFORE we
+        # submit. The fail-soft audit_capability() can silently drop a write, so the
+        # destructive path uses the strict variant and refuses on AuditUnavailable.
+        try:
+            audit_id = audit_capability_strict(
+                "azure_deploy_apply", target="mydude-stack", backend="arm",
+                status="submitting",
+                detail="confirmed apply plan_hash=%s" % (provided_plan_hash[:12]),
+                source=source)
+        except AuditUnavailable as ae:
+            # Best-effort note of the refusal (fail-soft); the apply does NOT run.
+            audit_capability("azure_deploy_apply", target="mydude-stack", backend="arm",
+                             status="blocked",
+                             detail="refused: audit trail unavailable", source=source)
+            return json.dumps({
+                "ok": False,
+                "error": "Refusing to apply: a durable audit record could not be "
+                         "guaranteed (%s)." % str(ae),
+            })
+
+        backends = AzureBackends()
+
+        def run():
+            return backends.deploy_apply(expected_params_hash=expected_params_hash,
+                                         expected_plan_hash=expected_plan_hash,
+                                         expected_template_hash=expected_template_hash,
+                                         no_wait=True)
+
+        try:
+            result = await asyncio.to_thread(run)
+            update_audit_status(audit_id, "ok",
+                                "submitted state=%s" % result.get("state"))
+            return json.dumps({"ok": True, **result})
+        except AzureBackendError as e:
+            update_audit_status(audit_id, "error", str(e)[:500])
+            return json.dumps({"ok": False, "error": str(e)})
 
     async def asana_query(self, params: Dict[str, Any]) -> str:
         import os

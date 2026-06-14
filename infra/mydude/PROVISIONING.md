@@ -151,6 +151,80 @@ is created only when the Hub is on), so the RG-Owner SP can deploy it directly:
 The AOAI account + both deployments remain live independently — the app calls AOAI directly over its
 private endpoint and does not depend on the managed runtime to function.
 
+### Azure MCP Dev Accelerator (`deployAzureMcp=false` — GATED, off by default)
+
+A governed **MCP server** (`src/mcp/azure_dev_server.py`, FastMCP streamable HTTP) deployed as a
+**VNet-internal Azure Container App** so an MCP client *inside the VNet* (jump box, dev container,
+Foundry agent) can drive the private `mydude` stack through governed tools. Every tool is dispatched
+through the existing contract→policy→broker→integration→audit chain — there is **no raw provider
+passthrough**:
+
+- `azure_cosmos_read` — read items from `agents_memory` containers (read-only clamps).
+- `azure_pg_select` — **SELECT/WITH-only** queries against `agents_home` / `provider_home` (a strict
+  single-statement validator rejects DML/DDL/multi-statement/`;`-injection).
+- `azure_deploy_status` — ARM deployment + resource state for `mydude-stack`.
+- `azure_aoai_complete` — a **governed** completion routed through `src.swarm.service.run_governed_swarm`
+  (full compliance / hallucination / provenance / audit envelope) — never raw AOAI output.
+- `azure_deploy_plan` — Bicep **what-if** (no cost) returning a short-lived signed plan token.
+- `azure_deploy_apply` — **BILLABLE, destructive, default-deny.** Requires `ALLOW_AZURE_DEPLOY=true`
+  **and** the matching plan token + exact plan/params hash + explicit confirm (broker-gated, both
+  phases audited). Off unless `azureMcpEnableDeploy=true`.
+
+**Security posture:** ingress `external:false` (private FQDN only), bearer-token auth sourced from Key
+Vault at runtime under the `mydude-foundry-agent` user-assigned identity (the token value is never
+baked into the image or Bicep), `allowInsecure:false`. The image bakes the Bicep CLI so the
+plan/apply tools are genuinely functional (no placeholders) when enabled.
+
+The two-phase deploy tools sign/verify their short-lived plan tokens with a **stable** signing secret,
+**also** sourced from Key Vault at runtime (`AZURE_MCP_DEPLOY_SECRET_NAME`, default
+`azure-mcp-deploy-token-secret`) under the same identity — a stable secret is required so a token minted
+by `azure_deploy_plan` still verifies in `azure_deploy_apply` across container restarts/replicas (an
+ephemeral per-process key would silently break the plan→apply binding). This secret is **server-only**:
+clients never need it. The destructive apply additionally **refuses to run** unless a durable audit
+record can first be written (governance pillar #4).
+
+> **Subscription-admin prerequisite:** the **`Microsoft.App`** and **`Microsoft.OperationalInsights`**
+> resource providers must be **Registered** on the subscription before this module deploys (the
+> RG-Owner SP cannot register providers). Register once:
+> `az provider register --namespace Microsoft.App` and
+> `az provider register --namespace Microsoft.OperationalInsights`.
+
+**Connection guide (deploy → wire → connect):**
+
+1. **Build & push the image** (build context is the repo **root**), to a registry the
+   `mydude-foundry-agent` identity can pull from (e.g. an ACR with AcrPull granted to that identity):
+   ```bash
+   docker build -f infra/mydude/mcp/Dockerfile -t <registry>/mydude-azure-mcp:<tag> .
+   docker push <registry>/mydude-azure-mcp:<tag>
+   ```
+2. **Deploy the module** by flipping the gate (admin/authorized run; `parameters.json` keeps it false):
+   ```bash
+   # via the Python driver, overriding the gated params for this run:
+   python3 infra/mydude/local/deploy.py deploy --yes \
+     # set in parameters.json or pass through: deployAzureMcp=true,
+     # azureMcpImage=<registry>/mydude-azure-mcp:<tag>, azureMcpRegistryServer=<registry>
+   ```
+   (Leave `azureMcpEnableDeploy=false` unless you intend to expose the billable deploy-apply tool.)
+3. **Mint the MCP secrets into Key Vault** (run from inside the VNet, identity with KV `set`; values
+   are never printed). One call mints BOTH the client **bearer token** (`azure-mcp-auth-token`) and the
+   server-only deploy-token **signing secret** (`azure-mcp-deploy-token-secret`):
+   ```bash
+   python3 infra/mydude/local/setup_mcp_token.py --dry-run   # preview
+   python3 infra/mydude/local/setup_mcp_token.py             # create either if absent (or --rotate)
+   ```
+4. **Verify the deployment** (control-plane reads only; never prints the token):
+   ```bash
+   python3 infra/mydude/local/azure_mcp_doctor.py
+   ```
+5. **Connect an MCP client** from inside the VNet. The endpoint is the internal app FQDN
+   (`azureMcpUrl` output) at path **`/mcp`**; authenticate with the bearer token you retrieve with
+   **your own** credentials:
+   ```bash
+   TOKEN="$(az keyvault secret show --vault-name mydude-kv --name azure-mcp-auth-token --query value -o tsv)"
+   # Point your MCP client at https://<azureMcpUrl> with header: Authorization: Bearer $TOKEN
+   ```
+   To smoke-test interactively, run the MCP Inspector against that URL with the same bearer header.
+
 ---
 
 ## Post-provision steps (separate build tasks)
@@ -227,8 +301,14 @@ infra/mydude/
       fabric.bicep                 # Microsoft Fabric capacity (gated)
       foundry.bicep                # AOAI account + fg/bg deployments; Hub/Project + dedicated NON-HNS storage, AML PE/DNS, managed-net (gated)
       monitoring.bicep             # Log Analytics + App Insights + provider-latency alert
+      mcp.bicep                    # Azure MCP Dev Accelerator — VNet-internal managedEnvironment + containerApp (gated: deployAzureMcp)
+  mcp/
+    Dockerfile                     # Governed MCP server image (build context = repo ROOT; bakes bicep CLI)
+    entrypoint.sh                  # Fail-loud preflight (AZURE_SUBSCRIPTION_ID + auth source); never prints secrets
   local/
     deploy.py                      # Azure Python SDK deploy driver (validate/whatif/deploy/status)
+    setup_mcp_token.py             # Mint the MCP bearer token into Key Vault (value never printed; --rotate/--dry-run)
+    azure_mcp_doctor.py            # Validate the deployed MCP app is private + wired + token present (control-plane reads only)
     sovereign_stack.yaml           # Local sovereign stack definition
   governance/                      # agents_home / provider_home DDL + migration lineage (governance.claim_ledger)
   migrators/                       # postgres_migrator.py (DDL) + corpus_migrator.py (Fabric/OneLake corpus)

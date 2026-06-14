@@ -135,6 +135,61 @@ def _precond_e164_destination(params: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# -- Azure MCP dev-accelerator preconditions (Task #186) --------------------
+# These reuse the SAME validators the backend adapter enforces at execution
+# time, so the read-only / allow-list contract is identical whether a request
+# is rejected at the contract gate or defended in depth at the data plane.
+
+
+def _precond_azure_pg_db_allowed(params: Dict[str, Any]) -> Optional[str]:
+    """The SELECT-only Postgres tool may only touch an allow-listed database."""
+    db = (params.get("db_key") or "").strip()
+    if not db:
+        return None  # required-field check handles emptiness
+    from src.mcp.azure_backends import ALLOWED_PG_DATABASES
+    if db not in ALLOWED_PG_DATABASES:
+        return "Unknown database '%s'. Allowed: %s" % (db, ", ".join(ALLOWED_PG_DATABASES))
+    return None
+
+
+def _precond_azure_pg_select_only(params: Dict[str, Any]) -> Optional[str]:
+    """Reject any Postgres SQL that is not a single read-only SELECT/WITH."""
+    sql = params.get("sql") or ""
+    if not sql:
+        return None  # required-field check handles emptiness
+    from src.mcp.azure_backends import validate_select_only, SqlValidationError
+    try:
+        validate_select_only(sql)
+    except SqlValidationError as e:
+        return str(e)
+    return None
+
+
+def _precond_azure_cosmos_select_only(params: Dict[str, Any]) -> Optional[str]:
+    """Reject any Cosmos query that is not a single comment-free SELECT."""
+    query = params.get("query") or ""
+    if not query:
+        return None  # required-field check handles emptiness
+    from src.mcp.azure_backends import validate_cosmos_query, SqlValidationError
+    try:
+        validate_cosmos_query(query)
+    except SqlValidationError as e:
+        return str(e)
+    return None
+
+
+def _precond_azure_deploy_confirm(params: Dict[str, Any]) -> Optional[str]:
+    """The billable APPLY phase requires the exact confirmation phrase."""
+    from src.mcp.azure_backends import AZURE_DEPLOY_CONFIRM_PHRASE
+    confirm = (params.get("confirm") or "").strip()
+    if confirm != AZURE_DEPLOY_CONFIRM_PHRASE:
+        return (
+            "azure_deploy_apply requires confirm=='%s' (exact) to authorize the "
+            "billable apply." % AZURE_DEPLOY_CONFIRM_PHRASE
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Contract dataclass
 # ---------------------------------------------------------------------------
@@ -473,6 +528,106 @@ _CONTRACTS: Dict[str, CapabilityContract] = {
             # passed a governance gate. `governed` is a required field above and
             # must be True (the contract rejects missing/False), so arbitrary
             # ungoverned text cannot reach the synthesizer via any path.
+        ],
+    ),
+    "azure_cosmos_read": CapabilityContract(
+        capability="azure_cosmos_read",
+        category=CapabilityCategory.KNOWLEDGE,
+        description="Run a read-only Cosmos DB SQL query against the MyDude Azure stack.",
+        required_fields=["database", "container", "query"],
+        optional_fields=["parameters", "max_items", "source", "domain", "team"],
+        input_schema={"database": "str", "container": "str", "query": "str",
+                      "parameters": "list", "max_items": "int", "source": "str"},
+        output_schema={"items": "list", "count": "int", "truncated": "bool"},
+        epistemic_preconditions=[
+            "query must be a single read-only SELECT (no comments, no ';')",
+            "The Cosmos endpoint is sourced from the live ARM deployment, never hardcoded",
+        ],
+        enforced_preconditions=[
+            ("cosmos_select_only", _precond_azure_cosmos_select_only),
+        ],
+    ),
+    "azure_pg_select": CapabilityContract(
+        capability="azure_pg_select",
+        category=CapabilityCategory.KNOWLEDGE,
+        description="Execute a read-only SELECT against an allow-listed MyDude Azure Postgres database.",
+        required_fields=["db_key", "sql"],
+        optional_fields=["params", "max_rows", "source", "domain", "team"],
+        input_schema={"db_key": "str", "sql": "str", "params": "list",
+                      "max_rows": "int", "source": "str"},
+        output_schema={"columns": "list", "rows": "list", "rowcount": "int",
+                       "truncated": "bool"},
+        epistemic_preconditions=[
+            "sql must be a single read-only SELECT/WITH (no DML/DDL/multi-statement)",
+            "db_key must be one of the allow-listed databases",
+        ],
+        enforced_preconditions=[
+            ("pg_db_allowed", _precond_azure_pg_db_allowed),
+            ("pg_select_only", _precond_azure_pg_select_only),
+        ],
+    ),
+    "azure_deploy_status": CapabilityContract(
+        capability="azure_deploy_status",
+        category=CapabilityCategory.KNOWLEDGE,
+        description="Read the live ARM deployment state + non-secret outputs for the MyDude Azure stack.",
+        required_fields=[],
+        optional_fields=["source", "domain", "team"],
+        input_schema={"source": "str"},
+        output_schema={"state": "str", "operation_states": "dict",
+                       "failed": "list", "outputs": "dict"},
+        epistemic_preconditions=[
+            "Read-only: returns provisioning state + non-secret outputs only",
+        ],
+        enforced_preconditions=[],
+    ),
+    "azure_aoai_complete": CapabilityContract(
+        capability="azure_aoai_complete",
+        category=CapabilityCategory.MCP,
+        description="Return a GOVERNED completion via the MyDude swarm (NO raw Azure OpenAI passthrough).",
+        required_fields=["prompt"],
+        optional_fields=["domain", "team", "source"],
+        input_schema={"prompt": "str", "domain": "str", "team": "str", "source": "str"},
+        output_schema={"ok": "bool", "result": "dict"},
+        epistemic_preconditions=[
+            "All output passes the governed swarm (compliance/hallucination/provenance/audit)",
+            "There is NO raw model passthrough — the full governed envelope is returned",
+        ],
+        enforced_preconditions=[],
+    ),
+    "azure_deploy_plan": CapabilityContract(
+        capability="azure_deploy_plan",
+        category=CapabilityCategory.SKILL,
+        description="PLAN phase: ARM what-if for the MyDude Azure stack (creates no resources, no cost). Returns a short-lived signed approval token.",
+        required_fields=[],
+        optional_fields=["actor", "source", "domain", "team"],
+        input_schema={"actor": "str", "source": "str"},
+        output_schema={"ok": "bool", "changes": "list", "change_count": "int",
+                       "plan_hash": "str", "plan_token": "str", "expires_in": "int"},
+        epistemic_preconditions=[
+            "what-if creates no resources and incurs no cost",
+            "Returns a short-lived signed token binding the approved plan to the apply phase",
+            "Deploy params (incl. secret ones) are never returned — only their fingerprint (in the token)",
+        ],
+        enforced_preconditions=[],
+    ),
+    "azure_deploy_apply": CapabilityContract(
+        capability="azure_deploy_apply",
+        category=CapabilityCategory.TOOL,
+        description="APPLY phase: execute the approved ARM deployment (BILLABLE; creates/updates real resources). Requires a valid plan token + matching plan hash + explicit confirm.",
+        required_fields=["plan_token", "plan_hash", "confirm"],
+        optional_fields=["source", "domain", "team"],
+        input_schema={"plan_token": "str", "plan_hash": "str", "confirm": "str",
+                      "source": "str"},
+        output_schema={"ok": "bool", "submitted": "bool", "state": "str",
+                       "deployment": "str"},
+        epistemic_preconditions=[
+            "A prior azure_deploy_plan must have produced the plan_token + plan_hash",
+            "confirm must equal the exact required confirmation phrase",
+            "ALLOW_AZURE_DEPLOY=true must be set (destructive, billable, default-deny)",
+            "The plan token is short-lived; an expired/tampered token forces a re-plan",
+        ],
+        enforced_preconditions=[
+            ("azure_deploy_confirm", _precond_azure_deploy_confirm),
         ],
     ),
     "read_secret_raw": CapabilityContract(
