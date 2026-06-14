@@ -3,13 +3,15 @@ import {
   getFinance, getFinanceTransactions, syncFinance, setFinanceAutosync,
   createFinanceProject, addFinanceBudget, attributeTransaction, createFinanceRule,
   setVendorDefaultProject, requestFinanceWrite, confirmFinanceWrite, rejectFinanceWrite,
-  FinanceData, FinanceBudgetRow, FinanceProviderStatus, FinanceWrite, FinanceTxn,
+  createPlaidLinkToken, exchangePlaidPublicToken, removePlaidItem,
+  FinanceData, FinanceBudgetRow, FinanceProviderStatus, FinanceWrite, FinanceTxn, PlaidItemSummary,
 } from '@/lib/api'
+import { openPlaidLink } from '@/lib/plaid'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, FormField, Toggle } from '@/components/ui'
 import { fmtDate } from '@/lib/utils'
 import {
-  CircleDollarSign, RefreshCw, Plus, CheckCircle2, XCircle, AlertTriangle, Plug,
+  CircleDollarSign, RefreshCw, Plus, CheckCircle2, XCircle, AlertTriangle, Plug, Landmark, Trash2,
 } from 'lucide-react'
 
 const FLAG_LABEL: Record<string, { text: string; color: string }> = {
@@ -72,7 +74,7 @@ export function Finance() {
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
       {error && <Alert type="error">{error}</Alert>}
 
-      {data && tab === 'Overview' && <Overview data={data} working={working} action={action} />}
+      {data && tab === 'Overview' && <Overview data={data} working={working} action={action} setMsg={setMsg} setErr={setErr} refetch={refetch} />}
       {data && tab === 'Transactions' && <Transactions data={data} working={working} action={action} />}
       {data && tab === 'Projects' && <Projects data={data} working={working} action={action} setMsg={setMsg} setErr={setErr} refetch={refetch} />}
       {data && tab === 'Approvals' && <Approvals data={data} working={working} action={action} setMsg={setMsg} setErr={setErr} refetch={refetch} />}
@@ -97,6 +99,60 @@ function ProviderCard({ s }: { s: FinanceProviderStatus }) {
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>{s.detail}</p>
       {s.source && <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Source: {s.source}</p>}
+    </Card>
+  )
+}
+
+function PlaidCard({ s, working, connecting, onConnect, onDisconnect }: {
+  s: FinanceProviderStatus; working: boolean; connecting: boolean
+  onConnect: () => void; onDisconnect: (item: PlaidItemSummary) => void
+}) {
+  const items = s.items ?? []
+  return (
+    <Card style={{ padding: '14px 18px', flex: 1, minWidth: 260 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <Plug size={15} style={{ opacity: 0.7 }} />
+        <span style={{ fontSize: 14, fontWeight: 700, textTransform: 'capitalize' }}>{s.provider}</span>
+        <span className={`badge ${s.connected ? 'badge-green' : 'badge-gray'}`}>
+          {s.connected ? 'Connected' : 'Not connected'}
+        </span>
+      </div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>{s.detail}</p>
+
+      {items.length > 0 && (
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {items.map(it => (
+            <div key={it.item_id} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
+              background: 'var(--bg-elevated, rgba(255,255,255,0.03))', borderRadius: 6,
+            }}>
+              <Landmark size={14} style={{ opacity: 0.7, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {it.institution_name || it.item_id}
+                </div>
+                {it.status === 'error' && it.last_error && (
+                  <div style={{ fontSize: 11, color: 'var(--danger, #e94560)' }}>{it.last_error}</div>
+                )}
+              </div>
+              {it.status === 'error' && <span className="badge badge-red">Error</span>}
+              {it.is_legacy
+                ? <span className="badge badge-gray" title="Configured via PLAID_ACCESS_TOKEN env var">env</span>
+                : (
+                  <button className="btn btn-ghost btn-sm" disabled={working || it.id == null}
+                    title="Disconnect" onClick={() => onDisconnect(it)}>
+                    <Trash2 size={13} />
+                  </button>
+                )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }}
+        disabled={connecting} onClick={onConnect}>
+        <Landmark size={14} /> {connecting ? 'Connecting…' : 'Connect bank'}
+      </button>
     </Card>
   )
 }
@@ -135,14 +191,47 @@ function BudgetCard({ row }: { row: FinanceBudgetRow }) {
   )
 }
 
-function Overview({ data, working, action }: {
+function Overview({ data, working, action, setMsg, setErr, refetch }: {
   data: FinanceData; working: boolean; action: (fn: () => Promise<unknown>, m?: string) => void
+  setMsg: (m: string | null) => void; setErr: (e: string | null) => void; refetch: () => void
 }) {
+  const [connecting, setConnecting] = useState(false)
+
+  // Full Plaid Link flow: ask the backend for a link_token, open Plaid Link in
+  // the browser, then post the resulting public_token back for a server-side
+  // exchange. The access_token never touches the browser.
+  async function connectBank() {
+    setErr(null); setMsg(null); setConnecting(true)
+    try {
+      const { link_token } = await createPlaidLinkToken()
+      const payload = await openPlaidLink(link_token)
+      if (!payload) return // operator closed Link without finishing
+      const res = await exchangePlaidPublicToken(payload)
+      setMsg(`Connected ${res.institution_name || res.item_id}`)
+      refetch()
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Could not connect bank')
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  function disconnectBank(item: PlaidItemSummary) {
+    if (item.id == null) return // legacy env-configured item — managed via env var
+    const label = item.institution_name || item.item_id
+    if (!window.confirm(`Disconnect "${label}"? MyDude will revoke the token at Plaid and stop syncing this bank.`)) return
+    action(async () => {
+      const r = await removePlaidItem(item.id as number)
+      setMsg(r.revoked_at_plaid ? `Disconnected ${label}` : (r.note || `Removed ${label}`))
+    })
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <ProviderCard s={data.providers.quickbooks} />
-        <ProviderCard s={data.providers.plaid} />
+        <PlaidCard s={data.providers.plaid} working={working} connecting={connecting}
+          onConnect={connectBank} onDisconnect={disconnectBank} />
       </div>
 
       <Card style={{ padding: '14px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>

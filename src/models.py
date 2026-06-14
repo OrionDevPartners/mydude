@@ -825,6 +825,32 @@ class FinanceTransaction(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class PlaidItem(Base):
+    """A linked Plaid Item (one bank login) with its encrypted access token.
+
+    Created when a user completes Plaid Link and the resulting ``public_token`` is
+    exchanged SERVER-SIDE for a long-lived ``access_token``. The token is
+    encrypted at rest (Fernet, via ``src/web/crypto``) and is NEVER returned to
+    the client. Each Item carries its own ``/transactions/sync`` cursor — Plaid
+    cursors are access-token scoped, so a single global cursor cannot support
+    multiple Items. ``source`` distinguishes Link-created items ("link") from the
+    legacy single env/connector token ("env")."""
+    __tablename__ = "plaid_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(String(120), unique=True, nullable=False, index=True)
+    encrypted_access_token = Column(Text, nullable=False)
+    institution_name = Column(String(200), nullable=True)
+    institution_id = Column(String(120), nullable=True)
+    cursor = Column(Text, nullable=True)                        # per-item sync cursor
+    status = Column(String(20), default="active", index=True)   # active | error | removed
+    last_error = Column(Text, nullable=True)
+    source = Column(String(20), default="link")                 # link | env
+    last_synced_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class VendorProjectRule(Base):
     """An explicit rule mapping a vendor name match to a project (deterministic attribution)."""
     __tablename__ = "vendor_project_rules"

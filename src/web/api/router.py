@@ -7,6 +7,7 @@ existing session_token cookie is honoured.
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 
 from fastapi import (
@@ -2011,6 +2012,222 @@ async def api_finance_sync(_=Depends(require_auth)):
     if not report.get("ok"):
         raise HTTPException(status_code=400, detail=report.get("error") or "Sync failed.")
     return report
+
+
+# -- Plaid Link (connect a bank securely) ---------------------------------- #
+# These power the "Connect bank" flow: the browser asks for a short-lived
+# link_token, opens Plaid Link, then posts the resulting public_token here for a
+# SERVER-SIDE exchange. The long-lived access_token is encrypted at rest and is
+# NEVER returned to the client.
+
+def _plaid_csv_env(name, default):
+    return [v.strip() for v in (os.environ.get(name) or default).split(",") if v.strip()]
+
+
+def _plaid_audit(action, status, detail):
+    """Write a single FinanceAuditLog row in its own session (secret-free detail).
+
+    Every Plaid connection action is audited (governance pillar 4). ``detail`` must
+    never carry a token/secret — only error codes/messages or item metadata."""
+    from src.database import SessionLocal
+    from src.models import FinanceAuditLog
+    db = SessionLocal()
+    try:
+        db.add(FinanceAuditLog(action=action, status=status, source="finance-plaid",
+                               detail=(str(detail)[:500] if detail else None)))
+        db.commit()
+    except Exception:  # noqa: BLE001 — auditing must never mask the real outcome
+        db.rollback()
+    finally:
+        db.close()
+
+
+@router.post("/finance/plaid/link-token")
+async def api_finance_plaid_link_token(_=Depends(require_auth)):
+    from src.finance.client_plaid import PlaidClient
+    from src.finance.providers import (
+        plaid_app_credentials, FinanceNotConfigured, FinanceAuthError, FinanceProviderError,
+    )
+
+    def _create():
+        app = plaid_app_credentials()  # fail loud if client_id/secret missing
+        client = PlaidClient(app_creds=app)
+        redirect_uri = (os.environ.get("PLAID_REDIRECT_URI") or "").strip() or None
+        return client.create_link_token(
+            user_id="mydude-operator",  # stable client_user_id for this single-operator install
+            products=_plaid_csv_env("PLAID_PRODUCTS", "transactions"),
+            country_codes=[c.upper() for c in _plaid_csv_env("PLAID_COUNTRY_CODES", "US")],
+            redirect_uri=redirect_uri,
+        )
+
+    try:
+        result = await asyncio.to_thread(_create)
+    except FinanceNotConfigured as e:
+        await asyncio.to_thread(_plaid_audit, "plaid_link_token", "skipped", str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except FinanceAuthError as e:
+        await asyncio.to_thread(_plaid_audit, "plaid_link_token", "error", str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except FinanceProviderError as e:
+        await asyncio.to_thread(_plaid_audit, "plaid_link_token", "error", str(e))
+        raise HTTPException(status_code=502, detail=str(e))
+    await asyncio.to_thread(_plaid_audit, "plaid_link_token", "ok",
+                            "Created a Plaid link token to start bank connection.")
+    return {"link_token": result["link_token"], "expiration": result.get("expiration")}
+
+
+@router.post("/finance/plaid/exchange")
+async def api_finance_plaid_exchange(
+    public_token: str = Form(...),
+    institution_name: str = Form(""),
+    institution_id: str = Form(""),
+    _=Depends(require_auth),
+):
+    from src.database import SessionLocal
+    from src.finance.client_plaid import PlaidClient
+    from src.finance.providers import (
+        plaid_app_credentials, save_plaid_item,
+        FinanceNotConfigured, FinanceAuthError, FinanceProviderError,
+    )
+    from src.models import FinanceAuditLog
+
+    tok = (public_token or "").strip()
+    if not tok:
+        raise HTTPException(status_code=400, detail="A Plaid public_token is required.")
+
+    def _exchange_and_store():
+        app = plaid_app_credentials()
+        client = PlaidClient(app_creds=app)
+        exchanged = client.exchange_public_token(tok)  # {access_token, item_id, ...}
+        db = SessionLocal()
+        try:
+            row = save_plaid_item(
+                db, item_id=exchanged["item_id"],
+                access_token=exchanged["access_token"],
+                institution_name=(institution_name or "").strip() or None,
+                institution_id=(institution_id or "").strip() or None,
+                source="link",
+            )
+            db.add(FinanceAuditLog(
+                action="plaid_item_connected", status="ok", source="finance-plaid",
+                detail="Linked Plaid item %s%s" % (
+                    row.item_id,
+                    " (%s)" % row.institution_name if row.institution_name else ""),
+            ))
+            db.commit()
+            # NOTE: deliberately never returns the access_token.
+            return {"id": row.id, "item_id": row.item_id,
+                    "institution_name": row.institution_name,
+                    "institution_id": row.institution_id, "status": row.status}
+        finally:
+            db.close()
+
+    try:
+        return await asyncio.to_thread(_exchange_and_store)
+    except FinanceNotConfigured as e:
+        await asyncio.to_thread(_plaid_audit, "plaid_item_connected", "skipped", str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except FinanceAuthError as e:
+        await asyncio.to_thread(_plaid_audit, "plaid_item_connected", "error", str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except FinanceProviderError as e:
+        await asyncio.to_thread(_plaid_audit, "plaid_item_connected", "error", str(e))
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get("/finance/plaid/items")
+async def api_finance_plaid_items(_=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.finance.providers import list_plaid_items
+    db = SessionLocal()
+    try:
+        items = [
+            {**i, "last_synced_at": _dt(i["last_synced_at"]),
+             "created_at": _dt(i["created_at"])}
+            for i in list_plaid_items(db)
+        ]
+        return {"items": items}  # masked summaries — no access tokens
+    finally:
+        db.close()
+
+
+@router.post("/finance/plaid/items/{item_pk}/remove")
+async def api_finance_plaid_item_remove(item_pk: int, _=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.finance.client_plaid import PlaidClient
+    from src.finance.providers import (
+        plaid_app_credentials, delete_plaid_item,
+        FinanceNotConfigured, FinanceAuthError, FinanceProviderError,
+    )
+    from src.models import PlaidItem, FinanceAuditLog
+    from src.web.crypto import decrypt_value
+
+    def _remove():
+        db = SessionLocal()
+        try:
+            row = db.query(PlaidItem).filter(PlaidItem.id == item_pk).first()
+            if row is None:
+                raise HTTPException(status_code=404, detail="No linked bank with that id.")
+            label = row.item_id
+            inst = row.institution_name
+
+            token = None
+            try:
+                token = decrypt_value(row.encrypted_access_token)
+            except Exception:
+                token = None
+
+            if token is None:
+                # Token unreadable (encryption key changed) — cannot revoke at
+                # Plaid; remove the local record only, audited (not silent).
+                delete_plaid_item(db, item_pk)
+                db.add(FinanceAuditLog(
+                    action="plaid_item_removed_local", status="warn", source="finance-plaid",
+                    detail="Removed local Plaid item %s; token unreadable, Plaid "
+                           "revoke not attempted." % label))
+                db.commit()
+                return {"removed": True, "revoked_at_plaid": False,
+                        "note": "Token was unreadable; removed local record only."}
+
+            app = plaid_app_credentials()
+            client = PlaidClient(access_token=token, app_creds=app)
+            try:
+                client.item_remove()
+            except FinanceAuthError as e:
+                # Token already dead at Plaid (item gone / login required) — safe
+                # to drop the local record; audit that revoke was unconfirmed.
+                delete_plaid_item(db, item_pk)
+                db.add(FinanceAuditLog(
+                    action="plaid_item_removed_local", status="warn", source="finance-plaid",
+                    detail="Removed local Plaid item %s; Plaid revoke not confirmed "
+                           "(auth): %s" % (label, e)))
+                db.commit()
+                return {"removed": True, "revoked_at_plaid": False, "note": str(e)}
+            except FinanceProviderError as e:
+                # Transient/provider failure — keep the record, mark for retry.
+                row.status = "error"
+                row.last_error = str(e)[:500]
+                db.add(FinanceAuditLog(
+                    action="plaid_item_remove_failed", status="error", source="finance-plaid",
+                    detail="Plaid revoke failed for %s: %s" % (label, e)))
+                db.commit()
+                raise HTTPException(status_code=502,
+                                    detail="Could not revoke at Plaid: %s" % e)
+
+            delete_plaid_item(db, item_pk)
+            db.add(FinanceAuditLog(
+                action="plaid_item_removed", status="ok", source="finance-plaid",
+                detail="Disconnected Plaid item %s%s" % (
+                    label, " (%s)" % inst if inst else "")))
+            db.commit()
+            return {"removed": True, "revoked_at_plaid": True}
+        finally:
+            db.close()
+
+    try:
+        return await asyncio.to_thread(_remove)
+    except FinanceNotConfigured as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/finance/autosync")

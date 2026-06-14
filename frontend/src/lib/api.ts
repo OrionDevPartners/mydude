@@ -380,6 +380,21 @@ export const confirmFinanceWrite = (id: number, confirm: string) =>
   })
 export const rejectFinanceWrite = (id: number) =>
   request<{ ok: boolean; write: FinanceWrite }>(`/finance/writes/${id}/reject`, { method: 'POST' })
+// Plaid Link (connect a bank) — the access_token is exchanged + stored server-side
+// and is never returned to the browser.
+export const createPlaidLinkToken = () =>
+  request<{ link_token: string; expiration: string | null }>('/finance/plaid/link-token', { method: 'POST' })
+export const exchangePlaidPublicToken = (data: { public_token: string; institution_name?: string; institution_id?: string }) =>
+  request<{ id: number; item_id: string; institution_name: string | null; institution_id: string | null; status: string }>(
+    '/finance/plaid/exchange', {
+      method: 'POST',
+      body: formBody(data),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
+export const getPlaidItems = () =>
+  request<{ items: PlaidItemSummary[] }>('/finance/plaid/items')
+export const removePlaidItem = (id: number) =>
+  request<{ removed: boolean; revoked_at_plaid: boolean; note?: string }>(`/finance/plaid/items/${id}/remove`, { method: 'POST' })
 
 // Coach (PA / secretary + life-coach + mood)
 export const getCoach = () => request<CoachData>('/coach')
@@ -720,7 +735,15 @@ export interface SubAuditEntry { subscription: string; action: string; status: s
 export interface SubActionResult { kind: string; ok: boolean | null; message: string; screenshot?: string | null; pending?: boolean; sub_id: number }
 export interface DiscoverResult { kind: string; ok: boolean; message: string }
 // Finance
-export interface FinanceProviderStatus { provider: string; connected: boolean; source: string | null; detail: string }
+export interface PlaidItemSummary {
+  id: number | null; item_id: string; institution_name: string | null;
+  institution_id: string | null; status: string; last_error: string | null;
+  source: string; is_legacy: boolean; last_synced_at: string | null; created_at: string | null;
+}
+export interface FinanceProviderStatus {
+  provider: string; connected: boolean; source: string | null; detail: string;
+  items?: PlaidItemSummary[]; item_count?: number;
+}
 export interface FinanceProviders { quickbooks: FinanceProviderStatus; plaid: FinanceProviderStatus }
 export interface FinanceBudgetRow {
   project_id: number; code: string; name: string; llc: string | null;
