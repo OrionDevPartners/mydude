@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import {
   getCoach, getCoachSignals, ingestCoachText, ingestCoachAudio, computeCoachBehavior, askCoach,
   reflectCoach, setCoachAutoreflect, setCoachStrictPrivate, setInsightOutcome,
@@ -115,6 +116,32 @@ function DeliveryCard({ s }: { s: DeliveryChannel }) {
         </span>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>{s.detail}</p>
+    </Card>
+  )
+}
+
+function DeliveryStatusBar({ delivery }: { delivery: CoachData['delivery'] }) {
+  const channels: DeliveryChannel[] = [delivery.email, delivery.sms, delivery.calendar]
+  const ready = channels.filter(c => c.configured).length
+  return (
+    <Card style={{ padding: '12px 16px', marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)' }}>Delivery channels</span>
+          {channels.map(c => (
+            <span key={c.channel} title={c.detail} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <Send size={12} style={{ opacity: 0.6 }} />
+              <span style={{ fontSize: 12, textTransform: 'capitalize' }}>{c.channel}</span>
+              <span className={`badge ${c.configured ? 'badge-green' : 'badge-gray'}`}>
+                {c.configured ? (c.provider || 'Ready') : 'Not configured'}
+              </span>
+            </span>
+          ))}
+        </div>
+        <Link to="/directory" className="btn btn-ghost btn-sm" style={{ fontSize: 11 }}>
+          <Plug size={12} /> {ready === channels.length ? 'Manage providers' : 'Connect providers'}
+        </Link>
+      </div>
     </Card>
   )
 }
@@ -570,6 +597,7 @@ function Approvals({ data, working, action, setMsg, setErr, refetch }: {
 
   return (
     <div>
+      <DeliveryStatusBar delivery={data.delivery} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
           Emails, texts and bookings are drafted here but never sent until you explicitly confirm.
@@ -594,6 +622,12 @@ function Approvals({ data, working, action, setMsg, setErr, refetch }: {
                     {a.subject && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Subject: {a.subject}</div>}
                     <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', marginTop: 3 }}>{a.body || a.summary || '—'}</div>
                     {a.result_detail && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>{a.result_detail}</div>}
+                    {a.status === 'needs_provider' && (
+                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                        No {a.channel || 'provider'} provider configured.{' '}
+                        <Link to="/directory" style={{ color: 'var(--accent)' }}>Connect one in the Service Directory</Link>, then confirm again.
+                      </div>
+                    )}
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>Requested {fmtDate(a.requested_at)}{a.provider ? ` · via ${a.provider}` : ''}</div>
                   </div>
                   {(a.status === 'pending_confirm' || a.status === 'needs_provider') && (

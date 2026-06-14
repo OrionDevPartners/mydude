@@ -653,7 +653,7 @@ export interface ApiKey {
   notes: string; expires_at: string | null; rotation_days: number | null;
   last_used_at: string | null; created_at: string;
 }
-export interface ServiceEntry { slug: string; name: string; category: string; env_var?: string; key_url?: string; signup_url?: string; steps?: string[]; saved: boolean }
+export interface ServiceEntry { slug: string; name: string; category: string; env_var?: string; env_vars?: { var: string; label: string }[]; description?: string; key_url?: string; signup_url?: string; steps?: string[]; saved: boolean }
 export interface KeysData { keys: ApiKey[]; catalog: ServiceEntry[]; categories: string[]; used_categories: string[]; reminders: { level: string; text: string }[]; total_count: number; encryption_persistent: boolean }
 export interface AddKeyPayload { provider: string; label?: string; api_key: string; category?: string; env_var?: string; notes?: string; expires_at?: string; rotation_days?: string }
 export interface AuditEntry { provider: string; label: string; action: string; actor: string | null; detail: string; created_at: string }

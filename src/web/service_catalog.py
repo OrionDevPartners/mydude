@@ -224,15 +224,25 @@ SERVICE_CATALOG = [
         "name": "Twilio",
         "category": "Communications",
         "env_var": "TWILIO_AUTH_TOKEN",
+        "env_vars": [
+            {"var": "TWILIO_ACCOUNT_SID", "label": "Account SID"},
+            {"var": "TWILIO_AUTH_TOKEN", "label": "Auth token"},
+            {"var": "TWILIO_FROM",
+             "label": "Sender phone number (E.164, e.g. +15551234567) — "
+                      "TWILIO_FROM_NUMBER also accepted"},
+        ],
         "key_prefix": "",
         "signup_url": "https://www.twilio.com/try-twilio",
         "key_url": "https://console.twilio.com/",
         "connector": "twilio",
+        "description": "Sends the assistant's approved text messages. Powers the "
+                       "'sms' delivery channel on the Coach Approvals tab.",
         "steps": [
-            "Sign up at twilio.com",
-            "Open the Console dashboard",
-            "Copy your Auth Token",
-            "Paste it below",
+            "Sign up at twilio.com and open the Console dashboard",
+            "Copy your Account SID and add it below as TWILIO_ACCOUNT_SID",
+            "Copy your Auth Token and add a vault key TWILIO_AUTH_TOKEN",
+            "Buy or choose a Twilio phone number and add it as TWILIO_FROM "
+            "(E.164, e.g. +15551234567) — SMS won't send without all three",
         ],
     },
     {
@@ -256,15 +266,25 @@ SERVICE_CATALOG = [
         "name": "Resend",
         "category": "Communications",
         "env_var": "RESEND_API_KEY",
+        "env_vars": [
+            {"var": "RESEND_API_KEY", "label": "API key"},
+            {"var": "RESEND_FROM",
+             "label": "Verified sender address (the 'from') — "
+                      "EMAIL_FROM also accepted"},
+        ],
         "key_prefix": "re_",
         "signup_url": "https://resend.com/signup",
         "key_url": "https://resend.com/api-keys",
         "connector": None,
+        "description": "Sends the assistant's approved emails. Powers the "
+                       "'email' delivery channel on the Coach Approvals tab.",
         "steps": [
-            "Sign up at resend.com",
-            "Open the API Keys page",
-            "Create an API key",
-            "Copy it (starts with re_) and paste it below",
+            "Sign up at resend.com and verify a sending domain "
+            "(or use the onboarding sandbox sender)",
+            "Open the API Keys page and create an API key",
+            "Add it below as RESEND_API_KEY (starts with re_)",
+            "Add a second vault key RESEND_FROM set to your verified 'from' "
+            "address (e.g. you@yourdomain.com) — email won't send without it",
         ],
     },
     {
@@ -361,12 +381,30 @@ SERVICE_CATALOG = [
         "slug": "google-calendar",
         "name": "Google Calendar",
         "category": "Google",
-        "env_var": None,
+        "env_var": "GOOGLE_CALENDAR_ACCESS_TOKEN",
+        "env_vars": [
+            {"var": "GOOGLE_CALENDAR_ACCESS_TOKEN",
+             "label": "OAuth access token (manual fallback)"},
+        ],
         "key_prefix": "",
         "signup_url": "https://calendar.google.com/",
-        "key_url": None,
+        "key_url": "https://developers.google.com/oauthplayground/",
         "connector": "google-calendar",
-        "steps": [],
+        "description": "Creates the assistant's approved bookings. Powers the "
+                       "'calendar' delivery channel on the Coach Approvals tab. "
+                       "Preferred: connect Google Calendar on the Connected "
+                       "Services page; the token below is a manual fallback.",
+        "steps": [
+            "Preferred: open Connected Services and connect Google Calendar "
+            "(no manual token needed)",
+            "Manual fallback: open the Google OAuth Playground (link below)",
+            "Authorize the Google Calendar API (scope "
+            "https://www.googleapis.com/auth/calendar.events) and exchange for "
+            "an access token",
+            "Add it below as GOOGLE_CALENDAR_ACCESS_TOKEN — note OAuth access "
+            "tokens are short-lived, so connecting via Connected Services is "
+            "more durable",
+        ],
     },
     {
         "slug": "google-docs",

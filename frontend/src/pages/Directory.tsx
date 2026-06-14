@@ -54,10 +54,34 @@ export function Directory() {
                     <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{svc.name}</span>
                     {svc.saved && <CheckCircle size={13} style={{ color: '#34d399', flexShrink: 0 }} />}
                   </div>
-                  {svc.env_var && (
-                    <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{svc.env_var}</span>
+                  {svc.description && (
+                    <p style={{ fontSize: 11.5, color: 'var(--text-muted)', margin: '0 0 6px', lineHeight: 1.4 }}>{svc.description}</p>
+                  )}
+                  {svc.env_vars && svc.env_vars.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {svc.env_vars.map(ev => (
+                        <div key={ev.var} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 6 }}>
+                          <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)' }}>{ev.var}</span>
+                          <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{ev.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    svc.env_var && (
+                      <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{svc.env_var}</span>
+                    )
                   )}
                 </div>
+                {svc.steps && svc.steps.length > 0 && (
+                  <details style={{ marginBottom: 10 }}>
+                    <summary style={{ fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>Setup guide</summary>
+                    <ol style={{ margin: '8px 0 0', paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {svc.steps.map((step, i) => (
+                        <li key={i} style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>{step}</li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
                 <div style={{ display: 'flex', gap: 7 }}>
                   {svc.key_url && (
                     <a href={svc.key_url} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm" style={{ fontSize: 11 }}>
