@@ -26,7 +26,7 @@ browser = "engine"
 # Local providers (ollama, mlx) are exec_locus=local: they only enter the
 # fanout when their local server is actually listening, and they are the
 # local_degraded fallback tier when cloud_shift=false or cloud is unavailable.
-enabled = ["openai", "anthropic", "gemini", "grok", "ollama", "mlx"]
+enabled = ["openai", "anthropic", "gemini", "grok", "deepseek", "mistral", "qwen", "ollama", "mlx"]
 
 # Providers whose secrets MUST be present at boot. The boot handshake hard-fails
 # (the app refuses to serve traffic) if any required secret is missing. Must be
@@ -43,25 +43,61 @@ required = []
 adapter = "openai_chat"
 secrets = ["OPENAI_API_KEY"]
 model_env = "OPENAI_MODEL"
-default_model = "gpt-4.1-mini"
+# Frontier default: GPT-5.5. Patterns autorotate UP the lineage — prefer any
+# gpt-5* the live API lists (newest wins via model_resolver), else gpt-4.1*.
+# Operator override: set OPENAI_MODEL to pin a specific id.
+default_model = "gpt-5.5"
 concurrency_env = "OPENAI_CONCURRENCY"
 default_concurrency = 4
-role_hint = "Implementation + patches + practical code changes"
-model_patterns = ['^gpt-4\.1(?!.*codex)', '^gpt-4o']
-# exec_locus: where this provider's models run (in_azure | anthropic_hosted | local)
+role_hint = "Implementation + patches + practical code changes + polished frontend/UI build-out"
+model_patterns = ['^gpt-5', '^gpt-4\.1(?!.*codex)']
+# exec_locus: where this provider's models run (in_azure | anthropic_hosted | provider_hosted | local)
 # Used by the jurisdiction router and model-promotion gate to enforce exec_locus_pin.
 exec_locus = "in_azure"
+specialty = "Implementation, agentic coding & polished frontend/UX build-out"
+
+# benchmark_profile: per-category strength in [0,1] for benchmark-aware lead
+# routing (src/swarm/benchmark_routing.py). Operator-tunable; never hardcoded
+# at a call site. frontend_uiux is the EXTREME UI/UX specialist category.
+[providers.openai.benchmark_profile]
+coding = 0.95
+agentic = 0.93
+frontend_uiux = 0.92
+reasoning = 0.88
+math = 0.85
+long_context = 0.82
+creative = 0.82
+multilingual = 0.85
+security = 0.82
+general = 0.92
 
 [providers.anthropic]
 adapter = "anthropic_messages"
 secrets = ["ANTHROPIC_API_KEY"]
 model_env = "ANTHROPIC_MODEL"
-default_model = "claude-sonnet-4-20250514"
+# Frontier default: Claude Opus 4.8. alias_env (ANTHROPIC_OPUS_ALIAS) still wins
+# as an explicit operator pin; otherwise patterns autorotate UP the Opus lineage
+# from the live model list (Anthropic SDK models.list), then Sonnet as fallback.
+default_model = "claude-opus-4-8"
 concurrency_env = "ANTHROPIC_CONCURRENCY"
 default_concurrency = 3
 role_hint = "Security review + architecture coherence + failure modes"
+model_patterns = ['claude-opus-4', 'claude-opus', 'claude-sonnet-4', 'claude-sonnet']
 alias_env = "ANTHROPIC_OPUS_ALIAS"
 exec_locus = "anthropic_hosted"
+specialty = "Architecture, security review & long-context reasoning"
+
+[providers.anthropic.benchmark_profile]
+reasoning = 0.95
+security = 0.95
+coding = 0.93
+long_context = 0.93
+agentic = 0.9
+math = 0.88
+frontend_uiux = 0.85
+creative = 0.85
+multilingual = 0.85
+general = 0.92
 
 [providers.gemini]
 adapter = "gemini_generate"
@@ -84,19 +120,50 @@ default_concurrency = 3
 role_hint = "Edge cases + alternative approaches + high recall brainstorming"
 model_patterns = ['gemini-3\.1-pro(-preview)?$']
 exec_locus = "in_azure"
+specialty = "Multimodal reasoning, long-context & visual/UX critique"
+
+# Gemini carries the strongest frontend_uiux weight: its native multimodal/
+# visual grounding makes it the default UI/UX lead (the future visual "vision
+# brain" follow-up builds on this). Pin is unchanged — only routing weight.
+[providers.gemini.benchmark_profile]
+frontend_uiux = 0.94
+long_context = 0.95
+multilingual = 0.93
+reasoning = 0.9
+creative = 0.88
+coding = 0.88
+agentic = 0.85
+math = 0.88
+security = 0.82
+general = 0.9
 
 [providers.grok]
 adapter = "openai_chat"
 secrets = ["GROK_API_KEY"]
 model_env = "GROK_MODEL"
-default_model = "grok-2-latest"
+# Frontier default: Grok 4.3. Patterns autorotate UP the lineage — newest
+# grok-4* first, then grok-3*, then any grok the live API lists.
+default_model = "grok-4.3"
 concurrency_env = "GROK_CONCURRENCY"
 default_concurrency = 3
 role_hint = "Creative solutions + unusual optimizations + growth/monetization angles"
-model_patterns = ['grok']
+model_patterns = ['grok-4', 'grok-3', 'grok']
 base_url_env = "GROK_BASE_URL"
 default_base_url = "https://api.x.ai/v1"
 exec_locus = "in_azure"
+specialty = "Creative solutions, math/reasoning & novel optimizations"
+
+[providers.grok.benchmark_profile]
+creative = 0.93
+math = 0.9
+reasoning = 0.9
+agentic = 0.87
+coding = 0.88
+long_context = 0.85
+frontend_uiux = 0.83
+multilingual = 0.84
+security = 0.8
+general = 0.88
 
 # -----------------------------------------------------------------------------
 # LOCAL / SOVEREIGN providers — offline inference, no API key required.
@@ -140,6 +207,22 @@ default_base_url = "http://localhost:11434/v1"
 # Probe timeout env var: set OLLAMA_PROBE_TIMEOUT=2.0 when using a Mesh endpoint
 probe_timeout_env = "OLLAMA_PROBE_TIMEOUT"
 exec_locus = "local"
+specialty = "Local sovereign inference — privacy-preserving offline fallback"
+
+# Local models carry modest, uniform weights so a cloud frontier provider leads
+# whenever one is available; locals lead only when they are the sole available
+# tier (cloud_shift=false / offline). They never advertise a frontier specialty.
+[providers.ollama.benchmark_profile]
+general = 0.6
+coding = 0.55
+reasoning = 0.55
+agentic = 0.5
+math = 0.5
+long_context = 0.5
+creative = 0.5
+multilingual = 0.5
+security = 0.5
+frontend_uiux = 0.5
 
 [providers.mlx]
 adapter = "mlx_chat"
@@ -155,6 +238,110 @@ default_base_url = "http://localhost:11435/v1"
 # Probe timeout env var: set MLX_PROBE_TIMEOUT=2.0 when using a Mesh endpoint
 probe_timeout_env = "MLX_PROBE_TIMEOUT"
 exec_locus = "local"
+specialty = "Local Apple-silicon inference — privacy-preserving offline fallback"
+
+[providers.mlx.benchmark_profile]
+general = 0.6
+coding = 0.55
+reasoning = 0.55
+agentic = 0.5
+math = 0.5
+long_context = 0.5
+creative = 0.5
+multilingual = 0.5
+security = 0.5
+frontend_uiux = 0.5
+
+# -----------------------------------------------------------------------------
+# PROVIDER-HOSTED frontier vendors — OpenAI-compatible APIs reached directly
+# over each vendor's own hosted endpoint (NOT Azure, NOT Anthropic, NOT local).
+# They reuse the openai_chat adapter (base_url_env + primary secret), so adding
+# one needs only a config block — no new adapter class. exec_locus is the single
+# generic "provider_hosted" locus, so cloud_shift=false / EXEC_LOCUS_PIN=local
+# correctly excludes them and pin=in_azure does too. `secrets` lists NAMES only;
+# they are enabled-not-required, so the swarm runs without their keys and simply
+# includes each one once its key is present in the vault.
+# -----------------------------------------------------------------------------
+
+[providers.deepseek]
+adapter = "openai_chat"
+secrets = ["DEEPSEEK_API_KEY"]
+model_env = "DEEPSEEK_MODEL"
+default_model = "deepseek-chat"
+concurrency_env = "DEEPSEEK_CONCURRENCY"
+default_concurrency = 3
+role_hint = "Cost-efficient deep coding + math/reasoning"
+model_patterns = ['deepseek-v', 'deepseek-reasoner', 'deepseek-chat', 'deepseek']
+base_url_env = "DEEPSEEK_BASE_URL"
+default_base_url = "https://api.deepseek.com"
+exec_locus = "provider_hosted"
+specialty = "Cost-efficient deep coding & math reasoning"
+
+[providers.deepseek.benchmark_profile]
+coding = 0.93
+math = 0.93
+reasoning = 0.92
+agentic = 0.85
+long_context = 0.82
+frontend_uiux = 0.78
+creative = 0.78
+multilingual = 0.82
+security = 0.8
+general = 0.85
+
+[providers.mistral]
+adapter = "openai_chat"
+secrets = ["MISTRAL_API_KEY"]
+model_env = "MISTRAL_MODEL"
+default_model = "mistral-large-latest"
+concurrency_env = "MISTRAL_CONCURRENCY"
+default_concurrency = 3
+role_hint = "Efficient multilingual coding + general reasoning"
+model_patterns = ['mistral-large', 'mistral']
+base_url_env = "MISTRAL_BASE_URL"
+default_base_url = "https://api.mistral.ai/v1"
+exec_locus = "provider_hosted"
+specialty = "Efficient multilingual coding & general reasoning"
+
+[providers.mistral.benchmark_profile]
+multilingual = 0.92
+coding = 0.88
+reasoning = 0.85
+math = 0.83
+agentic = 0.82
+long_context = 0.82
+creative = 0.82
+frontend_uiux = 0.78
+security = 0.8
+general = 0.86
+
+[providers.qwen]
+adapter = "openai_chat"
+secrets = ["DASHSCOPE_API_KEY"]
+model_env = "QWEN_MODEL"
+default_model = "qwen-max-latest"
+concurrency_env = "QWEN_CONCURRENCY"
+default_concurrency = 3
+role_hint = "Multilingual + long-context with strong coding"
+# Anchored so qwen3-max / qwen-max win over smaller qwen-plus/turbo variants.
+model_patterns = ['qwen3-max', 'qwen-max', 'qwen']
+base_url_env = "QWEN_BASE_URL"
+# DashScope International OpenAI-compatible mode.
+default_base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+exec_locus = "provider_hosted"
+specialty = "Multilingual + long-context with strong coding"
+
+[providers.qwen.benchmark_profile]
+multilingual = 0.95
+long_context = 0.9
+coding = 0.9
+reasoning = 0.88
+math = 0.88
+agentic = 0.84
+creative = 0.82
+frontend_uiux = 0.8
+security = 0.8
+general = 0.87
 
 # =============================================================================
 # BROWSER capability — swappable, cost-ordered automation backends.

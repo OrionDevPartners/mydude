@@ -17,6 +17,18 @@ from src.swarm.hallucination import (
     get_control_action, get_risk_tier, RiskTier
 )
 from src.swarm.constitution import CONSTITUTION_RULES, validate_language
+from src.swarm import benchmark_routing
+
+
+# Benchmark-aware lead bias (T003). The lead provider for a task's category gets
+# a CAPPED, guarded weighting signal to the governed judge — a tie-breaker, never
+# an override. The bias is suppressed entirely unless the lead's own reply clears
+# the governance floors (compliance >= floor, HR below HIGH), so a benchmark
+# favourite can never lift an unverified/high-risk answer.
+_BENCHMARK_BIAS_FRACTION = 0.10   # proportional bump: base_weight * fraction
+_BENCHMARK_BIAS_CAP = 0.10        # absolute ceiling on the bump
+_BENCHMARK_WEIGHT_CEILING = 2.0   # never exceed the novelty/weight ceiling
+_BENCHMARK_COMPLIANCE_FLOOR = 80  # mirrors compliance.needs_correction (< 80)
 
 
 _JUDGE_DEGRADED_BANNER = (
@@ -86,6 +98,10 @@ class MultiProviderLLM:
         # kill switch — all non-local providers are dropped.
         self.exec_locus_pin = "any"
         self.cloud_shift_active = True
+        # Auditable record of the most recent call_team() benchmark-routing
+        # decision (category, lead provider, capped-bias outcome). Surfaced by
+        # the orchestrator/API; None until the first governed call.
+        self.last_benchmark_routing: Optional[Dict[str, Any]] = None
 
     def apply_jurisdiction(self, exec_locus_pin: str = "any", cloud_shift_active: bool = True) -> None:
         """Pin provider selection to a jurisdiction decision before a run."""
@@ -178,33 +194,102 @@ class MultiProviderLLM:
         system: str,
         user: str,
         roles_hint: Optional[Dict[str, str]] = None,
+        domain: str = "general",
     ) -> Dict[str, Any]:
         await self._resolve_once()
         roles_hint = roles_hint or {}
-        replies = await self._fanout(system, user, roles_hint)
+        # Benchmark-aware routing: deterministically classify the prompt and pick
+        # a LEAD provider from the AVAILABLE adapters by their declared
+        # benchmark_profile. Pure metadata — it only gives the lead a stronger
+        # specialization hint and a CAPPED, guarded weighting signal to the
+        # governed judge. It never drops non-leads or skips the judge.
+        routing = benchmark_routing.route(user, domain, self._benchmark_candidates())
+        replies = await self._fanout(system, user, roles_hint, routing)
         try:
             replies = self.score_replies(replies)
         except Exception:
             pass
-        merged = await self._judge_merge(system, user, replies)
+        merged = await self._judge_merge(system, user, replies, routing)
+        self.last_benchmark_routing = routing.to_dict()
         return {
             "replies": replies,
             "merged": merged,
+            "benchmark_routing": routing.to_dict(),
             "compliance_scores": {r.provider: r.compliance_score for r in replies if r.ok},
             "hallucination_risks": {r.provider: r.hallucination_risk for r in replies if r.ok},
         }
 
-    async def _fanout(self, system: str, user: str, roles_hint: Dict[str, str]) -> List[ProviderReply]:
+    def _benchmark_candidates(self):
+        """[(key, specialty, benchmark_profile)] for currently available adapters.
+
+        Lead selection only ever considers providers that can actually answer, so
+        a benchmark favourite that is unavailable / jurisdiction-filtered is never
+        named the lead."""
+        out = []
+        for a in self._available_adapters():
+            spec = a.spec
+            out.append((
+                a.key,
+                getattr(spec, "specialty", "") or "",
+                getattr(spec, "benchmark_profile", {}) or {},
+            ))
+        return out
+
+    async def _fanout(self, system: str, user: str, roles_hint: Dict[str, str], routing=None) -> List[ProviderReply]:
+        lead = routing.lead_provider if routing else None
         tasks = []
         for adapter in self._available_adapters():
             if await self.circuit_breaker.can_call(adapter.key):
                 hint = roles_hint.get(adapter.key, adapter.role_hint)
+                if lead and adapter.key == lead:
+                    hint = self._lead_hint(hint, routing)
                 tasks.append(self._call(adapter, system, user, hint))
 
         if not tasks:
             return [ProviderReply("none", "none", "No providers configured. Add API keys.", False, "no_providers")]
 
         return await asyncio.gather(*tasks)
+
+    @staticmethod
+    def _lead_hint(base_hint: Optional[str], routing) -> str:
+        """Stronger specialization hint for the designated benchmark lead.
+
+        Nudges the lead to apply its specialty rigorously for the task's category;
+        it never tells the lead to ignore governance or override other agents (its
+        output is still scored and merged by the governed judge like everyone's)."""
+        specialty = (routing.lead_specialty or "").strip()
+        if specialty:
+            lead_note = (
+                f"You are the designated LEAD agent for this {routing.category} task. "
+                f"Apply your specialist strength ({specialty}) with extra rigor and depth"
+            )
+        else:
+            lead_note = (
+                f"You are the designated LEAD agent for this {routing.category} task. "
+                f"Apply extra rigor and depth"
+            )
+        return f"{base_hint}. {lead_note}." if base_hint else lead_note + "."
+
+    def _benchmark_bias(self, reply: "ProviderReply", base_weight: float):
+        """Return (applied, delta, reason) for the capped lead bias under guards.
+
+        Guards (ALL required): the lead's own reply is OK, clears the compliance
+        floor, and is not in a HIGH/CRITICAL hallucination tier. This makes the
+        benchmark bias a pure tie-breaker — it can never lift an unverified or
+        high-risk answer above the governance scoring. The bump is proportional
+        and absolutely capped so it stays a nudge, not an override."""
+        if not reply.ok or not (reply.text or "").strip():
+            return False, 0.0, "lead reply failed or empty"
+        if reply.compliance_score < _BENCHMARK_COMPLIANCE_FLOOR:
+            return False, 0.0, (
+                f"lead compliance {reply.compliance_score} < floor "
+                f"{_BENCHMARK_COMPLIANCE_FLOOR}"
+            )
+        tier = get_risk_tier(reply.hallucination_risk)
+        if tier in (RiskTier.HIGH, RiskTier.CRITICAL):
+            return False, 0.0, f"lead hallucination tier {tier.value} too high for bias"
+        delta = min(_BENCHMARK_BIAS_CAP, base_weight * _BENCHMARK_BIAS_FRACTION)
+        return True, delta, "ok"
 
     async def _call(self, adapter, system: str, user: str, hint: Optional[str]) -> ProviderReply:
         async with self.limiter.sem(adapter.key):
@@ -220,22 +305,50 @@ class MultiProviderLLM:
                 await self.circuit_breaker.record_failure(adapter.key, str(e))
                 return ProviderReply(adapter.key, adapter.model, "", False, str(e))
 
-    async def _judge_merge(self, system: str, user: str, replies: List[ProviderReply]) -> str:
+    async def _judge_merge(self, system: str, user: str, replies: List[ProviderReply], routing=None) -> str:
+        lead = routing.lead_provider if routing else None
+        lead_seen = False
         chunks = []
         weights = {}
         for r in replies:
             status = "OK" if r.ok else f"ERR({r.error})"
-            chunks.append(f"### {r.provider}/{r.model} [{status}] [CS={r.compliance_score}, HR={r.hallucination_risk:.2f}]\n{r.text[:6000]}")
+            # Governance weight first (compliance + evidence), then novelty bonus —
+            # exactly as before, so the benchmark bias is applied strictly AFTER
+            # normal scoring and can only ever be a capped tie-breaker on top.
             try:
-                weights[r.provider] = compute_effective_weight(1.0, r.compliance_score, 1.0 if r.ok else 0.0)
+                w = compute_effective_weight(1.0, r.compliance_score, 1.0 if r.ok else 0.0)
             except Exception:
-                weights[r.provider] = 1.0 if r.ok else 0.0
+                w = 1.0 if r.ok else 0.0
             try:
                 novelty = classify_novelty(r.text) if r.ok else NoveltyClassification.STANDARD
                 if novelty != NoveltyClassification.STANDARD and r.ok:
-                    weights[r.provider] = compute_effective_weight(1.0, r.compliance_score, 1.0 if r.ok else 0.0, novelty_bonus=0.3)
+                    w = compute_effective_weight(1.0, r.compliance_score, 1.0 if r.ok else 0.0, novelty_bonus=0.3)
             except Exception:
                 pass
+
+            # Capped, guarded benchmark-lead bias. Conveyed to the governed judge
+            # as a bounded tag on the lead's debate header (the judge still decides
+            # the synthesis); the numeric delta is recorded for audit. Suppressed
+            # unless the lead's OWN reply clears the compliance + HR guards.
+            lead_tag = ""
+            if routing and lead and r.provider == lead:
+                lead_seen = True
+                applied, delta, reason = self._benchmark_bias(r, w)
+                if applied:
+                    w = min(w + delta, _BENCHMARK_WEIGHT_CEILING)
+                    routing.mark_bias_applied(delta)
+                    lead_tag = f" [BENCHMARK-LEAD:{routing.category} +{delta:.3f}]"
+                else:
+                    routing.mark_bias_suppressed(reason)
+
+            weights[r.provider] = w
+            chunks.append(
+                f"### {r.provider}/{r.model} [{status}] "
+                f"[CS={r.compliance_score}, HR={r.hallucination_risk:.2f}]{lead_tag}\n{r.text[:6000]}"
+            )
+
+        if routing and lead and not lead_seen:
+            routing.mark_bias_suppressed("lead provider produced no reply this round")
         debate = "\n\n".join(chunks)
 
         has_critical = False

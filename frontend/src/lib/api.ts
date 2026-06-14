@@ -574,13 +574,33 @@ export const getSalesConversation = (conversationId: number) =>
   request<{ conversation: SalesConversation }>(`/fleet/sales/conversations/${conversationId}`)
 
 // ---- Types ----
+// Compact benchmark-routing record (src/swarm/service.normalize_scores): which
+// benchmark category the prompt classified into, the lead model chosen for it,
+// and whether the capped, governed lead bias actually fired.
+export interface BenchmarkRouting {
+  category: string
+  lead_provider: string | null
+  lead_specialty: string | null
+  classification_signal: string | null
+  bias_applied: boolean
+}
+// Compact, display-ready governance summary shared by every surface (REST + MCP).
+// jurisdiction is the compact "domain · team" string for current runs, but older
+// task rows persisted the raw orchestrator dict, so the detail view tolerates both.
+export interface TaskScores {
+  compliance?: number
+  hallucination_risk?: number
+  jurisdiction?: string | Record<string, unknown>
+  benchmark?: BenchmarkRouting
+  [k: string]: unknown
+}
 export interface Task {
   id: number
   prompt: string
   status: string
   result: string | null
   parsed: Record<string, unknown> | null
-  scores: Record<string, unknown> | null
+  scores: TaskScores | null
   execution_time_ms: number | null
   created_at: string
 }

@@ -33,6 +33,12 @@ logger = logging.getLogger("mydude.routing.jurisdiction")
 class ExecLocus(str, Enum):
     IN_AZURE = "in_azure"
     ANTHROPIC_HOSTED = "anthropic_hosted"
+    # Generic vendor-API locus for OpenAI-compatible frontier providers reached
+    # directly over their own hosted API (DeepSeek, Mistral, Qwen/DashScope, ...).
+    # Kept deliberately generic (not per-vendor) so adding another such provider
+    # needs only a config row, never a new enum member — honors the future-proof
+    # / provider-agnostic pillars.
+    PROVIDER_HOSTED = "provider_hosted"
     LOCAL = "local"
 
 

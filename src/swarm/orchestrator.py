@@ -112,6 +112,9 @@ class LLM:
     def __init__(self):
         self._team = None
         self._jurisdiction: Optional[Dict[str, Any]] = None
+        # Most recent benchmark-routing decision from the governed team (category,
+        # lead provider, capped-bias outcome). Surfaced in the run's final result.
+        self.last_benchmark_routing: Optional[Dict[str, Any]] = None
 
     def apply_jurisdiction(self, meta: Dict[str, Any]) -> None:
         """Record a jurisdiction decision and propagate it to the live team."""
@@ -156,8 +159,11 @@ class LLM:
             raise RuntimeError("LLM_PROVIDER is set but no API keys are configured.")
 
         # Role hints are resolved from env_1 (per-provider role_hint) inside the
-        # swarm; no vendor names are referenced here.
-        out = await team.call_team(system, user)
+        # swarm; no vendor names are referenced here. The domain (jurisdiction
+        # slug) feeds benchmark-aware lead routing without naming any vendor.
+        domain = (self._jurisdiction or {}).get("domain", "general")
+        out = await team.call_team(system, user, domain=domain)
+        self.last_benchmark_routing = out.get("benchmark_routing")
         return out["merged"]
 
 
@@ -495,9 +501,10 @@ class WaveOrchestrator:
                 for (c, p, o) in all_caps[:25]
             ],
             "NOTE": (
-                "This is the governed swarm scaffold. To unlock real coding power: "
-                "wire LLM.call() to your provider, and add repo grounding (read files, run tests) "
-                "plus CI-based terraform plan/apply."
+                "Produced by the governed multi-provider swarm: cognitive-role "
+                "debate with compliance scoring, hallucination control, provenance "
+                "tracking, and jurisdiction + benchmark-aware lead routing applied "
+                "to every inference."
             ),
             "COGNITIVE_ARCHITECTURE": "Constitution v1.0 - Epistemic Governance Active",
             "COMPLIANCE_SCORES": all_compliance_scores,
@@ -521,6 +528,7 @@ class WaveOrchestrator:
                 "outcome": jur.get("outcome"),
                 "source": jur.get("jurisdiction_source"),
             },
+            "BENCHMARK_ROUTING": self.llm.last_benchmark_routing or {},
         }
 
         if aborted:

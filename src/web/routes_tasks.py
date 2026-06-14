@@ -15,8 +15,9 @@ router = APIRouter()
 from src.web.templating import templates
 
 # Bound the prompt so a single request cannot push an unbounded payload into the
-# (expensive) multi-provider fan-out.
-MAX_PROMPT_LEN = 8000
+# (expensive) multi-provider fan-out. Canonical limit lives in the governed
+# service so REST and MCP enforce the same ceiling.
+from src.swarm.service import MAX_PROMPT_LEN, llm_providers_available
 
 # Cost/abuse controls for the expensive LLM fan-out endpoint.
 # - Per-IP rate limit: a small burst per minute.
@@ -44,21 +45,10 @@ def _llm_providers_available() -> bool:
 
     Distinct from :func:`_has_active_keys` (which only counts vault rows): this
     confirms the swarm actually has a usable provider, so we can degrade with a
-    clear message instead of letting the orchestrator raise opaquely.
+    clear message instead of letting the orchestrator raise opaquely. Delegates to
+    the governed service so REST and MCP share one availability definition.
     """
-    try:
-        from src.providers.config import llm_provider_specs
-        from src.providers.secrets import has_secret
-
-        for spec in llm_provider_specs():
-            if spec.secrets and all(has_secret(s) for s in spec.secrets):
-                return True
-        return False
-    except Exception as e:
-        logger.warning("Provider availability check failed: %s", e)
-        # Fail safe: let the run proceed and surface any real error downstream
-        # rather than blocking on a check-layer fault.
-        return True
+    return llm_providers_available()
 
 
 def _parse_result(task):
@@ -179,27 +169,17 @@ async def run_task(
 
     start_time = time.time()
     try:
-        from src.swarm.broker import CapabilityBroker
-        from src.swarm.policy import PolicyEngine
-        from src.swarm.integrations import Integrations
-        from src.swarm.orchestrator import WaveOrchestrator
+        # Single governed path shared with the SPA endpoint and the MCP server.
+        # Providers were already verified above, so skip the re-check here.
+        from src.swarm.service import run_governed_swarm, normalize_scores
 
-        policy = PolicyEngine()
-        integrations = Integrations()
-        broker = CapabilityBroker(policy, integrations)
-        orchestrator = WaveOrchestrator(broker)
-        result = await orchestrator.run(prompt, domain=domain, team=team, task_run_id=task_id)
+        result = await run_governed_swarm(
+            prompt, domain=domain, team=team, task_run_id=task_id, check_providers=False
+        )
 
         elapsed_ms = int((time.time() - start_time) * 1000)
         result_text = json.dumps(result, indent=2, default=str)
-
-        scores = {}
-        if "COMPLIANCE_SCORES" in result:
-            scores["compliance"] = result["COMPLIANCE_SCORES"]
-        if "HALLUCINATION_RISK" in result:
-            scores["hallucination_risk"] = result["HALLUCINATION_RISK"]
-        if "JURISDICTION" in result:
-            scores["jurisdiction"] = result["JURISDICTION"]
+        scores = normalize_scores(result)
 
         task_run.result = result_text
         task_run.status = "completed"

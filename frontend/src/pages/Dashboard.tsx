@@ -12,6 +12,7 @@ import {
   SourcesMessage, CodeBlock, ThinkingIndicator, ScoreBar, MessageThread,
 } from '@/components/ai-elements'
 import { ChevronRight, Clock, Key, MapPin, Zap, CheckCircle, History } from 'lucide-react'
+import { BenchmarkRoutingStrip } from '@/components/BenchmarkRouting'
 
 function riskColor(v: number): string {
   if (v < 0.35) return '#34d399'
@@ -50,6 +51,8 @@ function ResultPanel({ task, prompt }: { task: Task; prompt: string }) {
   return (
     <MessageThread>
       <UserMessage>{prompt}</UserMessage>
+
+      {scores?.benchmark && <BenchmarkRoutingStrip routing={scores.benchmark} />}
 
       {scores && (
         <div className="ai-scores-strip">

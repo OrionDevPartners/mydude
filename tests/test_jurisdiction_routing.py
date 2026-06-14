@@ -330,7 +330,13 @@ def test_routes_tasks_persists_jurisdiction_into_provider_scores():
     assert row.provider_scores, "provider_scores was not persisted"
     scores = json.loads(row.provider_scores)
     assert "jurisdiction" in scores, scores
-    assert scores["jurisdiction"] == emitted["JURISDICTION"], scores["jurisdiction"]
+    # routes_tasks now persists the UNIFIED compact governance summary (the same
+    # shape the SPA endpoint and the MCP server use, via service.normalize_scores),
+    # so jurisdiction round-trips as the compact "domain \u00b7 team" string rather
+    # than the raw orchestrator dict.
+    from src.swarm.service import normalize_scores
+    assert scores["jurisdiction"] == normalize_scores(emitted)["jurisdiction"], scores["jurisdiction"]
+    assert scores["jurisdiction"] == "general \u00b7 default", scores["jurisdiction"]
 
 
 def _run_all():

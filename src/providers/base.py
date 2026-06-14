@@ -32,6 +32,19 @@ class ProviderSpec:
     # from secrets" pillar: the same key works whether the operator stored it as
     # GEMINI_API_KEY, GOOGLE_API_KEY, google_ai_studio, etc. First present wins.
     secret_fallbacks: List[str] = field(default_factory=list)
+    # Jurisdiction / data-residency locus this provider's models execute in
+    # (in_azure | anthropic_hosted | provider_hosted | local). Read by the
+    # jurisdiction router and the model-promotion gate to enforce exec_locus pins
+    # and the cloud_shift kill switch. Declared per-provider in env_1.
+    exec_locus: str = "in_azure"
+    # Human-readable specialist role for this provider, surfaced in the UI/run
+    # metadata (e.g. "Architecture, security review, long-context reasoning").
+    specialty: str = ""
+    # Benchmark-aware routing profile: category -> strength in [0, 1]. Used by
+    # src/swarm/benchmark_routing.py to pick a *lead* provider per task category
+    # (coding, reasoning, frontend_uiux, ...) and bias the governed judge
+    # weighting. Operator-tunable in env_1; never hardcoded at a call site.
+    benchmark_profile: dict = field(default_factory=dict)
 
 
 class LLMAdapter(ABC):

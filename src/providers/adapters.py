@@ -91,6 +91,22 @@ class AnthropicMessagesAdapter(LLMAdapter):
         parts = [b.text for b in r.content if getattr(b, "type", None) == "text"]
         return "\n".join(parts).strip()
 
+    async def list_models(self) -> Optional[List[str]]:
+        """Live model catalogue for autorotation (newest Opus/Sonnet in lineage).
+
+        The Anthropic SDK exposes ``client.models.list()``; older SDKs may not,
+        so any failure degrades gracefully to ``None`` (the resolver then falls
+        back to the cached/alias/default model). No model id is hardcoded here.
+        """
+        client = self.client()
+        if client is None:
+            return None
+        try:
+            r = await client.models.list(limit=1000)
+            return [m.id for m in getattr(r, "data", []) if getattr(m, "id", None)]
+        except Exception:
+            return None
+
 
 class GeminiGenerateAdapter(LLMAdapter):
     """Google Gemini generate_content API."""

@@ -426,44 +426,20 @@ async def _execute_task_run(task_id: int, prompt: str, domain: str, team: str) -
             logger.error("Background task run %s vanished before execution", task_id)
             return
         try:
-            from src.swarm.broker import CapabilityBroker
-            from src.swarm.policy import PolicyEngine
-            from src.swarm.integrations import Integrations
-            from src.swarm.orchestrator import WaveOrchestrator
+            # Single governed path shared with the legacy form post and the MCP
+            # server. Providers were already verified in api_run_task before the
+            # row/guard were taken, so skip the re-check here.
+            from src.swarm.service import run_governed_swarm, normalize_scores
 
-            policy = PolicyEngine()
-            integrations = Integrations()
-            broker = CapabilityBroker(policy, integrations)
-            orchestrator = WaveOrchestrator(broker)
-            result = await orchestrator.run(prompt, domain=domain, team=team, task_run_id=task_id)
+            result = await run_governed_swarm(
+                prompt, domain=domain, team=team, task_run_id=task_id, check_providers=False
+            )
 
             elapsed_ms = int((time.time() - start_time) * 1000)
             result_text = json.dumps(result, indent=2, default=str)
-            # Normalize the orchestrator's structured output into the compact,
-            # display-ready shape the dashboard expects: compliance and
-            # hallucination_risk as 0..1 numbers, jurisdiction as a short string.
-            scores = {}
-            cs_list = result.get("COMPLIANCE_SCORES")
-            if isinstance(cs_list, list) and cs_list:
-                cs_vals = [
-                    c.get("score") for c in cs_list
-                    if isinstance(c, dict) and isinstance(c.get("score"), (int, float))
-                ]
-                if cs_vals:
-                    # Compliance scores are 0..100 ints; surface a 0..1 average.
-                    scores["compliance"] = round(sum(cs_vals) / len(cs_vals) / 100.0, 3)
-            hr = result.get("HALLUCINATION_RISK")
-            if isinstance(hr, dict) and isinstance(hr.get("average"), (int, float)):
-                scores["hallucination_risk"] = round(float(hr["average"]), 3)
-            elif isinstance(hr, (int, float)):
-                scores["hallucination_risk"] = round(float(hr), 3)
-            jur = result.get("JURISDICTION")
-            if isinstance(jur, dict):
-                jur_parts = [str(jur.get(k)) for k in ("domain", "team") if jur.get(k)]
-                if jur_parts:
-                    scores["jurisdiction"] = " \u00b7 ".join(jur_parts)
-            elif isinstance(jur, str) and jur.strip():
-                scores["jurisdiction"] = jur.strip()
+            # Compact, display-ready governance summary (compliance + hallucination
+            # as 0..1, jurisdiction string, benchmark routing record).
+            scores = normalize_scores(result)
             task_run.result = result_text
             task_run.status = "completed"
             task_run.execution_time_ms = elapsed_ms
@@ -497,8 +473,8 @@ async def api_run_task(
     from src.models import TaskRun, ApiKey
     from src.web.ratelimit import RateLimiter, ConcurrencyGuard
     from src.swarm.jurisdiction import normalize_domain, normalize_team
+    from src.swarm.service import MAX_PROMPT_LEN
 
-    MAX_PROMPT_LEN = 8000
     prompt = prompt.strip()
     domain = normalize_domain(domain)
     team = normalize_team(team)

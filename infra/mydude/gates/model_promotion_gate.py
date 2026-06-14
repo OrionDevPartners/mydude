@@ -39,6 +39,10 @@ logger = logging.getLogger("model_promotion_gate")
 EXEC_LOCUS_PROVIDERS: dict[str, set[str]] = {
     "in_azure": {"openai", "gemini", "grok", "azure_openai", "foundry_maas"},
     "anthropic_hosted": {"anthropic"},
+    # OpenAI-compatible frontier vendors reached over their own hosted API. The
+    # provider keys mirror config/providers.toml; add a new vendor here when it
+    # is declared there with exec_locus="provider_hosted".
+    "provider_hosted": {"deepseek", "mistral", "qwen"},
     "local": {"ollama", "mlx", "qwen3", "llama_cpp"},
 }
 

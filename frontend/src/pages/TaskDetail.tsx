@@ -9,6 +9,7 @@ import {
   CodeBlock, ScoreBar, MessageThread,
 } from '@/components/ai-elements'
 import { ArrowLeft, Clock, MapPin, ShieldCheck, Zap } from 'lucide-react'
+import { BenchmarkRoutingStrip } from '@/components/BenchmarkRouting'
 
 function riskColor(v: number) {
   if (v < 0.35) return '#34d399'
@@ -31,7 +32,7 @@ export function TaskDetail() {
   const parsed = task.parsed
 
   const mainKeys = ['SYNTHESIS', 'SUMMARY', 'RESULT', 'OUTPUT', 'ANSWER', 'RESPONSE']
-  const skipKeys = new Set(['COMPLIANCE_SCORES', 'HALLUCINATION_RISK', 'JURISDICTION', 'WAVE_METADATA'])
+  const skipKeys = new Set(['COMPLIANCE_SCORES', 'HALLUCINATION_RISK', 'JURISDICTION', 'WAVE_METADATA', 'BENCHMARK_ROUTING'])
 
   const mainKey = mainKeys.find(k => parsed?.[k])
   const mainText = mainKey ? String(parsed![mainKey]) : null
@@ -39,7 +40,7 @@ export function TaskDetail() {
   const sources = parsed?.['SOURCES'] || parsed?.['sources']
   const codeContent = parsed?.['CODE'] || parsed?.['code'] || parsed?.['CODE_BLOCK']
 
-  const hasScores = scores.hallucination_risk != null || scores.compliance != null || scores.jurisdiction != null
+  const hasScores = scores.hallucination_risk != null || scores.compliance != null || scores.jurisdiction != null || scores.benchmark != null
 
   const jur = (scores.jurisdiction && typeof scores.jurisdiction === 'object')
     ? scores.jurisdiction as Record<string, unknown>
@@ -87,6 +88,11 @@ export function TaskDetail() {
           <p style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14 }}>
             Governance Scores
           </p>
+          {scores.benchmark && (
+            <div style={{ marginBottom: 14 }}>
+              <BenchmarkRoutingStrip routing={scores.benchmark} />
+            </div>
+          )}
           {scores.hallucination_risk != null && typeof scores.hallucination_risk === 'number' && (
             <ScoreBar label="Hallucination Risk" value={scores.hallucination_risk as number} colorFn={riskColor} />
           )}
