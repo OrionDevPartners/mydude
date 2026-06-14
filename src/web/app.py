@@ -75,8 +75,14 @@ _is_production = os.environ.get("REPLIT_DEPLOYMENT") == "1"
 @app.middleware("http")
 async def _cache_headers(request: Request, call_next):
     response = await call_next(request)
-    if not _is_production and request.url.path.startswith("/static"):
-        response.headers["Cache-Control"] = "no-store, max-age=0"
+    # In dev, never let the browser cache static assets OR the SPA index document.
+    # The index references hashed asset filenames; a cached index after a rebuild
+    # points at deleted hashes (404) and renders a blank page. text/html covers the
+    # SPA index ("/") and the SPA fallback navigation routes.
+    if not _is_production:
+        ctype = response.headers.get("content-type", "")
+        if request.url.path.startswith("/static") or ctype.startswith("text/html"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
 
 
