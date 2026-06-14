@@ -7,8 +7,11 @@ Everything written here is derived from the actual repository — never invented
   - placements    : derived from a real `ast` import scan (which module imports what)
   - providers     : a curated catalog, each VERIFIED to appear in the source tree
 
-Idempotent: rebuilds the schema from scratch every run so the ledger always
-mirrors current reality. Run with:  python -m agentledger.seed
+Idempotent: rebuilds the non-audit schema from scratch every run so the ledger
+always mirrors current reality. The append-only ``ledger_events`` audit log is
+PRESERVED across rebuilds, so a lasting history of every reseed accumulates over
+time (view it with ``python -m agentledger.query events``).
+Run with:  python -m agentledger.seed
 """
 from __future__ import annotations
 
@@ -415,7 +418,9 @@ def _parse_frontend() -> List[Tuple[str, str, bool]]:
 # ---------------------------------------------------------------------------
 
 def seed() -> dict:
-    init_ledger(drop=True)
+    # Rebuild everything EXCEPT the append-only audit log, so the rebuild history
+    # accumulates across merges instead of being wiped on every reseed.
+    init_ledger(drop=True, preserve=[LedgerEvent.__tablename__])
     db = SessionLocal()
     stats = {"layers": 0, "containers": 0, "functions": 0, "packages": 0,
              "providers": 0, "capabilities": 0, "placements": 0, "deps": 0}
@@ -606,7 +611,8 @@ def seed() -> dict:
                     ))
                     stats["deps"] += 1
 
-        # 8. Audit event
+        # 8. Audit event — appended to the PRESERVED ledger_events table, so each
+        #    rebuild adds one lasting row to an accumulating history (not a wipe).
         db.add(LedgerEvent(
             actor="seeder", action="seed", entity_kind="ledger",
             entity_ref="full-rebuild",

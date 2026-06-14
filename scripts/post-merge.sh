@@ -22,10 +22,13 @@ uv pip install fastembed pyarrow watchdog
 
 # Rebuild the Agent Ledger (agentledger/) from current project state so it never
 # drifts after a merge that adds packages/providers or restructures src/. The seed
-# is idempotent (drops + rebuilds its own isolated SQLite file) and records a
-# LedgerEvent audit row for each rebuild. This is agent-only dev infrastructure and
-# is NOT part of the app's runtime, so a rebuild failure must not abort the merge or
-# block the deps/migrations above — warn loudly instead of failing hard.
+# is idempotent (rebuilds all non-audit tables in its own isolated SQLite file) and
+# appends a LedgerEvent audit row for each rebuild. The append-only ledger_events
+# table is PRESERVED across reseeds, so a lasting rebuild history accumulates over
+# merges (view it with 'python -m agentledger.query events'). This is agent-only dev
+# infrastructure and is NOT part of the app's runtime, so a rebuild failure must not
+# abort the merge or block the deps/migrations above — warn loudly instead of
+# failing hard.
 if python -m agentledger.seed; then
     echo "[post-merge] Agent ledger rebuilt from current project state."
 else

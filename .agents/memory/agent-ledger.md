@@ -13,7 +13,19 @@ or where it lives.
 **Query it:** `python -m agentledger.query <summary|layers|containers|providers|packages|capability <slug>|where <provider|package> <name>|container <slug>|search <text>>`
 
 **Rebuild after structural change:** `python -m agentledger.seed` (idempotent — drops
-+ repopulates from real state, so it never goes stale).
++ repopulates from real state, so it never goes stale). View rebuild history with
+`python -m agentledger.query events [limit]`.
+
+**Audit history is PRESERVED across reseeds (do not regress):** `seed()` calls
+`init_ledger(drop=True, preserve=[LedgerEvent.__tablename__])` — every table is
+dropped+recreated fresh EXCEPT the append-only `ledger_events`, which accumulates one
+row per rebuild so a lasting trail survives merges. **Never** change this back to a
+blanket `drop=True` (no preserve) or read-then-reinsert the history (that risks losing
+it on a failed reseed). **Why:** post-merge.sh reseeds after every merge; a full
+schema drop meant `ledger_events` only ever held the latest rebuild.
+**Gotcha:** because `ledger_events` is now never dropped, a schema change to
+`LedgerEvent` needs an explicit add-missing-columns migration (it won't be picked up
+by drop+create like the other tables). Pillar #5 / follow-up tracks this.
 
 **Why:** project context is too heavy to track from memory; the user explicitly asked
 for a ledger to make packages/providers + their architectural placement queryable.

@@ -11,9 +11,11 @@ For agents working on this project. Import the helpers, or use the CLI:
   python -m agentledger.query where <provider|package> <name>   # placements
   python -m agentledger.query container <slug>          # full detail of one container
   python -m agentledger.query search <text>             # fuzzy across functions/containers/providers
+  python -m agentledger.query events [limit]            # rebuild history (timestamp + stats per reseed)
 """
 from __future__ import annotations
 
+import json
 import sys
 from typing import List, Optional
 
@@ -25,6 +27,7 @@ from agentledger.models import (
     Container,
     Function,
     Layer,
+    LedgerEvent,
     Package,
     Placement,
     Provider,
@@ -46,7 +49,40 @@ def summary() -> dict:
             "providers_active": db.query(func.count(Provider.id)).filter(Provider.status == "active").scalar(),
             "capabilities": db.query(func.count(Capability.id)).scalar(),
             "placements": db.query(func.count(Placement.id)).scalar(),
+            "rebuild_events": db.query(func.count(LedgerEvent.id))
+                .filter(LedgerEvent.action == "seed").scalar(),
         }
+    finally:
+        db.close()
+
+
+def events(limit: int = 50, action: Optional[str] = None) -> List[dict]:
+    """Return the accumulated rebuild/audit history (most recent first).
+
+    Each row is one preserved ``LedgerEvent``. For reseeds (``action == "seed"``)
+    the ``stats`` dict is the package/provider/function counts captured at that
+    rebuild, so callers can see how the ledger drifted across merges.
+    """
+    db = SessionLocal()
+    try:
+        q = db.query(LedgerEvent)
+        if action:
+            q = q.filter(LedgerEvent.action == action)
+        rows = q.order_by(LedgerEvent.ts.desc(), LedgerEvent.id.desc()).limit(limit).all()
+        out: List[dict] = []
+        for e in rows:
+            stats = None
+            if e.payload_json:
+                try:
+                    stats = json.loads(e.payload_json)
+                except (ValueError, TypeError):
+                    stats = None
+            out.append({
+                "id": e.id, "ts": e.ts, "actor": e.actor, "action": e.action,
+                "entity_kind": e.entity_kind, "entity_ref": e.entity_ref,
+                "summary": e.summary, "stats": stats,
+            })
+        return out
     finally:
         db.close()
 
@@ -206,6 +242,23 @@ def _print_search(text: str):
         db.close()
 
 
+def _print_events(limit: int):
+    # The history view is specifically the rebuild log, so filter to seed events
+    # (keeps the view meaningful even if other audit actions are added later).
+    rows = events(limit=limit, action="seed")
+    if not rows:
+        print("No ledger rebuilds recorded yet (run `python -m agentledger.seed`).")
+        return
+    print(f"Agent Ledger rebuild history ({len(rows)} most recent, newest first):")
+    for e in rows:
+        ts = e["ts"].strftime("%Y-%m-%d %H:%M:%S") if e["ts"] else "?"
+        ref = e["entity_ref"] or ""
+        print(f"  [{ts}] #{e['id']:<4} {e['actor']}/{e['action']} {ref}  — {e['summary'] or ''}")
+        stats = e["stats"]
+        if isinstance(stats, dict) and stats:
+            print("             " + "  ".join(f"{k}={v}" for k, v in stats.items()))
+
+
 def main(argv: List[str]) -> None:
     if not argv:
         _print_summary()
@@ -229,6 +282,16 @@ def main(argv: List[str]) -> None:
         _print_container(rest[0]) if rest else print("usage: container <slug>")
     elif cmd == "search":
         _print_search(rest[0]) if rest else print("usage: search <text>")
+    elif cmd == "events":
+        try:
+            limit = int(rest[0]) if rest else 50
+        except ValueError:
+            print("usage: events [limit]  (limit must be a positive integer)")
+            return
+        if limit <= 0:
+            print("usage: events [limit]  (limit must be a positive integer)")
+            return
+        _print_events(limit)
     else:
         print(__doc__)
 
