@@ -11,14 +11,15 @@ browser but must NEVER be written to the DB, logs, or the audit trail.
 
 **The rule:** `_activate()` in `src/avatar/sessions.py` returns the FULL descriptor
 to the immediate start/consent HTTP response only; it persists ONLY a non-secret
-routing subset via `_persistable_connection()` (allowlist — currently just
-`session_id`). `start_session`/`record_consent` attach the full descriptor to the
+routing subset via `_persistable_connection()` (allowlist —
+`_PERSISTABLE_CONNECTION_KEYS`: `session_id`, `provider`, `transport`; all
+non-secret). `start_session`/`record_consent` attach the full descriptor to the
 response in memory. A later read (`get_session(include_connection=True)`) sees only
 the sanitized `connection_json`.
 
 **Why:** governance pillar #3 (separate provider from secrets) + the live-call done
-criterion "tokens NEVER logged/audited/persisted". The earlier code wrote the whole
-descriptor (incl. token) to `connection_json` — a real leak.
+criterion "tokens NEVER logged/audited/persisted". Persisting the full descriptor
+(incl. token) to `connection_json` is a real credential leak.
 
 **How to apply:** the server only needs `session_id` later (for HeyGen
 `streaming.start` via `bridge._heygen_start_stream`, which posts ONLY `{session_id}`

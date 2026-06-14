@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import {
   getAvatar, getAvatarVoices, previewAvatarVoice, createAvatarProfile,
   updateAvatarProfile, deleteAvatarProfile, startAvatarSession, recordAvatarConsent,
-  endAvatarSession,
+  endAvatarSession, retryAvatarSession,
   AvatarData, AvatarProfile, AvatarSession, AvatarVoiceStatus, AvatarBackend,
   AvatarSessionStartResult,
 } from '@/lib/api'
@@ -416,6 +416,19 @@ function Sessions({ data, working, action, setMsg, setErr }: {
     await action(() => endAvatarSession(sid), `Session #${sid} ended`)
   }
 
+  async function retryRow(sid: number) {
+    // Re-attempt activation in place for a needs_provider session whose consent
+    // was already granted — the callee is never re-prompted for consent. If it
+    // recovers to active, open the live call panel straight away.
+    let started: AvatarSession | null = null
+    const ok = await action(async () => {
+      const r = await retryAvatarSession(sid)
+      setMsg(`Session #${sid} ${r.session.status} (${r.session.mode || 'voice_only'}).`)
+      started = r.session
+    })
+    if (ok && started) openIfActive(started)
+  }
+
   async function start() {
     if (!profileId) { setErr('Select a profile to start a session.'); return }
     setStarting(true); setErr(null); setMsg(null)
@@ -482,7 +495,13 @@ function Sessions({ data, working, action, setMsg, setErr }: {
                       <td><span className={`badge ${SESSION_STATUS_COLOR[s.status] || 'badge-gray'}`}>{s.status}</span></td>
                       <td style={{ fontSize: 12 }}>{s.consent_status}</td>
                       <td style={{ fontSize: 11, color: 'var(--text-muted)', maxWidth: 260 }}>{s.result_detail || '—'}</td>
-                      <td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {s.status === 'needs_provider' && s.consent_status === 'granted' && (
+                          <button className="btn btn-ghost btn-sm" disabled={working}
+                            onClick={() => retryRow(s.id)} title="Re-attempt activation without re-collecting consent">
+                            <RefreshCw size={12} /> Retry
+                          </button>
+                        )}
                         {endable && (
                           <button className="btn btn-ghost btn-sm" disabled={working}
                             onClick={() => endSessionRow(s.id)}>

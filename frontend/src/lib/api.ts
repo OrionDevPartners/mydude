@@ -561,6 +561,8 @@ export const startAvatarStream = (id: number) =>
     `/avatar/session/${id}/stream-start`, { method: 'POST' })
 export const endAvatarSession = (id: number) =>
   request<{ ok: boolean; session: AvatarSession }>(`/avatar/session/${id}/end`, { method: 'POST' })
+export const retryAvatarSession = (id: number) =>
+  request<{ ok: boolean; session: AvatarSession }>(`/avatar/session/${id}/retry`, { method: 'POST' })
 
 export const startTeam = (id: number) =>
   request<{ ok: boolean; msg: string; team_id: number }>(`/fleet/teams/${id}/start`, { method: 'POST' })

@@ -3022,6 +3022,41 @@ async def api_avatar_session_consent(
         db.close()
 
 
+@router.post("/avatar/session/{session_id}/retry")
+async def api_avatar_session_retry(session_id: int, _=Depends(require_auth)):
+    """Re-attempt activation for a ``needs_provider`` session with granted consent.
+
+    Lets the operator recover a session whose avatar backend errored during
+    negotiation — without rolling back or re-collecting the consent the callee
+    already gave. Returns the full connection descriptor in THIS response only.
+    """
+    from src.database import SessionLocal
+    from src.avatar.sessions import retry_session
+    from src.avatar.providers import (
+        AvatarNotConfigured, AvatarAuthError, AvatarProviderError,
+    )
+    from src.avatar.compliance import DisclosureRequired, ConsentRequired
+    db = SessionLocal()
+    try:
+        try:
+            res = await asyncio.to_thread(retry_session, db, session_id)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except (DisclosureRequired, ConsentRequired) as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except AvatarNotConfigured as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except AvatarAuthError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except AvatarProviderError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"ok": True, "session": res}
+    finally:
+        db.close()
+
+
 @router.post("/avatar/session/{session_id}/stream-start")
 async def api_avatar_session_stream_start(session_id: int, _=Depends(require_auth)):
     """Begin provider media publishing for an active avatar_video session.

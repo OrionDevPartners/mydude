@@ -4,8 +4,9 @@ Mirrors the secretary gate (``src/coach/secretary.py``): a session is created in
 ``pending_consent`` and only goes ``active`` after the AI-use disclosure has been
 shown and recording consent is granted. Consent is persisted BEFORE any bridge
 negotiation, so a bridge failure never rolls consent back — it moves the session to
-``needs_provider`` (terminal here; the operator fixes the backend and starts a new
-session). State transitions re-validate the STORED session,
+``needs_provider`` — the operator fixes the backend, then RETRIES the session in
+place (``retry_session``), reusing the consent already given rather than
+re-collecting it. State transitions re-validate the STORED session,
 lock the row (``FOR UPDATE``) so two concurrent starts can't double-activate, and
 audit every transition (including blocked / needs-provider / voice-only).
 
@@ -275,6 +276,60 @@ def record_consent(db, session_id, granted, detail=None):
            "Session #%d consent granted." % session.id)
 
     profile = _load_profile(db, session.avatar_profile_id)
+    live_conn = _activate(db, session, profile)
+    out = _serialize(session)
+    # Full descriptor (incl. token) goes ONLY to this response, never the DB.
+    if live_conn:
+        out["connection"] = live_conn
+    return out
+
+
+def retry_session(db, session_id):
+    """Re-attempt activation for a session stuck in ``needs_provider``.
+
+    When the avatar backend errors during negotiation the session is left in
+    ``needs_provider`` with consent already ``granted`` (consent is committed
+    BEFORE negotiation). Once the operator fixes the backend, this re-runs
+    activation IN PLACE — re-validating the STORED session under a row lock
+    (``FOR UPDATE``) — so the callee is never re-prompted for consent they
+    already gave. Refuses any session that is not ``needs_provider`` or whose
+    consent is not ``granted``, and audits the transition.
+
+    Returns the FULL connection descriptor (incl. any room token) for THIS
+    response ONLY; it is never persisted or logged (pillar #3)."""
+    session = (db.query(AvatarSession)
+               .filter(AvatarSession.id == session_id)
+               .with_for_update()
+               .first())
+    if session is None:
+        raise ValueError("Session %s not found." % session_id)
+    if session.status != "needs_provider":
+        _audit(db, "session_retry_blocked", "blocked",
+               "Refused retry on session #%d in status '%s'."
+               % (session.id, session.status))
+        raise PermissionError(
+            "Session #%d is '%s', not awaiting a provider retry."
+            % (session.id, session.status))
+    if session.consent_status != "granted":
+        _audit(db, "session_retry_blocked", "blocked",
+               "Refused retry on session #%d without granted consent (consent '%s')."
+               % (session.id, session.consent_status))
+        raise PermissionError(
+            "Session #%d cannot be retried without granted consent." % session.id)
+
+    profile = _load_profile(db, session.avatar_profile_id)
+    # Record the retry intent WITHOUT committing: committing here would end the
+    # transaction and release the FOR UPDATE lock BEFORE activation, letting two
+    # concurrent retries both pass validation and double-negotiate the same
+    # session. Adding the row (no commit) keeps the lock held; _activate commits
+    # it together with the resulting state transition, on every path.
+    db.add(AvatarAuditLog(
+        action="session_retry", status="ok", source="avatar-sessions",
+        detail="Session #%d retrying provider activation (consent already granted)."
+               % session.id))
+    # _activate re-validates compliance, re-negotiates the bridge (or degrades to
+    # voice-only) under the still-held lock, and audits the resulting transition.
+    # Consent is untouched.
     live_conn = _activate(db, session, profile)
     out = _serialize(session)
     # Full descriptor (incl. token) goes ONLY to this response, never the DB.

@@ -28,3 +28,9 @@ status check + state transition atomic.
    and executing.
 3. Keep every transition (requested / blocked / executed / failed / rejected) in the
    audit log.
+4. Do NOT commit anything between the locked read and the state-transition commit —
+   a commit ends the transaction and RELEASES the row lock mid-window, re-opening the
+   double-fire race. Audit rows for the in-progress action must be `db.add(...)`
+   WITHOUT committing, so the transition's own commit flushes them while the lock is
+   still held. (Committing an audit on a path that REFUSES/raises immediately, with no
+   execution after, is fine — there's nothing left to race.)

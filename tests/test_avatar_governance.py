@@ -59,10 +59,14 @@ class _FakeDB:
         self._next_id = 1
         self._model = None
         self._filter_id = None
+        self.commit_count = 0
+        self._for_update = False
+        self._lock_commit_snapshot = None
 
     def query(self, model, *a, **k):
         self._model = model
         self._filter_id = None
+        self._for_update = False
         return self
 
     def filter(self, *crit, **k):
@@ -74,6 +78,7 @@ class _FakeDB:
         return self
 
     def with_for_update(self, *a, **k):
+        self._for_update = True
         return self
 
     def order_by(self, *a, **k):
@@ -84,9 +89,13 @@ class _FakeDB:
 
     def first(self):
         if self._model is AvatarSession:
-            if self._filter_id is not None:
-                return self.sessions.get(self._filter_id)
-            return next(iter(self.sessions.values()), None)
+            row = (self.sessions.get(self._filter_id) if self._filter_id is not None
+                   else next(iter(self.sessions.values()), None))
+            if self._for_update:
+                # Snapshot the commit count at lock-acquisition so a test can
+                # assert nothing commits (releasing the lock) before activation.
+                self._lock_commit_snapshot = self.commit_count
+            return row
         return self.profile
 
     def all(self):
@@ -111,6 +120,7 @@ class _FakeDB:
         return None
 
     def commit(self):
+        self.commit_count += 1
         return None
 
     def delete(self, row):
@@ -549,6 +559,107 @@ def test_profile_create_ok():
     assert "profile_created" in _audit_actions(db)
 
 
+def test_retry_activates_when_backend_recovers():
+    """A ``needs_provider`` session whose consent was already granted can be
+    retried in place once the backend recovers — without re-collecting consent,
+    and without ever persisting/auditing the room token (pillar #3)."""
+    db = _FakeDB(_mk_profile(consent=True, avatar_provider="heygen"))
+    restore = _patch_provider_checks(voice_ok=True, avatar_ok=True)
+    saved = bridge_mod.create_session
+    secret = "RETRY-TOKEN-OK-999"
+
+    def _boom(provider, **kw):
+        raise prov.AvatarProviderError("bridge down")
+
+    def _ok(provider, **kw):
+        return {"provider": "heygen", "transport": "livekit",
+                "connection": {"session_id": "sess_retry", "url": "wss://x",
+                               "access_token": secret},
+                "detail": "negotiated"}
+
+    try:
+        bridge_mod.create_session = _boom
+        started = sess.start_session(db, 1)
+        sid = started["session"]["id"]
+        try:
+            sess.record_consent(db, sid, True)
+        except prov.AvatarProviderError:
+            pass
+        assert db.sessions[sid].status == "needs_provider", db.sessions[sid].status
+        # Operator fixes the backend -> retry the SAME session in place.
+        bridge_mod.create_session = _ok
+        res = sess.retry_session(db, sid)
+    finally:
+        bridge_mod.create_session = saved
+        restore()
+    assert res["status"] == "active" and res["mode"] == "avatar_video", res
+    assert res["connection"]["access_token"] == secret, "browser gets the token on retry"
+    assert db.sessions[sid].consent_status == "granted", "consent must never be re-collected"
+    # The token is never persisted to the DB nor written to the audit trail.
+    assert secret not in (db.sessions[sid].connection_json or ""), "token must not persist"
+    assert secret not in _audit_blob(db), "token must never reach the audit log"
+    assert "session_retry" in _audit_actions(db)
+
+
+def test_retry_refused_for_ineligible_sessions():
+    """Retry is refused (and audited) for a session that is not
+    ``needs_provider`` and for a ``needs_provider`` session without granted
+    consent."""
+    # (a) not in needs_provider -> refused
+    db = _FakeDB(_mk_profile(consent=True, avatar_provider="heygen"))
+    active = AvatarSession(avatar_profile_id=1, status="active", mode="avatar_video",
+                           consent_status="granted", disclosure_shown=True)
+    db.add(active)
+    refused = False
+    try:
+        sess.retry_session(db, active.id)
+    except PermissionError:
+        refused = True
+    assert refused, "retry must be refused when the session is not needs_provider"
+    assert "session_retry_blocked" in _audit_actions(db)
+
+    # (b) needs_provider but consent not granted -> refused
+    db2 = _FakeDB(_mk_profile(consent=True, avatar_provider="heygen"))
+    pending = AvatarSession(avatar_profile_id=1, status="needs_provider",
+                            consent_status="pending", disclosure_shown=True)
+    db2.add(pending)
+    refused2 = False
+    try:
+        sess.retry_session(db2, pending.id)
+    except PermissionError:
+        refused2 = True
+    assert refused2, "retry must be refused without granted consent"
+    assert "session_retry_blocked" in _audit_actions(db2)
+
+
+def test_retry_holds_lock_through_activation():
+    """The FOR UPDATE lock taken for validation must still be held when
+    activation runs: retry_session must NOT commit between the locked read and
+    _activate, or two concurrent retries could both pass and double-activate."""
+    db = _FakeDB(_mk_profile(consent=True, avatar_provider="heygen"))
+    s = AvatarSession(avatar_profile_id=1, status="needs_provider",
+                      consent_status="granted", disclosure_shown=True)
+    db.add(s)
+    saved_activate = sess._activate
+    seen = {}
+
+    def _spy_activate(_db, session, profile):
+        seen["entry_commits"] = _db.commit_count
+        session.status = "active"
+        session.mode = "avatar_video"
+        _db.commit()
+        return {"access_token": "tok"}
+
+    try:
+        sess._activate = _spy_activate
+        sess.retry_session(db, s.id)
+    finally:
+        sess._activate = saved_activate
+    assert seen["entry_commits"] == db._lock_commit_snapshot, (
+        "retry_session committed between the FOR UPDATE read and _activate, "
+        "releasing the row lock before activation")
+
+
 def _run_all():
     tests = [
         test_status_functions_never_raise_and_are_honest,
@@ -571,6 +682,9 @@ def _run_all():
         test_profile_create_rejects_duplicate_name,
         test_profile_create_rejects_bad_config_and_unknown_provider,
         test_profile_create_ok,
+        test_retry_activates_when_backend_recovers,
+        test_retry_refused_for_ineligible_sessions,
+        test_retry_holds_lock_through_activation,
     ]
     failed = 0
     for t in tests:
