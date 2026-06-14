@@ -2441,6 +2441,29 @@ async def api_finance_write_reject(request_id: int, _=Depends(require_auth)):
         db.close()
 
 
+@router.post("/finance/suggestions/generate")
+async def api_finance_suggestions_generate(_=Depends(require_auth)):
+    """Generate auto-suggested categorize/create_bill drafts from live data.
+
+    All drafts land in ``pending_confirm`` (behind the existing CONFIRM gate);
+    nothing is posted to QuickBooks here. Runs in a worker thread because the
+    engine makes blocking QuickBooks/IMAP calls. Fails loud (502) on a provider
+    error; returns ``configured: false`` with an actionable message when
+    QuickBooks is not connected.
+    """
+    from src.database import SessionLocal
+    from src.finance.suggestions import generate_suggestions
+    db = SessionLocal()
+    try:
+        try:
+            res = await asyncio.to_thread(generate_suggestions, db)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return res
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Coach (PA / secretary + empathetic life-coach + mood sub-stack)
 # ---------------------------------------------------------------------------

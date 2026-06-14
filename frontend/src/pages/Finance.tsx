@@ -3,6 +3,7 @@ import {
   getFinance, getFinanceTransactions, syncFinance, setFinanceAutosync,
   createFinanceProject, addFinanceBudget, attributeTransaction, createFinanceRule,
   setVendorDefaultProject, requestFinanceWrite, confirmFinanceWrite, rejectFinanceWrite,
+  generateFinanceSuggestions,
   createPlaidLinkToken, exchangePlaidPublicToken, removePlaidItem,
   FinanceData, FinanceBudgetRow, FinanceProviderStatus, FinanceWrite, FinanceTxn, PlaidItemSummary,
 } from '@/lib/api'
@@ -11,7 +12,7 @@ import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, FormField, Toggle } from '@/components/ui'
 import { fmtDate } from '@/lib/utils'
 import {
-  CircleDollarSign, RefreshCw, Plus, CheckCircle2, XCircle, AlertTriangle, Plug, Landmark, Trash2,
+  CircleDollarSign, RefreshCw, Plus, CheckCircle2, XCircle, AlertTriangle, Plug, Landmark, Trash2, Sparkles,
 } from 'lucide-react'
 
 const FLAG_LABEL: Record<string, { text: string; color: string }> = {
@@ -537,14 +538,40 @@ function Approvals({ data, working, action, setMsg, setErr, refetch }: {
   const [showRequest, setShowRequest] = useState(false)
   const [confirmWrite, setConfirmWrite] = useState<FinanceWrite | null>(null)
   const [confirmText, setConfirmText] = useState('')
+  const [generating, setGenerating] = useState(false)
+
+  async function generate() {
+    setGenerating(true); setMsg(null); setErr(null)
+    try {
+      const r = await generateFinanceSuggestions()
+      if (!r.configured) {
+        setErr(r.message || 'QuickBooks is not configured — connect it to generate suggestions.')
+      } else {
+        const skips = Object.values(r.skipped || {}).reduce((a, n) => a + n, 0)
+        setMsg(`Generated ${r.counts.total} suggestion${r.counts.total === 1 ? '' : 's'} `
+          + `(${r.counts.categorize} categorize, ${r.counts.create_bill} bill)`
+          + `${skips ? ` · ${skips} skipped` : ''} — review and confirm below.`)
+      }
+      refetch()
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Failed to generate suggestions')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
           Write-backs to QuickBooks require explicit confirmation before they execute.
         </span>
-        <button className="btn btn-secondary btn-sm" onClick={() => setShowRequest(true)}><Plus size={13} /> Request write</button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button className="btn btn-secondary btn-sm" onClick={generate} disabled={generating || working}>
+            <Sparkles size={13} /> {generating ? 'Generating…' : 'Generate suggestions'}
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={() => setShowRequest(true)}><Plus size={13} /> Request write</button>
+        </div>
       </div>
 
       {data.writes.length === 0
@@ -558,6 +585,7 @@ function Approvals({ data, working, action, setMsg, setErr, refetch }: {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
                       <span style={{ fontSize: 13, fontWeight: 700, fontFamily: 'monospace' }}>{w.kind}</span>
                       <span className={`badge ${WRITE_STATUS_COLOR[w.status] || 'badge-gray'}`}>{w.status}</span>
+                      {w.summary?.startsWith('Auto-suggested') && <span className="badge badge-purple">auto-suggested</span>}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{w.summary || '—'}</div>
                     {w.result_detail && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>{w.result_detail}</div>}

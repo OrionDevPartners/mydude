@@ -96,6 +96,18 @@ class QuickBooksClient:
         qr = self.query("select * from Invoice maxresults %d" % max_results)
         return qr.get("Invoice", []) or []
 
+    def fetch_purchases(self, max_results=200):
+        """Fetch Purchases (expenses / checks / credit-card charges) including
+        their expense lines.
+
+        Used by the suggestion engine to detect uncategorised purchases and to
+        learn each vendor's dominant expense account from history. ``select *``
+        returns ``SyncToken`` and the full ``Line`` array needed to build a
+        sparse re-categorisation update.
+        """
+        qr = self.query("select * from Purchase maxresults %d" % max_results)
+        return qr.get("Purchase", []) or []
+
     # -- writes (gated only) --------------------------------------------- #
     def create_bill(self, payload):
         """Create a Bill. ``payload`` must be a valid QBO Bill object."""

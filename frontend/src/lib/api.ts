@@ -380,6 +380,8 @@ export const confirmFinanceWrite = (id: number, confirm: string) =>
   })
 export const rejectFinanceWrite = (id: number) =>
   request<{ ok: boolean; write: FinanceWrite }>(`/finance/writes/${id}/reject`, { method: 'POST' })
+export const generateFinanceSuggestions = () =>
+  request<FinanceSuggestionResult>('/finance/suggestions/generate', { method: 'POST' })
 // Plaid Link (connect a bank) — the access_token is exchanged + stored server-side
 // and is never returned to the browser.
 export const createPlaidLinkToken = () =>
@@ -763,6 +765,11 @@ export interface FinanceAuditEntry { id: number; action: string; status: string;
 export interface FinanceWrite {
   id: number; kind: string; target_external_id: string | null; summary: string | null;
   status: string; result_detail: string | null; requested_at: string | null; confirmed_at: string | null;
+}
+export interface FinanceSuggestionResult {
+  ok: boolean; configured: boolean; message: string;
+  counts: { categorize: number; create_bill: number; total: number };
+  created: FinanceWrite[]; skipped: Record<string, number>;
 }
 export interface FinanceTxn {
   id: number; source: string; external_id: string; date: string | null; amount: number;
