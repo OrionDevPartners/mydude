@@ -4,7 +4,6 @@ Each adapter implements the vendor-agnostic ``LLMAdapter`` contract. Adding a
 new provider = add an adapter here + register it in ``registry.py`` + add a
 ``[providers.<key>]`` block in config/providers.toml. No other code changes.
 """
-import asyncio
 import socket
 from typing import List, Optional
 from urllib.parse import urlparse
@@ -23,9 +22,11 @@ except Exception:  # pragma: no cover
     anthropic = None
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types as genai_types
 except Exception:  # pragma: no cover
     genai = None
+    genai_types = None
 
 
 class OpenAIChatAdapter(LLMAdapter):
@@ -109,7 +110,12 @@ class AnthropicMessagesAdapter(LLMAdapter):
 
 
 class GeminiGenerateAdapter(LLMAdapter):
-    """Google Gemini generate_content API."""
+    """Google Gemini generate_content API via the supported ``google-genai`` SDK.
+
+    Uses ``google.genai`` (the actively maintained client), not the retired
+    ``google.generativeai`` package. The client exposes a native async surface
+    (``client.aio``) so inference runs without an ``asyncio.to_thread`` bridge.
+    """
 
     def _build_client(self):
         if genai is None:
@@ -117,23 +123,33 @@ class GeminiGenerateAdapter(LLMAdapter):
         api_key = self.primary_secret_value()
         if not api_key:
             return None
-        genai.configure(api_key=api_key)
-        return genai
+        return genai.Client(api_key=api_key)
 
     # Bound every inference call so a stalled request fails loud instead of
-    # hanging a caller. The SDK/GAPIC default is 600s plus a ServiceUnavailable
-    # retry (10-20 min in practice); 180s is well above our worst real call
-    # (~130s) yet terminates the underlying gRPC transport (raising
-    # DeadlineExceeded), which cancelling the awaiting coroutine alone cannot do.
+    # hanging a caller. The SDK default is a long server-side deadline plus
+    # transport retries (10-20 min in practice); 180s is well above our worst
+    # real call (~130s). Passed as ``http_options.timeout`` (milliseconds) so
+    # the underlying HTTP transport itself aborts, not just the awaiting
+    # coroutine, raising a timeout the caller surfaces.
     REQUEST_TIMEOUT_S = 180
 
+    def _request_config(self, system: str, max_tokens: int):
+        return genai_types.GenerateContentConfig(
+            system_instruction=system,
+            max_output_tokens=max_tokens,
+            http_options=genai_types.HttpOptions(
+                timeout=self.REQUEST_TIMEOUT_S * 1000
+            ),
+        )
+
     async def generate(self, system: str, user: str, max_tokens: int) -> str:
-        if self.client() is None:
+        client = self.client()
+        if client is None:
             raise RuntimeError("gemini client unavailable")
-        model = genai.GenerativeModel(self._model, system_instruction=system)
-        r = await asyncio.to_thread(
-            model.generate_content, user,
-            request_options={"timeout": self.REQUEST_TIMEOUT_S},
+        r = await client.aio.models.generate_content(
+            model=self._model,
+            contents=user,
+            config=self._request_config(system, max_tokens),
         )
         text = self._extract_text(r)
         if not text:
@@ -197,10 +213,16 @@ class GeminiGenerateAdapter(LLMAdapter):
         return ""
 
     async def list_models(self) -> Optional[List[str]]:
-        if self.client() is None:
+        client = self.client()
+        if client is None:
             return None
-        ms = await asyncio.to_thread(genai.list_models)
-        return [m.name for m in ms]
+        names: List[str] = []
+        pager = await client.aio.models.list()
+        async for m in pager:
+            name = getattr(m, "name", None)
+            if name:
+                names.append(name)
+        return names
 
 
 def _server_listening(base_url: str, timeout: float = 0.3) -> bool:
