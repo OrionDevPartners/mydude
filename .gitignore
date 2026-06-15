@@ -54,3 +54,8 @@ Thumbs.db
 htmlcov/
 agentledger/experimental/vendor/
 .devguard/
+
+# SQLite transient runtime state (Agent Ledger)
+agentledger/*.db-journal
+agentledger/*.db-wal
+agentledger/*.db-shm
