@@ -1076,6 +1076,17 @@ async def api_governance(request: Request, _=Depends(require_auth)):
                 .limit(30)
                 .all()
             )
+            # Resolve each job's string proposal_id to its proposal DB id so the
+            # Acquisition tab can vote inline via /governance/proposals/{id}/vote.
+            _prop_ids = {r.governance_proposal_id for r in _acq_rows if r.governance_proposal_id}
+            _prop_db_map: dict = {}
+            if _prop_ids:
+                for _p in (
+                    db.query(GovernanceProposal)
+                    .filter(GovernanceProposal.proposal_id.in_(_prop_ids))
+                    .all()
+                ):
+                    _prop_db_map[_p.proposal_id] = _p.id
             for _row in _acq_rows:
                 _cands = (
                     db.query(AcquisitionCandidate)
@@ -1092,6 +1103,7 @@ async def api_governance(request: Request, _=Depends(require_auth)):
                     "best_candidate_version": _row.best_candidate_version,
                     "best_candidate_registry": _row.best_candidate_registry,
                     "governance_proposal_id": _row.governance_proposal_id,
+                    "governance_proposal_db_id": _prop_db_map.get(_row.governance_proposal_id),
                     "notes": _row.notes,
                     "created_at": _dt(_row.created_at),
                     "updated_at": _dt(_row.updated_at),
@@ -1321,6 +1333,43 @@ async def api_ack_alert(alert_id: int, _=Depends(require_auth)):
     finally:
         db.close()
     return {"ok": True}
+
+
+@router.post("/governance/proposals/{proposal_id}/vote")
+async def api_vote_proposal(
+    proposal_id: int,
+    vote: str = Form(""),
+    reason: str = Form(""),
+    auth=Depends(require_auth),
+):
+    """Cast an operator vote on a governance proposal (JSON, SPA-facing).
+
+    Mirrors the legacy Jinja vote route but returns JSON so the React UI can
+    update inline. Used by the Acquisition tab's one-click approve/reject.
+    """
+    vote = (vote or "").strip().lower()
+    if vote not in ("yes", "no", "abstain"):
+        raise HTTPException(status_code=400, detail="Invalid vote value.")
+    voter = auth.get("username") or "operator"
+    try:
+        from src.swarm.governance_engine import GovernanceEngine
+        ok = await asyncio.to_thread(
+            GovernanceEngine().cast_vote,
+            proposal_db_id=proposal_id,
+            voter=voter,
+            vote=vote,
+            weight=1.0,
+            reason=(reason or "").strip()[:500],
+        )
+    except Exception as e:
+        logger.warning("Vote failed: %s", e)
+        raise HTTPException(status_code=500, detail="Vote failed: internal error.")
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="Vote failed: proposal may be closed or not found.",
+        )
+    return {"ok": True, "proposal_id": proposal_id, "vote": vote}
 
 
 @router.post("/governance/cloud-shift")

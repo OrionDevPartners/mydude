@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend, resetSwarmMetrics, getGuardrailEvents } from '@/lib/api'
+import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend, resetSwarmMetrics, getGuardrailEvents, voteOnProposal } from '@/lib/api'
 import type { GovernanceProposal, DriftEntry, PreconditionGapEntry, GuardrailEvent } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, Tabs, PageHeader, Empty } from '@/components/ui'
@@ -634,14 +634,30 @@ export function Governance() {
       )}
 
       {tab === 'Acquisition' && data && (
-        <AcquisitionPanel jobs={data.acquisition_jobs ?? []} enabled={data.acquisition_enabled ?? false} />
+        <AcquisitionPanel jobs={data.acquisition_jobs ?? []} enabled={data.acquisition_enabled ?? false} onVoted={refetch} />
       )}
     </div>
   )
 }
 
-function AcquisitionPanel({ jobs, enabled }: { jobs: AcquisitionJob[]; enabled: boolean }) {
+function AcquisitionPanel({ jobs, enabled, onVoted }: { jobs: AcquisitionJob[]; enabled: boolean; onVoted: () => void }) {
   const [expanded, setExpanded] = useState<number | null>(null)
+  const [voteBusy, setVoteBusy] = useState<number | null>(null)
+  const [voteErr, setVoteErr] = useState<Record<number, string>>({})
+
+  async function handleVote(job: AcquisitionJob, vote: 'yes' | 'no') {
+    if (job.governance_proposal_db_id == null) return
+    setVoteBusy(job.id)
+    setVoteErr(prev => { const n = { ...prev }; delete n[job.id]; return n })
+    try {
+      await voteOnProposal(job.governance_proposal_db_id, vote)
+      await onVoted()
+    } catch (e) {
+      setVoteErr(prev => ({ ...prev, [job.id]: e instanceof Error ? e.message : 'Vote failed.' }))
+    } finally {
+      setVoteBusy(null)
+    }
+  }
 
   const stateColor = (s: string) => {
     if (s === 'approved') return '#34d399'
@@ -755,6 +771,41 @@ function AcquisitionPanel({ jobs, enabled }: { jobs: AcquisitionJob[]; enabled: 
                   </div>
                 )}
               </>
+            )}
+
+            {job.state === 'governance_pending' && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border, rgba(255,255,255,0.08))' }}>
+                {job.governance_proposal_db_id == null ? (
+                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                    Awaiting governance proposal — approve/reject will appear once it is raised.
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={voteBusy === job.id}
+                        onClick={() => handleVote(job, 'yes')}
+                      >
+                        {voteBusy === job.id ? 'Working…' : 'Approve'}
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        disabled={voteBusy === job.id}
+                        onClick={() => handleVote(job, 'no')}
+                      >
+                        Reject
+                      </button>
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        Casts your operator vote on proposal <code>{job.governance_proposal_id}</code>.
+                      </span>
+                    </div>
+                    {voteErr[job.id] && (
+                      <div style={{ fontSize: 11.5, color: '#f87171', marginTop: 6 }}>{voteErr[job.id]}</div>
+                    )}
+                  </>
+                )}
+              </div>
             )}
           </div>
         ))

@@ -167,6 +167,13 @@ export const getGuardrailEvents = (params?: { limit?: number; stage?: string; ac
 }
 export const ackAlert = (id: number) =>
   request<{ ok: boolean }>(`/governance/alerts/${id}/ack`, { method: 'POST' })
+export const voteOnProposal = (proposalDbId: number, vote: 'yes' | 'no' | 'abstain', reason?: string) =>
+  request<{ ok: boolean; proposal_id: number; vote: string }>(
+    `/governance/proposals/${proposalDbId}/vote`, {
+      method: 'POST',
+      body: formBody({ vote, reason: reason || '' }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
 export const setCloudShift = (enabled: boolean, reason?: string) =>
   request<{ ok: boolean; cloud_shift_active: boolean; source: string; warning?: string }>(
     '/governance/cloud-shift', {
@@ -721,7 +728,7 @@ export interface DriftEntry { capability: string; reason: string; severity: stri
 export interface PreconditionGapEntry { capability: string; integration_calls: string[]; precondition_count: number; severity: string; reason: string }
 export interface DriftReport { scanned_at: string; declared_count: number; handled_count: number; orphaned: DriftEntry[]; undeclared: DriftEntry[]; precondition_gaps: PreconditionGapEntry[]; orphaned_count: number; undeclared_count: number; precondition_gap_count: number; total_drift: number; error?: string }
 export interface AcquisitionCandidate { id: number; candidate_name: string; candidate_version: string; registry: string; description: string; passed_sandbox: boolean; passed_governance: boolean; governance_proposal_id: string | null; created_at: string }
-export interface AcquisitionJob { id: number; job_id: string; capability: string; state: string; best_candidate_name: string | null; best_candidate_version: string | null; best_candidate_registry: string | null; governance_proposal_id: string | null; notes: string | null; created_at: string; updated_at: string | null; candidates: AcquisitionCandidate[] }
+export interface AcquisitionJob { id: number; job_id: string; capability: string; state: string; best_candidate_name: string | null; best_candidate_version: string | null; best_candidate_registry: string | null; governance_proposal_id: string | null; governance_proposal_db_id: number | null; notes: string | null; created_at: string; updated_at: string | null; candidates: AcquisitionCandidate[] }
 export interface GovernanceData { alerts: Alert[]; open_alerts: number; ledger: LedgerEntry[]; metrics: MetricRow[]; total_metrics: number; cloud_shift_active: boolean; exec_locus_dist: unknown[]; failed_indexes: number; governance_proposal_failures: number; metrics_reset_at: string; metrics_reset_by: string; proposals: GovernanceProposal[]; recent_proposals: GovernanceProposal[]; open_proposals: number; routing_stats?: RoutingStats; drift_report?: DriftReport; acquisition_jobs?: AcquisitionJob[]; acquisition_enabled?: boolean }
 export interface Alert { id: number; rule: string; severity: string; detail: string; acknowledged: boolean; created_at: string }
 export interface GuardrailEvent { id: number; event_id: string; classifier: string; stage: string; action: string; confidence: number; reason: string; patterns: string[]; degraded: boolean; created_at: string }
