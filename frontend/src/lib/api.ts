@@ -721,6 +721,8 @@ export interface Task {
   scores: TaskScores | null
   structural_routing?: StructuralRouting | null
   execution_time_ms: number | null
+  actor_user_id?: number | null
+  actor_username?: string | null
   created_at: string
 }
 export interface DashboardData { recent_tasks: Task[]; has_keys: boolean; domains: string[] }

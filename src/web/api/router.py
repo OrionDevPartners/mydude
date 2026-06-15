@@ -405,6 +405,8 @@ def _parse_task(task) -> dict:
         "scores": scores,
         "structural_routing": structural_routing,
         "execution_time_ms": task.execution_time_ms,
+        "actor_user_id": task.actor_user_id,
+        "actor_username": task.actor_username,
         "created_at": _dt(task.created_at),
     }
 
@@ -514,7 +516,7 @@ async def api_run_task(
     prompt: str = Form(""),
     domain: str = Form("general"),
     team: str = Form("default"),
-    _=Depends(require_auth),
+    auth=Depends(require_auth),
 ):
     import time
     from src.database import SessionLocal
@@ -544,7 +546,7 @@ async def api_run_task(
 
     db = SessionLocal()
     try:
-        task_run = TaskRun(prompt=prompt, status="running")
+        task_run = TaskRun(prompt=prompt, status="running", **_actor(auth))
         db.add(task_run)
         db.commit()
         db.refresh(task_run)

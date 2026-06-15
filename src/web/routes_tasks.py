@@ -102,7 +102,7 @@ async def run_task(
     prompt: str = Form(""),
     domain: str = Form("general"),
     team: str = Form("default"),
-    _=Depends(require_auth),
+    auth=Depends(require_auth),
 ):
     from src.swarm.jurisdiction import normalize_domain, normalize_team
     prompt = prompt.strip()
@@ -151,7 +151,10 @@ async def run_task(
         )
 
     db = SessionLocal()
-    task_run = TaskRun(prompt=prompt, status="running")
+    task_run = TaskRun(
+        prompt=prompt, status="running",
+        actor_user_id=auth.get("uid"), actor_username=auth.get("username"),
+    )
     try:
         db.add(task_run)
         db.commit()

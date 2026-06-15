@@ -5,7 +5,7 @@ import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Empty } from '@/components/ui'
 import { GlassStatCard } from '@/components/glass'
 import { fmtDate, fmtMs, statusBadge, truncate } from '@/lib/utils'
-import { Clock, ChevronRight, ChevronLeft, History, CheckCircle, XCircle, Zap } from 'lucide-react'
+import { Clock, ChevronRight, ChevronLeft, History, CheckCircle, XCircle, Zap, User } from 'lucide-react'
 import type { Task } from '@/lib/api'
 
 function taskDomain(task: Task): string | null {
@@ -74,6 +74,7 @@ export function TaskHistory() {
                     <th>Prompt</th>
                     <th>Domain</th>
                     <th>Status</th>
+                    <th>Run by</th>
                     <th>Duration</th>
                     <th>Created</th>
                     <th></th>
@@ -99,6 +100,13 @@ export function TaskHistory() {
                           : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>}
                       </td>
                       <td><span className={`badge ${statusBadge(task.status)}`}>{task.status}</span></td>
+                      <td style={{ fontSize: 12 }}>
+                        {task.actor_username
+                          ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-secondary)' }}>
+                              <User size={11} /> {task.actor_username}
+                            </span>
+                          : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                      </td>
                       <td style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{fmtMs(task.execution_time_ms)}</td>
                       <td style={{ color: 'var(--text-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
                         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>

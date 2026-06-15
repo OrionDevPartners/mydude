@@ -293,6 +293,11 @@ class TaskRun(Base):
     status = Column(String(30), default="pending")
     provider_scores = Column(Text, nullable=True)
     execution_time_ms = Column(Integer, nullable=True)
+    # Who initiated this run. Nullable so agent/system-initiated runs (e.g. the
+    # fleet bot runner) and historical rows (written before per-user attribution
+    # existed) remain representable. Mirrors the KeyAuditLog _actor() pattern.
+    actor_user_id = Column(Integer, nullable=True, index=True)
+    actor_username = Column(String(80), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

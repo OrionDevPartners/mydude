@@ -8,7 +8,7 @@ import {
   AssistantMessage, UserMessage, ReasoningMessage, SourcesMessage,
   CodeBlock, ScoreBar, MessageThread,
 } from '@/components/ai-elements'
-import { ArrowLeft, Clock, MapPin, ShieldCheck, Zap } from 'lucide-react'
+import { ArrowLeft, Clock, MapPin, ShieldCheck, Zap, User } from 'lucide-react'
 import { BenchmarkRoutingStrip } from '@/components/BenchmarkRouting'
 
 function riskColor(v: number) {
@@ -63,7 +63,7 @@ export function TaskDetail() {
 
       <PageHeader
         title={`Task #${task.id}`}
-        subtitle={`Created ${fmtDate(task.created_at)}`}
+        subtitle={`Created ${fmtDate(task.created_at)}${task.actor_username ? ` · run by ${task.actor_username}` : ''}`}
         actions={<span className={`badge ${statusBadge(task.status)}`} style={{ fontSize: 13 }}>{task.status}</span>}
       />
 
@@ -72,6 +72,9 @@ export function TaskDetail() {
           <GlassStatCard value={fmtMs(task.execution_time_ms)} label="Execution time" icon={<Clock size={16} />} />
         )}
         <GlassStatCard value={task.status} label="Status" icon={<Zap size={16} />} glow={task.status === 'completed'} />
+        {task.actor_username && (
+          <GlassStatCard value={task.actor_username} label="Run by" icon={<User size={16} />} />
+        )}
         {jurText && (
           <GlassStatCard value={jurText} label="Jurisdiction" icon={<MapPin size={16} />} />
         )}
