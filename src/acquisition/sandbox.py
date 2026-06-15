@@ -199,7 +199,11 @@ class SandboxResult:
     test_ok: bool
     stdout: str = ""
     stderr: str = ""
-    isolation_level: str = "venv+secret-strip"
+    # Always overwritten by verify_candidate with the actual tier used
+    # (see module docstring for the accepted values). The sentinel default
+    # never reflects a real run — "venv+secret-strip" alone is no longer an
+    # accepted isolation tier, so it must not leak into a result.
+    isolation_level: str = "uninitialized"
     error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
