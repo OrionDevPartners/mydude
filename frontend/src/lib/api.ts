@@ -141,6 +141,17 @@ export const deleteKey = (id: number) =>
   request<{ ok: boolean; msg: string }>(`/keys/${id}/delete`, { method: 'POST' })
 export const getKeyAudit = () => request<{ entries: AuditEntry[] }>('/keys/audit')
 
+export interface SysAuditEntry {
+  id: number
+  user: string
+  command: string
+  args: string | null
+  status: string
+  output_preview: string | null
+  created_at: string
+}
+export const getAuditLog = () => request<{ entries: SysAuditEntry[] }>('/audit')
+
 // Services
 export const getDirectory = () => request<DirectoryData>('/directory')
 export const getConnected = () => request<ConnectedData>('/connected')

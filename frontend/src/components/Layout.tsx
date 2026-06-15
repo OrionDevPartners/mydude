@@ -6,30 +6,39 @@ import {
   LayoutDashboard, History, Key, Globe, Plug, Zap,
   ShieldCheck, GitBranch, Brain, Activity, CreditCard,
   Cpu, CircleDollarSign, Heart, UserSquare, LogOut, Menu, X, Bot, Sparkles, FlaskConical,
-  Users as UsersIcon, User as UserIcon, ChevronRight,
+  ScrollText, Users as UsersIcon, User as UserIcon, ChevronRight,
 } from 'lucide-react'
 
 interface NavItem { label: string; to: string; icon: ReactNode; section?: string }
 
+// Navigation is organised around the operator's journey:
+// run governed work → verify trust/audit → connect services → improve the
+// intelligence → automate business domains → administer.
 const NAV: NavItem[] = [
-  { label: 'Dashboard',     to: '/',             icon: <LayoutDashboard size={15} />, section: 'MAIN' },
-  { label: 'Task History',  to: '/history',      icon: <History size={15} /> },
-  { label: 'API Vault',     to: '/keys',         icon: <Key size={15} />,   section: 'SERVICES' },
-  { label: 'Directory',     to: '/directory',    icon: <Globe size={15} /> },
-  { label: 'Connected',     to: '/connected',    icon: <Plug size={15} /> },
-  { label: 'Capabilities',  to: '/capabilities', icon: <Zap size={15} />,   section: 'GOVERNANCE' },
-  { label: 'Governance',    to: '/governance',   icon: <ShieldCheck size={15} /> },
-  { label: 'Provenance',    to: '/provenance',   icon: <GitBranch size={15} /> },
-  { label: 'Prompt Engine', to: '/prompt-engine',icon: <Sparkles size={15} /> },
-  { label: 'Evolution Loop',to: '/evolution',    icon: <FlaskConical size={15} /> },
-  { label: 'Memory',        to: '/memory',       icon: <Brain size={15} /> },
-  { label: 'System Health', to: '/system',       icon: <Activity size={15} /> },
-  { label: 'Subscriptions', to: '/subscriptions',icon: <CreditCard size={15} />, section: 'TOOLS' },
-  { label: 'Finance',       to: '/finance',      icon: <CircleDollarSign size={15} /> },
-  { label: 'Coach',         to: '/coach',        icon: <Heart size={15} /> },
-  { label: 'Avatar',        to: '/avatar',       icon: <UserSquare size={15} /> },
-  { label: 'Local AI Models',to: '/local-models',icon: <Cpu size={15} /> },
-  { label: 'Bot Fleet',     to: '/fleet',        icon: <Bot size={15} /> },
+  // OPERATE — run & review governed AI work
+  { label: 'Dashboard',      to: '/',             icon: <LayoutDashboard size={15} />, section: 'OPERATE' },
+  { label: 'Task History',   to: '/history',      icon: <History size={15} /> },
+  { label: 'Bot Fleet',      to: '/fleet',        icon: <Bot size={15} /> },
+  // VERIFY — trust, govern & audit the swarm
+  { label: 'Governance',     to: '/governance',   icon: <ShieldCheck size={15} />, section: 'VERIFY' },
+  { label: 'Provenance',     to: '/provenance',   icon: <GitBranch size={15} /> },
+  { label: 'Audit Log',      to: '/audit',        icon: <ScrollText size={15} /> },
+  { label: 'System Health',  to: '/system',       icon: <Activity size={15} /> },
+  // CONNECT — credentials, services & capabilities
+  { label: 'API Vault',      to: '/keys',         icon: <Key size={15} />, section: 'CONNECT' },
+  { label: 'Directory',      to: '/directory',    icon: <Globe size={15} /> },
+  { label: 'Connected',      to: '/connected',    icon: <Plug size={15} /> },
+  { label: 'Capabilities',   to: '/capabilities', icon: <Zap size={15} /> },
+  // IMPROVE — optimize & evolve the intelligence
+  { label: 'Prompt Engine',  to: '/prompt-engine',icon: <Sparkles size={15} />, section: 'IMPROVE' },
+  { label: 'Evolution Loop', to: '/evolution',    icon: <FlaskConical size={15} /> },
+  { label: 'Memory',         to: '/memory',       icon: <Brain size={15} /> },
+  { label: 'Local AI Models',to: '/local-models', icon: <Cpu size={15} /> },
+  // AUTOMATE — business automation domains
+  { label: 'Finance',        to: '/finance',      icon: <CircleDollarSign size={15} />, section: 'AUTOMATE' },
+  { label: 'Subscriptions',  to: '/subscriptions',icon: <CreditCard size={15} /> },
+  { label: 'Coach',          to: '/coach',        icon: <Heart size={15} /> },
+  { label: 'Avatar',         to: '/avatar',       icon: <UserSquare size={15} /> },
 ]
 
 function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
@@ -44,7 +53,7 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
   }
 
   const nav: NavItem[] = user?.is_admin
-    ? [...NAV, { label: 'Users', to: '/users', icon: <UsersIcon size={15} /> }]
+    ? [...NAV, { label: 'Users', to: '/users', icon: <UsersIcon size={15} />, section: 'ADMIN' }]
     : NAV
 
   return (

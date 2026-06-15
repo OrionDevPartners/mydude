@@ -11,6 +11,7 @@ const TaskHistory = lazy(() => import('@/pages/TaskHistory').then((m) => ({ defa
 const TaskDetail = lazy(() => import('@/pages/TaskDetail').then((m) => ({ default: m.TaskDetail })))
 const Keys = lazy(() => import('@/pages/Keys').then((m) => ({ default: m.Keys })))
 const KeyAudit = lazy(() => import('@/pages/KeyAudit').then((m) => ({ default: m.KeyAudit })))
+const AuditLog = lazy(() => import('@/pages/AuditLog').then((m) => ({ default: m.AuditLog })))
 const Users = lazy(() => import('@/pages/Users').then((m) => ({ default: m.Users })))
 const Directory = lazy(() => import('@/pages/Directory').then((m) => ({ default: m.Directory })))
 const Connected = lazy(() => import('@/pages/Connected').then((m) => ({ default: m.Connected })))
@@ -67,6 +68,7 @@ function AppRoutes() {
                 <Route path="/tasks/:id" element={<TaskDetail />} />
                 <Route path="/keys" element={<Keys />} />
                 <Route path="/keys/audit" element={<KeyAudit />} />
+                <Route path="/audit" element={<AuditLog />} />
                 <Route path="/users" element={<Users />} />
                 <Route path="/directory" element={<Directory />} />
                 <Route path="/connected" element={<Connected />} />

@@ -41,3 +41,5 @@
 - [Developer access gate](developer-access-gate.md) — login page must show a one-click dev bypass in dev; endpoints double-gated so they're inert when REPLIT_DEPLOYMENT=1.
 - [Avatar connection-token persistence](avatar-connection-token.md) — avatar room tokens go to the immediate response only; persist an allowlisted non-secret routing subset (session_id), never the token.
 - [MCP knowledge siphon](mcp-knowledge-siphon.md) — successful MCP interactions distilled into long-term memory: governed-only writes, compact non-secret summaries, no recall->write loop, fail-soft never raises.
+- [ui-skills.com bulk install](ui-skills-registry-install.md) — registry SKILL.md paths are often wrong; resolve from repo git tree, raw-download (no API limit), impeccable=1 skill not 18, keep richer existing dirs.
+- [Anthropic skill siphon](anthropic-skill-siphon.md) — design/creative Anthropic skills reworked as mydude-* skills; why claude-api/dupes/off-cluster rejected; MyDude constraints baked in.

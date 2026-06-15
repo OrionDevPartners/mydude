@@ -71,6 +71,14 @@ def _dt(val) -> str | None:
     return str(val)
 
 
+def _clip(val, n: int = 280) -> str | None:
+    """Defensively truncate a free-text audit field before it reaches the UI."""
+    if val is None:
+        return None
+    s = str(val)
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
 def _epoch_to_iso(val) -> str | None:
     """Format an epoch-second float (or datetime) as an ISO 8601 string."""
     if val is None:
@@ -874,6 +882,39 @@ async def api_key_audit(_=Depends(require_auth)):
             "action": l.action,
             "detail": l.detail or "",
             "actor": l.actor_username or "—",
+            "created_at": _dt(l.created_at),
+        } for l in logs]
+    finally:
+        db.close()
+    return {"entries": entries}
+
+
+@router.get("/audit")
+async def api_system_audit(auth=Depends(require_auth)):
+    """General system action audit trail — governance control actions such as
+    cloud-shift toggles and swarm metric resets. Admins see every entry; other
+    users see only their own. Free-text fields are truncated defensively and
+    never carry secrets."""
+    from src.database import SessionLocal
+    from src.models import AuditLog, User
+    db = SessionLocal()
+    try:
+        q = db.query(AuditLog)
+        if not auth.get("is_admin"):
+            q = q.filter(AuditLog.user_id == auth.get("uid"))
+        logs = q.order_by(AuditLog.created_at.desc()).limit(200).all()
+        uids = {l.user_id for l in logs if l.user_id is not None}
+        names: dict = {}
+        if uids:
+            for u in db.query(User).filter(User.id.in_(uids)).all():
+                names[u.id] = u.username
+        entries = [{
+            "id": l.id,
+            "user": names.get(l.user_id) or (str(l.user_id) if l.user_id is not None else "—"),
+            "command": l.command,
+            "args": _clip(l.args),
+            "status": l.status or "ok",
+            "output_preview": _clip(l.output_preview),
             "created_at": _dt(l.created_at),
         } for l in logs]
     finally:

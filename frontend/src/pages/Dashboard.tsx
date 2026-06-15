@@ -11,7 +11,7 @@ import {
   UserMessage, AssistantMessage, ReasoningMessage,
   SourcesMessage, CodeBlock, ThinkingIndicator, ScoreBar, MessageThread,
 } from '@/components/ai-elements'
-import { ChevronRight, Clock, Key, MapPin, Zap, CheckCircle, History } from 'lucide-react'
+import { ChevronRight, Clock, Key, MapPin, Zap, CheckCircle, History, ShieldCheck, Plug, Sparkles, CircleDollarSign } from 'lucide-react'
 import { BenchmarkRoutingStrip } from '@/components/BenchmarkRouting'
 
 function riskColor(v: number): string {
@@ -134,6 +134,14 @@ function domainLabel(d: string): string {
   return d.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
 }
 
+const JOURNEYS = [
+  { to: '/history',       icon: History,          name: 'Operate',  desc: 'Run & review governed tasks' },
+  { to: '/governance',    icon: ShieldCheck,      name: 'Verify',   desc: 'Trust, audit & control' },
+  { to: '/keys',          icon: Plug,             name: 'Connect',  desc: 'Credentials & services' },
+  { to: '/prompt-engine', icon: Sparkles,         name: 'Improve',  desc: 'Optimize & evolve' },
+  { to: '/finance',       icon: CircleDollarSign, name: 'Automate', desc: 'Business domains' },
+]
+
 export function Dashboard() {
   const { data, loading, error, refetch } = useApi(getDashboard, [])
   const [prompt, setPrompt] = useState('')
@@ -215,6 +223,31 @@ export function Dashboard() {
             icon={<MapPin size={16} />}
           />
         </div>
+      )}
+
+      {data && (
+        <GlassSection title="Operator journeys" className="animate-fade-in-up">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(168px, 1fr))', gap: 10 }}>
+            {JOURNEYS.map(j => {
+              const Icon = j.icon
+              return (
+                <Link key={j.to} to={j.to} className="glass-card" style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '13px 15px', textDecoration: 'none' }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                    background: 'var(--accent-dim)', border: '1px solid var(--border-accent)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Icon size={15} style={{ color: 'var(--accent)' }} />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{j.name}</p>
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.desc}</p>
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        </GlassSection>
       )}
 
       <GlassSection title="Run a Task" className="animate-fade-in-up">
