@@ -40,6 +40,9 @@ param deployTokenSecretName string = 'azure-mcp-deploy-token-secret'
 @description('Enable the BILLABLE two-phase deploy APPLY tool. Default false (default-deny).')
 param enableAzureDeploy bool = false
 
+@description('Host allow-list (comma-separated) for the MCP DNS-rebinding (Host-header) check. The Container App FQDN is only known AFTER the first deploy, so leave this EMPTY on the first deploy — internal ingress + mandatory bearer auth already guard the endpoint, and the host check is opted out. On the SECOND (hardening) deploy, set this to the app FQDN (deployment output azureMcpUrl host) to pin the server to its own address; the opt-out is then dropped automatically.')
+param allowedHosts string = ''
+
 @description('Container CPU cores.')
 param cpu string = '0.5'
 
@@ -132,11 +135,16 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_MCP_DEPLOY_SECRET_NAME', value: deployTokenSecretName }
             { name: 'AZURE_MCP_PORT', value: '8080' }
             { name: 'AZURE_MCP_HOST', value: '0.0.0.0' }
-            // Internal ingress + bearer auth + the private VNet already guard the
-            // endpoint; the app FQDN is only known post-deploy, so DNS-rebinding
-            // host pinning is disabled here. Tighten by setting
-            // AZURE_MCP_ALLOWED_HOSTS to the app FQDN after the first deploy.
-            { name: 'AZURE_MCP_DISABLE_HOST_CHECK', value: 'true' }
+            // DNS-rebinding (Host-header) hardening. The app FQDN is only known
+            // AFTER the first deploy, so on the first deploy `allowedHosts` is
+            // empty: the host check is opted out (internal ingress + mandatory
+            // bearer auth + the private VNet already guard the endpoint). On the
+            // SECOND deploy, pass `allowedHosts` = the app FQDN (output
+            // azureMcpUrl host) to PIN the server to its own address; the
+            // opt-out is then dropped (set to 'false') and only that host passes
+            // — the server honours the allow-list via transport_security_from_env.
+            { name: 'AZURE_MCP_ALLOWED_HOSTS', value: allowedHosts }
+            { name: 'AZURE_MCP_DISABLE_HOST_CHECK', value: empty(allowedHosts) ? 'true' : 'false' }
           ]
           probes: [
             {

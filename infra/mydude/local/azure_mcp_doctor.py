@@ -108,6 +108,20 @@ def _check_container_app(rmc) -> tuple[bool, str]:
     notes.append("deploy-apply %s" %
                  ("ENABLED" if env.get("ALLOW_AZURE_DEPLOY") == "true" else "default-deny"))
 
+    # Advisory (non-fatal): once the app FQDN is known, the DNS-rebinding host
+    # check should be pinned to it (AZURE_MCP_ALLOWED_HOSTS) and the opt-out
+    # dropped. Internal ingress + bearer auth already guard the endpoint, so a
+    # disabled host check is acceptable, not a hole — but pinning it is cheap
+    # defense-in-depth the architect recommended. Warn so it isn't forgotten.
+    allowed_hosts = (env.get("AZURE_MCP_ALLOWED_HOSTS") or "").strip()
+    host_check_disabled = (env.get("AZURE_MCP_DISABLE_HOST_CHECK") or "").strip().lower() \
+        in {"1", "true", "yes", "on"}
+    if not allowed_hosts or host_check_disabled:
+        notes.append("WARN host check not pinned — set AZURE_MCP_ALLOWED_HOSTS "
+                     "to the app FQDN and drop AZURE_MCP_DISABLE_HOST_CHECK")
+    else:
+        notes.append("host check pinned")
+
     return ok, "; ".join(notes)
 
 

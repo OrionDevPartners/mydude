@@ -62,6 +62,9 @@ param azureMcpRegistryServer string = ''
 @description('Enable the BILLABLE two-phase deploy APPLY tool inside the MCP server. Default false (default-deny).')
 param azureMcpEnableDeploy bool = false
 
+@description('Host allow-list (comma-separated) pinning the MCP server to its own address (DNS-rebinding hardening). Leave EMPTY on the first deploy (the app FQDN is not yet known; internal ingress + bearer auth still guard it). On the SECOND deploy, set this to the app FQDN from the azureMcpUrl output to drop the host-check opt-out and pin the server.')
+param azureMcpAllowedHosts string = ''
+
 var prefix = 'mydude'
 var tags = {
   project: 'MyDude'
@@ -210,6 +213,7 @@ module mcp 'modules/mcp.bicep' = if (deployAzureMcp) {
     containerRegistryServer: azureMcpRegistryServer
     subscriptionId: subscription().subscriptionId
     enableAzureDeploy: azureMcpEnableDeploy
+    allowedHosts: azureMcpAllowedHosts
   }
 }
 
