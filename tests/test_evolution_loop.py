@@ -24,6 +24,8 @@ import sys
 import time
 import traceback
 import unittest
+from contextlib import contextmanager
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1217,6 +1219,262 @@ def test_select_next_thesis_refines_stalled_cell_under_retry_limit():
 
 
 # ---------------------------------------------------------------------------
+# Tests 23-31: governed LLM-backed thesis candidate (_llm_thesis_candidate)
+#
+# These verify the LLM-augmented thesis path: a real provider + governed swarm
+# run produces an 'llm_swarm' candidate, but a run that fails the governance
+# gate (aborted / HIGH-CRITICAL HR / low CS) or has no provider is discarded
+# and the heuristic candidates remain. _run_orchestrator_sync and
+# available_provider are stubbed so NO network or LLM call is ever made.
+# ---------------------------------------------------------------------------
+
+class _FakeComponent:
+    """Stand-in cognition component (avoids a DB round-trip for these tests)."""
+    def __init__(self, component_type, name, comp_id=-1):
+        self.component_type = component_type
+        self.name = name
+        self.id = comp_id
+
+
+def _swarm_result(cs=80.0, hr_avg=0.10, tier="LOW", decisions=None, abort=None):
+    """Build a fake WaveOrchestrator.run() result dict shaped like the real one."""
+    res = {
+        "HALLUCINATION_RISK": {"average": hr_avg, "tier": tier},
+        "COMPLIANCE_SCORES": [{"score": cs}],
+        "DECISIONS": decisions if decisions is not None else [],
+    }
+    if abort:
+        res["ABORT_REASON"] = abort
+    return res
+
+
+@contextmanager
+def _llm_swarm_stub(result, provider="openai", live_instructions="LIVE INSTRUCTIONS."):
+    """Patch the LLM seams so candidate generation is hermetic + deterministic.
+
+    Forces EVOLUTION_LLM_THESIS=1 (the module disables it at import for the
+    other tests), stubs provider availability, the live instructions read, and
+    replaces the swarm dispatch with a canned result — no network/LLM call.
+    """
+    from src.promptopt import evolution as evo
+    with mock.patch.dict(os.environ, {"EVOLUTION_LLM_THESIS": "1"}), \
+            mock.patch("src.promptopt.lm_bridge.available_provider", return_value=provider), \
+            mock.patch("src.promptopt.store.get_live_instructions",
+                       return_value=("v1", live_instructions, {})), \
+            mock.patch.object(evo, "_run_orchestrator_sync", return_value=result):
+        yield
+
+
+def test_llm_thesis_high_cs_low_hr_yields_llm_swarm_candidate():
+    """A high-CS / low-HR governed run yields an 'llm_swarm' prompt_program
+    candidate whose directive is appended to the live instructions and whose
+    score_signal is derived from the swarm's own CS/HR."""
+    from src.promptopt import evolution as evo
+
+    comp = _FakeComponent("prompt_program", TEST_PREFIX + "llm_pp")
+    result = _swarm_result(
+        cs=82.0, hr_avg=0.08, tier="LOW",
+        decisions=["Add explicit evidence pointers to every load-bearing claim."],
+    )
+    with _llm_swarm_stub(result, live_instructions="LIVE INSTRUCTIONS."):
+        cand = evo._llm_thesis_candidate(comp, cycle_index=3, settings={})
+
+    assert_true(cand is not None, "high-CS/low-HR run must yield a candidate")
+    assert_equal(cand["source"], "llm_swarm", "candidate must be sourced from the swarm")
+    assert_equal(cand["branch_cell"], "instructions", "prompt_program targets the instructions cell")
+    assert_true(
+        cand["thesis"]["instructions"].startswith("LIVE INSTRUCTIONS."),
+        "prompt_program payload must append the directive to the LIVE instructions",
+    )
+    assert_true(
+        "Add explicit evidence pointers" in cand["thesis"]["instructions"],
+        "the swarm-synthesized directive must be appended to the instructions",
+    )
+    # score_signal = 0.5*(82/100) + 0.5*(1-0.08) = 0.87 (governance-derived).
+    assert_equal(cand["score_signal"], 0.87, "score_signal must be derived from the swarm CS/HR")
+    print("PASS test_llm_thesis_high_cs_low_hr_yields_llm_swarm_candidate")
+
+
+def test_llm_thesis_high_hr_tier_discarded():
+    """A HIGH or CRITICAL hallucination tier discards the LLM candidate."""
+    from src.promptopt import evolution as evo
+
+    comp = _FakeComponent("prompt_program", TEST_PREFIX + "llm_hr")
+    decisions = ["Add explicit evidence pointers to every claim."]
+    for tier in ("HIGH", "CRITICAL"):
+        result = _swarm_result(cs=90.0, hr_avg=0.85, tier=tier, decisions=decisions)
+        with _llm_swarm_stub(result):
+            cand = evo._llm_thesis_candidate(comp, cycle_index=1, settings={})
+        assert_true(cand is None, "%s HR tier must discard the LLM candidate" % tier)
+    print("PASS test_llm_thesis_high_hr_tier_discarded")
+
+
+def test_llm_thesis_low_cs_discarded():
+    """An average compliance score below LLM_THESIS_MIN_CS discards the candidate."""
+    from src.promptopt import evolution as evo
+
+    comp = _FakeComponent("prompt_program", TEST_PREFIX + "llm_lowcs")
+    # cs=40 < default LLM_THESIS_MIN_CS (55) ⇒ discarded even with low HR.
+    result = _swarm_result(
+        cs=40.0, hr_avg=0.05, tier="LOW",
+        decisions=["Add explicit evidence pointers to every claim."],
+    )
+    with _llm_swarm_stub(result):
+        cand = evo._llm_thesis_candidate(comp, cycle_index=1, settings={})
+    assert_true(cand is None, "low average CS must discard the LLM candidate")
+    print("PASS test_llm_thesis_low_cs_discarded")
+
+
+def test_llm_thesis_aborted_discarded_and_heuristics_remain():
+    """An aborted swarm run is discarded and the heuristic candidates survive —
+    no 'llm_swarm' candidate is injected into the pool."""
+    from src.promptopt import evolution as evo
+
+    comp = _FakeComponent("swarm_config", TEST_PREFIX + "llm_abort")
+    result = _swarm_result(
+        cs=85.0, hr_avg=0.05, tier="LOW", abort="policy_violation",
+        decisions=["Raise the evidence strength threshold."],
+    )
+    with _llm_swarm_stub(result):
+        # Direct: aborted run yields no candidate.
+        cand = evo._llm_thesis_candidate(comp, cycle_index=1, settings={})
+        assert_true(cand is None, "aborted swarm run must yield no LLM candidate")
+
+        # Through the pool: heuristics remain, no llm_swarm candidate present.
+        candidates = evo._generate_thesis_candidates(comp, cycle_index=1)
+
+    assert_true(len(candidates) >= 1, "heuristic candidates must remain after an aborted swarm run")
+    assert_false(
+        any(c.get("source") == "llm_swarm" for c in candidates),
+        "an aborted swarm run must not inject an llm_swarm candidate",
+    )
+    print("PASS test_llm_thesis_aborted_discarded_and_heuristics_remain")
+
+
+def test_llm_thesis_no_provider_returns_none():
+    """With no provider available the swarm is never dispatched and None is
+    returned (the loop keeps its heuristic candidates)."""
+    from src.promptopt import evolution as evo
+
+    comp = _FakeComponent("prompt_program", TEST_PREFIX + "llm_noprov")
+
+    def _must_not_dispatch(*a, **k):
+        raise AssertionError("_run_orchestrator_sync must NOT be called when no provider is available")
+
+    with mock.patch.dict(os.environ, {"EVOLUTION_LLM_THESIS": "1"}), \
+            mock.patch("src.promptopt.lm_bridge.available_provider", return_value=None), \
+            mock.patch.object(evo, "_run_orchestrator_sync", side_effect=_must_not_dispatch):
+        cand = evo._llm_thesis_candidate(comp, cycle_index=1, settings={})
+
+    assert_true(cand is None, "no provider must return None")
+    print("PASS test_llm_thesis_no_provider_returns_none")
+
+
+def test_llm_thesis_disabled_flag_returns_none():
+    """EVOLUTION_LLM_THESIS=0 forces heuristic-only mode even with a provider."""
+    from src.promptopt import evolution as evo
+
+    comp = _FakeComponent("prompt_program", TEST_PREFIX + "llm_disabled")
+
+    def _must_not_dispatch(*a, **k):
+        raise AssertionError("_run_orchestrator_sync must NOT be called when the feature is disabled")
+
+    with mock.patch.dict(os.environ, {"EVOLUTION_LLM_THESIS": "0"}), \
+            mock.patch("src.promptopt.lm_bridge.available_provider", return_value="openai"), \
+            mock.patch.object(evo, "_run_orchestrator_sync", side_effect=_must_not_dispatch):
+        cand = evo._llm_thesis_candidate(comp, cycle_index=1, settings={})
+
+    assert_true(cand is None, "disabled feature flag must return None")
+    print("PASS test_llm_thesis_disabled_flag_returns_none")
+
+
+def test_llm_thesis_swarm_config_bounded_step_raise():
+    """A swarm_config run whose synthesis says 'raise' applies a single bounded
+    +step (LLM_THESIS_NUMERIC_STEP) to the live evidence_strength value."""
+    from src.promptopt import evolution as evo
+
+    comp = _FakeComponent("swarm_config", TEST_PREFIX + "llm_sc_raise")
+    result = _swarm_result(
+        cs=80.0, hr_avg=0.10, tier="LOW",
+        decisions=["Raise the evidence strength threshold to tighten governance."],
+    )
+    settings = {"swarm.min_evidence_strength": "0.60"}
+    with _llm_swarm_stub(result):
+        cand = evo._llm_thesis_candidate(comp, cycle_index=1, settings=settings)
+
+    assert_true(cand is not None, "a clear 'raise' direction must yield a candidate")
+    assert_equal(cand["source"], "llm_swarm", "candidate must be sourced from the swarm")
+    assert_equal(cand["branch_cell"], "evidence_strength", "swarm_config targets evidence_strength")
+    assert_equal(cand["thesis"]["key"], "swarm.min_evidence_strength", "must target the right AppSetting key")
+    # 0.60 + 0.05 bounded step = 0.65.
+    assert_equal(cand["thesis"]["value"], 0.65, "must apply ONE bounded +step in the raise direction")
+    print("PASS test_llm_thesis_swarm_config_bounded_step_raise")
+
+
+def test_llm_thesis_swarm_config_bounded_step_lower():
+    """A swarm_config run whose synthesis says 'lower' applies a single bounded
+    -step to the live evidence_strength value."""
+    from src.promptopt import evolution as evo
+
+    comp = _FakeComponent("swarm_config", TEST_PREFIX + "llm_sc_lower")
+    result = _swarm_result(
+        cs=80.0, hr_avg=0.10, tier="LOW",
+        decisions=["Lower the evidence strength threshold to reduce false negatives."],
+    )
+    settings = {"swarm.min_evidence_strength": "0.60"}
+    with _llm_swarm_stub(result):
+        cand = evo._llm_thesis_candidate(comp, cycle_index=1, settings=settings)
+
+    assert_true(cand is not None, "a clear 'lower' direction must yield a candidate")
+    assert_equal(cand["branch_cell"], "evidence_strength", "swarm_config targets evidence_strength")
+    # 0.60 - 0.05 bounded step = 0.55.
+    assert_equal(cand["thesis"]["value"], 0.55, "must apply ONE bounded -step in the lower direction")
+    print("PASS test_llm_thesis_swarm_config_bounded_step_lower")
+
+
+def test_llm_thesis_swarm_config_no_direction_returns_none():
+    """A swarm_config run with no clear raise/lower signal yields no candidate
+    (no actionable, single-variable change to make)."""
+    from src.promptopt import evolution as evo
+
+    comp = _FakeComponent("swarm_config", TEST_PREFIX + "llm_sc_nodir")
+    result = _swarm_result(
+        cs=80.0, hr_avg=0.10, tier="LOW",
+        decisions=["Maintain the current configuration; the system is well balanced."],
+    )
+    settings = {"swarm.min_evidence_strength": "0.60"}
+    with _llm_swarm_stub(result):
+        cand = evo._llm_thesis_candidate(comp, cycle_index=1, settings=settings)
+
+    assert_true(cand is None, "no clear direction must yield no candidate")
+    print("PASS test_llm_thesis_swarm_config_no_direction_returns_none")
+
+
+def test_llm_thesis_role_composition_bounded_step():
+    """A role_composition run applies a single bounded step to the skeptic
+    weight in the LLM-recommended direction."""
+    from src.promptopt import evolution as evo
+    from src.swarm.contract import ROLE_BASE_WEIGHTS, CognitiveRole
+
+    cur = float(ROLE_BASE_WEIGHTS.get(CognitiveRole.SKEPTIC, 0.9))
+    comp = _FakeComponent("role_composition", TEST_PREFIX + "llm_rc")
+    result = _swarm_result(
+        cs=80.0, hr_avg=0.10, tier="LOW",
+        decisions=["Raise the skeptic role weight to better control hallucination."],
+    )
+    with _llm_swarm_stub(result):
+        cand = evo._llm_thesis_candidate(comp, cycle_index=1, settings={})
+
+    assert_true(cand is not None, "a clear 'raise' direction must yield a candidate")
+    assert_equal(cand["source"], "llm_swarm", "candidate must be sourced from the swarm")
+    assert_equal(cand["branch_cell"], "role_weights.skeptic", "role_composition targets the skeptic weight")
+    assert_equal(cand["thesis"]["role"], "skeptic", "thesis must name the skeptic role")
+    expected = round(min(1.0, max(0.0, cur + evo.LLM_THESIS_NUMERIC_STEP)), 3)
+    assert_equal(cand["thesis"]["weight"], expected, "must apply ONE bounded +step to the skeptic weight")
+    print("PASS test_llm_thesis_role_composition_bounded_step")
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -1243,6 +1501,16 @@ TESTS = [
     test_stall_adjusted_signal_phases,
     test_refine_stalled_thesis_materially_changes_payload,
     test_select_next_thesis_refines_stalled_cell_under_retry_limit,
+    test_llm_thesis_high_cs_low_hr_yields_llm_swarm_candidate,
+    test_llm_thesis_high_hr_tier_discarded,
+    test_llm_thesis_low_cs_discarded,
+    test_llm_thesis_aborted_discarded_and_heuristics_remain,
+    test_llm_thesis_no_provider_returns_none,
+    test_llm_thesis_disabled_flag_returns_none,
+    test_llm_thesis_swarm_config_bounded_step_raise,
+    test_llm_thesis_swarm_config_bounded_step_lower,
+    test_llm_thesis_swarm_config_no_direction_returns_none,
+    test_llm_thesis_role_composition_bounded_step,
 ]
 
 
