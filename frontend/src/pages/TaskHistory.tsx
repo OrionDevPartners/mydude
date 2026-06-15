@@ -17,24 +17,45 @@ function taskDomain(task: Task): string | null {
   return null
 }
 
+function isZeroToken(task: Task): boolean {
+  return task.structural_routing?.dispatched === true
+}
+
 export function TaskHistory() {
   const [page, setPage] = useState(1)
+  const [zeroTokenOnly, setZeroTokenOnly] = useState(false)
   const { data, loading, error } = useApi(() => getTaskHistory(page), [page])
 
   const completed = data?.tasks.filter(t => t.status === 'completed').length ?? 0
   const failed = data?.tasks.filter(t => t.status === 'failed' || t.status === 'error').length ?? 0
+  const zeroTokenCount = data?.tasks.filter(isZeroToken).length ?? 0
+  const visibleTasks = (data?.tasks ?? []).filter(t => !zeroTokenOnly || isZeroToken(t))
 
   return (
     <div className="animate-fade-in">
       <PageHeader title="Task History" subtitle="All AI task runs" />
 
       {data && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
-          <GlassStatCard value={data.total_pages > 1 ? `${data.tasks.length}+` : data.tasks.length} label="Tasks (page)" icon={<History size={16} />} />
-          <GlassStatCard value={completed} label="Completed" icon={<CheckCircle size={16} />} glow={completed > 0} />
-          <GlassStatCard value={failed} label="Failed" icon={<XCircle size={16} />} />
-          <GlassStatCard value={`${data.page} / ${data.total_pages}`} label="Page" icon={<Zap size={16} />} />
-        </div>
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+            <GlassStatCard value={data.total_pages > 1 ? `${data.tasks.length}+` : data.tasks.length} label="Tasks (page)" icon={<History size={16} />} />
+            <GlassStatCard value={completed} label="Completed" icon={<CheckCircle size={16} />} glow={completed > 0} />
+            <GlassStatCard value={failed} label="Failed" icon={<XCircle size={16} />} />
+            <GlassStatCard value={zeroTokenCount} label="Zero-token (page)" icon={<Zap size={16} />} glow={zeroTokenCount > 0} />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+            <button
+              className={`btn btn-sm ${zeroTokenOnly ? 'btn-secondary' : 'btn-ghost'}`}
+              onClick={() => setZeroTokenOnly(v => !v)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <Zap size={13} /> {zeroTokenOnly ? 'Showing zero-token only' : 'Filter zero-token'}
+            </button>
+            {zeroTokenOnly && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{visibleTasks.length} on this page</span>
+            )}
+          </div>
+        </>
       )}
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
@@ -42,8 +63,8 @@ export function TaskHistory() {
 
       {data && (
         <>
-          {data.tasks.length === 0 ? (
-            <Empty message="No tasks yet. Run your first task from the dashboard." icon={<History size={32} />} />
+          {visibleTasks.length === 0 ? (
+            <Empty message={zeroTokenOnly ? 'No zero-token runs on this page.' : 'No tasks yet. Run your first task from the dashboard.'} icon={<History size={32} />} />
           ) : (
             <div className="glass-card" style={{ overflow: 'hidden' }}>
               <table className="data-table">
@@ -59,11 +80,18 @@ export function TaskHistory() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.tasks.map(task => (
+                  {visibleTasks.map(task => (
                     <tr key={task.id}>
                       <td style={{ color: 'var(--text-muted)', fontSize: 12 }}>#{task.id}</td>
                       <td style={{ maxWidth: 320 }}>
-                        <span style={{ fontSize: 13.5 }}>{truncate(task.prompt, 70)}</span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 13.5 }}>{truncate(task.prompt, 70)}</span>
+                          {isZeroToken(task) && (
+                            <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <Zap size={11} /> zero-token
+                            </span>
+                          )}
+                        </span>
                       </td>
                       <td>
                         {taskDomain(task)

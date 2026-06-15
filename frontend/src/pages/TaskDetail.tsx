@@ -32,13 +32,15 @@ export function TaskDetail() {
   const parsed = task.parsed
 
   const mainKeys = ['SYNTHESIS', 'SUMMARY', 'RESULT', 'OUTPUT', 'ANSWER', 'RESPONSE']
-  const skipKeys = new Set(['COMPLIANCE_SCORES', 'HALLUCINATION_RISK', 'JURISDICTION', 'WAVE_METADATA', 'BENCHMARK_ROUTING'])
+  const skipKeys = new Set(['COMPLIANCE_SCORES', 'HALLUCINATION_RISK', 'JURISDICTION', 'WAVE_METADATA', 'BENCHMARK_ROUTING', 'STRUCTURAL_ROUTING'])
 
   const mainKey = mainKeys.find(k => parsed?.[k])
   const mainText = mainKey ? String(parsed![mainKey]) : null
   const reasoning = parsed?.['REASONING'] || parsed?.['reasoning'] || parsed?.['DEBATE_SUMMARY']
   const sources = parsed?.['SOURCES'] || parsed?.['sources']
   const codeContent = parsed?.['CODE'] || parsed?.['code'] || parsed?.['CODE_BLOCK']
+
+  const routing = task.structural_routing ?? (parsed?.['STRUCTURAL_ROUTING'] as typeof task.structural_routing) ?? null
 
   const hasScores = scores.hallucination_risk != null || scores.compliance != null || scores.jurisdiction != null || scores.benchmark != null
 
@@ -98,6 +100,51 @@ export function TaskDetail() {
           )}
           {scores.compliance != null && typeof scores.compliance === 'number' && (
             <ScoreBar label="Compliance Score" value={scores.compliance as number} colorFn={complianceColor} />
+          )}
+        </GlassCard>
+      )}
+
+      {routing && (
+        <GlassCard padding="18px 20px" style={{ marginBottom: 20 }}>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14 }}>
+            Routing
+          </p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: routing.trajectory ? 14 : 0 }}>
+            <span
+              className={`badge ${routing.dispatched ? 'badge-green' : 'badge-gray'}`}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+            >
+              <Zap size={12} />
+              {routing.dispatched ? 'Zero-token dispatched' : 'Full swarm'}
+            </span>
+            {routing.eligible && !routing.dispatched && (
+              <span className="badge badge-yellow">Eligible (gated)</span>
+            )}
+            {routing.capability && (
+              <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                Capability: <code style={{ color: 'var(--text-primary)' }}>{routing.capability}</code>
+              </span>
+            )}
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              score {routing.score?.toFixed(3)} / threshold {routing.threshold?.toFixed(2)}
+            </span>
+            {routing.embedding_backend && (
+              <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>· {routing.embedding_backend}</span>
+            )}
+          </div>
+          {routing.trajectory && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              <span style={{ color: 'var(--text-muted)' }}>Trajectory:</span>
+              <span className="badge badge-gray">{routing.trajectory.dominant_category} · {routing.trajectory.dominant_score?.toFixed(3)}</span>
+              {routing.trajectory.hazard_hints && routing.trajectory.hazard_hints.length > 0
+                ? routing.trajectory.hazard_hints.map((h, i) => (
+                    <span key={i} className="badge badge-yellow">{h}</span>
+                  ))
+                : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>no hazard hints</span>}
+            </div>
+          )}
+          {routing.error && (
+            <p style={{ marginTop: 12, fontSize: 12, color: '#f87171' }}>Routing note: {routing.error}</p>
           )}
         </GlassCard>
       )}

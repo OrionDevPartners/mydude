@@ -696,6 +696,22 @@ export interface TaskScores {
   benchmark?: BenchmarkRouting
   [k: string]: unknown
 }
+export interface TrajectoryMomentum {
+  dominant_category: string
+  dominant_score: number
+  hazard_hints: string[]
+}
+export interface StructuralRouting {
+  dispatched: boolean
+  eligible: boolean
+  capability: string | null
+  score: number
+  threshold: number
+  embedding_backend?: string
+  trajectory?: TrajectoryMomentum
+  tool_output?: string
+  error?: string
+}
 export interface Task {
   id: number
   prompt: string
@@ -703,6 +719,7 @@ export interface Task {
   result: string | null
   parsed: Record<string, unknown> | null
   scores: TaskScores | null
+  structural_routing?: StructuralRouting | null
   execution_time_ms: number | null
   created_at: string
 }

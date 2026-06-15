@@ -393,6 +393,9 @@ def _parse_task(task) -> dict:
             scores = json.loads(task.provider_scores)
         except Exception:
             pass
+    structural_routing = (
+        parsed.get("STRUCTURAL_ROUTING") if isinstance(parsed, dict) else None
+    )
     return {
         "id": task.id,
         "prompt": task.prompt,
@@ -400,6 +403,7 @@ def _parse_task(task) -> dict:
         "result": task.result,
         "parsed": parsed,
         "scores": scores,
+        "structural_routing": structural_routing,
         "execution_time_ms": task.execution_time_ms,
         "created_at": _dt(task.created_at),
     }

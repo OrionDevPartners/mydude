@@ -44,3 +44,4 @@
 - [ui-skills.com bulk install](ui-skills-registry-install.md) — registry SKILL.md paths are often wrong; resolve from repo git tree, raw-download (no API limit), impeccable=1 skill not 18, keep richer existing dirs.
 - [Anthropic skill siphon](anthropic-skill-siphon.md) — design/creative Anthropic skills reworked as mydude-* skills; why claude-api/dupes/off-cluster rejected; MyDude constraints baked in.
 - [Governed non-LLM capability calls](governed-capability-call.md) — wrap resolver capability calls in governed_call (jurisdiction gate + broker allow-list + fail-soft audit w/ exec_locus+actor); sync, so async routes use to_thread.
+- [Zero-token structural routing](zero-token-routing.md) — pre-swarm router was dormant; now a fail-safe gate in run() recording STRUCTURAL_ROUTING; dispatch rare by design (contract validation + ~0.92 threshold).

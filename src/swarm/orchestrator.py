@@ -268,6 +268,134 @@ class WaveOrchestrator:
             logger.warning("RedTeamAgent init failed: %s", e)
             self.red_team = None
 
+    async def _evaluate_structural_routing(self, goal: str, session_id: str) -> Dict[str, Any]:
+        """Evaluate the zero-token structural router for one run.
+
+        Returns a ``STRUCTURAL_ROUTING`` decision dict (always populated — hit or
+        miss) and, on a high-confidence structural match, performs a genuine
+        zero-token capability dispatch through the governed broker (which enforces
+        contract + policy gates, so under-justified or irreversible capabilities
+        are rejected rather than executed). Fail-safe: any error yields ``{}`` so
+        the full LLM swarm always runs.
+
+        The decision records ``dispatched`` (the swarm was actually bypassed),
+        ``eligible`` (score >= threshold, i.e. a zero-token "hit"), the matched
+        ``capability`` + ``score``, and the conversational trajectory momentum
+        (dominant category + any hazard hints) for operator visibility.
+        """
+        try:
+            from src.swarm.zero_token_router import get_router
+            router = get_router()
+        except Exception as e:
+            logger.warning("structural routing: router unavailable: %s", e)
+            return {}
+
+        # Trajectory momentum derived from the goal text (single-turn window).
+        trajectory = {"dominant_category": "general", "dominant_score": 0.0, "hazard_hints": []}
+        try:
+            from src.swarm.trajectory_router import TrajectorySession
+            sess = TrajectorySession()
+            sess.record_turn(goal)
+            mom = sess.compute_momentum()
+            trajectory = {
+                "dominant_category": mom.dominant_category,
+                "dominant_score": round(mom.dominant_score, 4),
+                "hazard_hints": list(mom.hazard_hints),
+            }
+        except Exception as e:
+            logger.debug("structural routing: momentum failed: %s", e)
+
+        # Top structural match (covers the miss case, where async_route returns None).
+        capability: Optional[str] = None
+        score = 0.0
+        threshold = float(getattr(router, "threshold", 0.92))
+        try:
+            scored = router.score_intent(goal)
+            if scored:
+                capability = scored[0]["capability"]
+                score = float(scored[0]["score"])
+        except Exception as e:
+            logger.debug("structural routing: score_intent failed: %s", e)
+
+        # Genuine dispatch on a hit (and authoritative stats accounting).
+        dispatched = False
+        tool_output: Optional[str] = None
+        error: Optional[str] = None
+        try:
+            zt = await router.async_route(goal, session_id=session_id, broker=self.broker)
+        except Exception as e:
+            zt = None
+            error = f"route_error: {e}"
+            logger.warning("structural routing: async_route failed: %s", e)
+        if zt is not None:
+            capability = zt.capability
+            score = float(zt.score)
+            threshold = float(zt.threshold)
+            dispatched = bool(zt.dispatched)
+            tool_output = zt.tool_output
+            error = zt.error or error
+
+        embedding_backend = "unknown"
+        try:
+            embedding_backend = router.get_stats().embedding_backend
+        except Exception:
+            pass
+
+        decision: Dict[str, Any] = {
+            "dispatched": dispatched,
+            "eligible": score >= threshold,
+            "capability": capability,
+            "score": round(score, 4),
+            "threshold": round(threshold, 4),
+            "embedding_backend": embedding_backend,
+            "trajectory": trajectory,
+        }
+        if tool_output is not None:
+            decision["tool_output"] = str(tool_output)[:2000]
+        if error:
+            decision["error"] = error
+        return decision
+
+    def _build_zero_token_envelope(
+        self, goal: str, structural_routing: Dict[str, Any], jurisdiction: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Compact, valid result envelope for a run resolved by zero-token routing.
+
+        Shaped like the swarm's normal envelope (SYNTHESIS + JURISDICTION) so the
+        API normalizer and the SPA result panel render it without special-casing,
+        plus the STRUCTURAL_ROUTING block the task-detail Routing card reads.
+        """
+        cap = structural_routing.get("capability")
+        out = (structural_routing.get("tool_output") or "").strip()
+        synthesis = (
+            f"Resolved via zero-token structural routing: dispatched capability "
+            f"'{cap}' directly through the governed capability broker without "
+            f"invoking the LLM swarm."
+        )
+        if out:
+            synthesis = f"{synthesis}\n\n{out}"
+        return {
+            "SYNTHESIS": synthesis,
+            "GOAL": goal.strip(),
+            "NOTE": (
+                "Zero-token structural route: the prompt matched an indexed "
+                "capability above the routing threshold, so it was dispatched "
+                "mechanically through the governed capability broker (contract + "
+                "policy gates enforced) with no LLM tokens spent."
+            ),
+            "JURISDICTION": {
+                "domain": jurisdiction.get("domain", "general"),
+                "team": jurisdiction.get("team", "default"),
+                "exec_locus": jurisdiction.get("exec_locus"),
+                "fallback_tier": jurisdiction.get("fallback_tier"),
+                "cloud_shift_active": jurisdiction.get("cloud_shift_active"),
+                "outcome": jurisdiction.get("outcome"),
+                "source": jurisdiction.get("jurisdiction_source"),
+            },
+            "STRUCTURAL_ROUTING": structural_routing,
+            "SYNTHESIS_SOURCE": "zero_token_router",
+        }
+
     async def run(self, goal: str, domain: str = "general", team: str = "default", task_run_id: Optional[int] = None) -> Dict[str, Any]:
         # Jurisdiction routing: resolve the exec_locus / cloud_shift decision once
         # before dispatching any provider waves, then pin the provider swarm to it.
@@ -319,6 +447,23 @@ class WaveOrchestrator:
 
         import uuid as _uuid
         _session_id = str(_uuid.uuid4())[:8]
+
+        # ── Zero-token structural routing ────────────────────────────────────
+        # Before spinning up the full LLM swarm, check whether the (sanitized)
+        # goal structurally matches an indexed capability strongly enough to be
+        # dispatched mechanically through the governed broker — no tokens spent.
+        # The decision (hit/miss, matched capability, score, trajectory momentum)
+        # is recorded as STRUCTURAL_ROUTING for operator visibility; on a genuine
+        # dispatch the run short-circuits with a compact governed envelope.
+        structural_routing = await self._evaluate_structural_routing(goal, _session_id)
+        if structural_routing.get("dispatched"):
+            logger.info(
+                "[ROUTING:ZERO_TOKEN] goal dispatched to '%s' (score=%.3f) — "
+                "swarm bypassed",
+                structural_routing.get("capability"),
+                structural_routing.get("score", 0.0),
+            )
+            return self._build_zero_token_envelope(goal, structural_routing, jurisdiction)
 
         handoff = Handoff(
             goal=goal.strip(),
@@ -705,6 +850,12 @@ class WaveOrchestrator:
                 "manager_available": _burst_mgr is not None,
             },
         }
+
+        # Surface the zero-token routing decision (a miss here — the swarm ran).
+        # Only attached when the router actually produced a decision, so older
+        # runs without the field render gracefully in the UI.
+        if structural_routing:
+            final["STRUCTURAL_ROUTING"] = structural_routing
 
         if aborted:
             final["ABORT_REASON"] = (
