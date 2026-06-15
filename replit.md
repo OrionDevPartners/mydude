@@ -93,6 +93,10 @@ static/
 - Circuit breakers and self-healing for provider isolation
 
 ## Recent Changes
+- 2026-06-15: Frontend first-load chunk splitting (removes the Vite >500 kB build warning)
+  - The markdown renderer (streamdown, ~476 kB) is now lazy-loaded: its only consumer was moved to `frontend/src/components/ai-elements/message-response.tsx` (default export) and `React.lazy`-imported in `message.tsx`. This keeps streamdown off the eager dashboard/TaskDetail path (Dashboard chunk dropped to ~9.5 kB).
+  - `livekit-client` (~506 kB) is a single irreducible pre-bundled vendor module, already lazy-loaded on the Avatar page; isolated into a named `livekit` chunk and covered by `chunkSizeWarningLimit: 520` in `frontend/vite.config.ts`.
+  - Do NOT `maxSize`-split the streamdown/markdown ESM tree — it breaks module init order and silently blanks the page (see `.agents/memory/spa-chunk-splitting.md`).
 - 2026-06-11: Dependency vulnerability remediation
   - starlette 0.52.1 → 1.3.0 + fastapi 0.131.0 → 0.136.3: fixes CVE-2026-48710 / GHSA-86qp-5c8j-p5mr / PYSEC-2026-161 ("BadHost" Host-header auth/routing bypass). fastapi was bumped because <0.133.1 pins `starlette<1.0.0`. App's direct starlette surface (StarletteHTTPException handler, SessionMiddleware) verified working under 1.x; `@app.on_event("startup")` still fires.
   - diskcache 5.6.3 (CVE-2025-69872 / GHSA-w8v5-vhqr-4h9v, unsafe pickle): **ACCEPTED RESIDUAL RISK** — no upstream patch exists (PyPI latest is the vulnerable 5.6.3) and every dspy release hard-requires diskcache>=5.6.0, so it cannot be upgraded or removed. Mitigated at runtime via `dspy.configure_cache(restrict_pickle=True)` in `src/promptopt/lm_bridge.py:harden_dspy_cache()` (idempotent; runs at module import AND app startup), which swaps DSPy's disk cache to a restricted unpickler (`RestrictedDisk`). Re-evaluate / drop the shim when diskcache or dspy ships a patched release.
