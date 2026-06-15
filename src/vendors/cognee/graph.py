@@ -107,15 +107,20 @@ def _cosine(v1: Dict[str, float], v2: Dict[str, float]) -> float:
 class KnowledgeGraph:
     """Embedded knowledge graph with TF-IDF semantic similarity and persistence."""
 
-    def __init__(self) -> None:
+    def __init__(self, data_dir=None) -> None:
         self._nodes: Dict[str, Node] = {}
         self._edges: Dict[str, Edge] = {}
         self._adj: Dict[str, List[str]] = defaultdict(list)
         # Capture the data paths at construction so a debounced flush always
         # targets this instance's file even if the module globals are later
         # repointed (e.g. test fixtures swap the dir then restore it).
-        self._data_dir = _DATA_DIR
-        self._graph_file = _GRAPH_FILE
+        # ``data_dir`` lets each domain container keep an isolated KG file
+        # (e.g. .cognee_data/finance) so per-domain memory never co-mingles.
+        if data_dir is not None:
+            self._data_dir = Path(data_dir)
+        else:
+            self._data_dir = _DATA_DIR
+        self._graph_file = self._data_dir / "graph.json"
         # Deferred-save state: mutations mark the graph dirty and schedule a
         # single debounced flush rather than rewriting the whole JSON inline.
         self._dirty = False

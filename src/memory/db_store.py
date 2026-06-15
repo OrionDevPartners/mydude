@@ -24,13 +24,20 @@ from .adapter import MemoryEntry, MemoryEvent, MemoryEventType
 logger = logging.getLogger(__name__)
 
 
-def _session():
-    """Open a DB session, or return None if the DB layer is unavailable."""
+def _session(domain: str = "core"):
+    """Open a DB session bound DIRECTLY to *domain*'s database, or None if the
+    DB layer is unavailable.
+
+    The memory tables are replicated into every domain database, so the owning
+    domain is decided by the caller (not by the model's table). We therefore use
+    ``domain_session`` to bypass the routing session and hit the right physical
+    database for this domain's long-term memory.
+    """
     try:
-        from src.database import SessionLocal
-        return SessionLocal()
+        from src.database import domain_session
+        return domain_session(domain)
     except Exception as e:  # pragma: no cover - only when DATABASE_URL absent
-        logger.warning("memory db_store: SessionLocal unavailable: %s", e)
+        logger.warning("memory db_store: domain_session unavailable: %s", e)
         return None
 
 
@@ -56,9 +63,9 @@ def _record_to_entry(row) -> MemoryEntry:
     )
 
 
-def load_entries(adapter: str) -> List[MemoryEntry]:
+def load_entries(adapter: str, domain: str = "core") -> List[MemoryEntry]:
     """Load all persisted entries for one adapter side ("local" | "cloud")."""
-    db = _session()
+    db = _session(domain)
     if db is None:
         return []
     try:
@@ -84,6 +91,7 @@ def search_entries(
     before_ts: Optional[float] = None,
     page: int = 1,
     per_page: int = 25,
+    domain: str = "core",
 ) -> dict:
     """Server-side search/filter/pagination over persisted memory entries.
 
@@ -112,6 +120,8 @@ def search_entries(
         per_page = 25
     per_page = max(1, min(200, per_page))
 
+    domain = domain or "core"
+
     empty = {
         "entries": [],
         "total": 0,
@@ -122,7 +132,7 @@ def search_entries(
         "adapters": [],
     }
 
-    db = _session()
+    db = _session(domain)
     if db is None:
         return empty
     try:
@@ -185,11 +195,12 @@ def search_entries(
         db.close()
 
 
-def upsert_entry(adapter: str, entry: MemoryEntry) -> bool:
+def upsert_entry(adapter: str, entry: MemoryEntry, domain: str = "core") -> bool:
     """Insert or update one entry row for the given adapter side."""
     if not entry or not entry.memory_id:
         return False
-    db = _session()
+    domain = domain or "core"
+    db = _session(domain)
     if db is None:
         return False
     try:
@@ -219,6 +230,7 @@ def upsert_entry(adapter: str, entry: MemoryEntry) -> bool:
         row.decay = entry.decay
         row.verified = bool(entry.verified)
         row.metadata_json = meta_json
+        row.domain = domain
         db.commit()
         return True
     except Exception as e:
@@ -235,12 +247,12 @@ def upsert_entry(adapter: str, entry: MemoryEntry) -> bool:
         db.close()
 
 
-def delete_entry(adapter: str, memory_id: str) -> bool:
+def delete_entry(adapter: str, memory_id: str, domain: str = "core") -> bool:
     """Delete one entry row for the given adapter side. Returns True if a row
     was removed."""
     if not memory_id:
         return False
-    db = _session()
+    db = _session(domain)
     if db is None:
         return False
     try:
@@ -269,9 +281,10 @@ def delete_entry(adapter: str, memory_id: str) -> bool:
         db.close()
 
 
-def append_audit_event(event: MemoryEvent) -> bool:
+def append_audit_event(event: MemoryEvent, domain: str = "core") -> bool:
     """Persist one MemoryEvent to the durable audit log."""
-    db = _session()
+    domain = domain or "core"
+    db = _session(domain)
     if db is None:
         return False
     try:
@@ -285,6 +298,7 @@ def append_audit_event(event: MemoryEvent) -> bool:
             detail=event.detail,
             memory_ids_json=ids_json,
             event_ts=event.timestamp,
+            domain=domain,
         ))
         db.commit()
         return True
@@ -299,9 +313,9 @@ def append_audit_event(event: MemoryEvent) -> bool:
         db.close()
 
 
-def load_audit_events(limit: int = 200) -> List[MemoryEvent]:
+def load_audit_events(limit: int = 200, domain: str = "core") -> List[MemoryEvent]:
     """Load the most recent persisted audit events, oldest-first."""
-    db = _session()
+    db = _session(domain)
     if db is None:
         return []
     try:

@@ -18,11 +18,20 @@ logger = logging.getLogger(__name__)
 class LocalMemoryAdapter(MemoryAdapterBase):
     """Cognee-backed local KG memory store."""
 
-    def __init__(self) -> None:
+    def __init__(self, domain: str = "core") -> None:
+        # Each domain container keeps an isolated KG file so per-domain memory
+        # never co-mingles. Core keeps the default path (preserving existing
+        # data); other domains get a dedicated sub-directory.
+        self._domain = domain or "core"
         try:
             from src.vendors.cognee.query import SemanticQuery
             from src.vendors.cognee.graph import KnowledgeGraph
-            self._graph = KnowledgeGraph()
+            data_dir = None
+            if self._domain != "core":
+                import os
+                base = os.getenv("COGNEE_DATA_DIR", ".cognee_data")
+                data_dir = os.path.join(base, self._domain)
+            self._graph = KnowledgeGraph(data_dir=data_dir)
             self._query = SemanticQuery(self._graph)
             self._available = True
         except Exception as e:
@@ -74,7 +83,7 @@ class LocalMemoryAdapter(MemoryAdapterBase):
         # Flush to the durable DB store so the entry survives process restarts.
         try:
             from . import db_store
-            db_store.upsert_entry("local", entry)
+            db_store.upsert_entry("local", entry, domain=self._domain)
         except Exception as e:
             logger.warning("LocalMemoryAdapter.add DB persist failed: %s", e)
 
@@ -196,7 +205,7 @@ class LocalMemoryAdapter(MemoryAdapterBase):
         # Remove the durable DB row so deletes converge across restarts.
         try:
             from . import db_store
-            db_store.delete_entry("local", memory_id)
+            db_store.delete_entry("local", memory_id, domain=self._domain)
         except Exception as exc:
             logger.warning("LocalMemoryAdapter.delete DB remove failed: %s", exc)
         return True
@@ -241,7 +250,7 @@ class LocalMemoryAdapter(MemoryAdapterBase):
         """
         try:
             from . import db_store
-            for entry in db_store.load_entries("local"):
+            for entry in db_store.load_entries("local", domain=self._domain):
                 self._local_cache[entry.memory_id] = entry
         except Exception as e:
             logger.warning("LocalMemoryAdapter cache restore from DB failed: %s", e)

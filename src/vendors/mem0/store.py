@@ -64,19 +64,28 @@ class Mem0Store:
     Cloud mode: proxies to the Mem0 cloud REST API (requires MEM0_API_KEY).
     """
 
-    def __init__(self, user_id: str = "system", agent_id: str = "mydude") -> None:
+    def __init__(self, user_id: str = "system", agent_id: str = "mydude",
+                 data_dir=None) -> None:
         self._user_id = user_id
         self._agent_id = agent_id
         self._records: Dict[str, MemoryRecord] = {}
         self._use_cloud = bool(_MEM0_API_KEY)
+        # ``data_dir`` lets each domain container keep an isolated local store
+        # (e.g. .mem0_data/finance) so per-domain cloud-side memory never
+        # co-mingles in local-fallback mode.
+        if data_dir is not None:
+            self._data_dir = Path(data_dir)
+        else:
+            self._data_dir = _DATA_DIR
+        self._store_file = self._data_dir / "memories.json"
         if not self._use_cloud:
             self._load_local()
 
     def _load_local(self) -> None:
         try:
-            _DATA_DIR.mkdir(parents=True, exist_ok=True)
-            if _STORE_FILE.exists():
-                with open(_STORE_FILE) as f:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            if self._store_file.exists():
+                with open(self._store_file) as f:
                     raw = json.load(f)
                 for item in raw:
                     r = MemoryRecord(**item)
@@ -86,11 +95,11 @@ class Mem0Store:
 
     def _save_local(self) -> None:
         try:
-            _DATA_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = str(_STORE_FILE) + ".tmp"
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            tmp = str(self._store_file) + ".tmp"
             with open(tmp, "w") as f:
                 json.dump([asdict(r) for r in self._records.values()], f)
-            os.replace(tmp, str(_STORE_FILE))
+            os.replace(tmp, str(self._store_file))
         except Exception as e:
             logger.warning("Mem0Store local save failed: %s", e)
 
@@ -307,5 +316,5 @@ class Mem0Store:
         return {
             "records": len(self._records),
             "mode": "cloud" if self._use_cloud else "local",
-            "data_file": str(_STORE_FILE) if not self._use_cloud else "N/A",
+            "data_file": str(self._store_file) if not self._use_cloud else "N/A",
         }

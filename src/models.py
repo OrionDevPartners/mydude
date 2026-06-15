@@ -1251,6 +1251,10 @@ class MemoryEntryRecord(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     memory_id = Column(String(64), nullable=False, index=True)
     adapter = Column(String(20), nullable=False, index=True)
+    # Owning domain slug. This table is replicated into every domain database so
+    # each domain's long-term memory is physically isolated; the column records
+    # the domain for auditing/debugging and cross-DB backfill verification.
+    domain = Column(String(40), nullable=True, index=True, default="core")
     content = Column(Text, nullable=False)
     category = Column(String(60), nullable=True)
     confidence = Column(Float, default=1.0)
@@ -1395,6 +1399,7 @@ class MemoryAuditLog(Base):
     detail = Column(Text, nullable=True)
     memory_ids_json = Column(Text, nullable=True)
     event_ts = Column(Float, nullable=True)
+    domain = Column(String(40), nullable=True, index=True, default="core")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

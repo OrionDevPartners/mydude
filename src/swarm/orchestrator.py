@@ -408,6 +408,19 @@ class WaveOrchestrator:
                 logger.warning("Jurisdiction metadata resolution failed: %s", e)
         self.jurisdiction = jurisdiction
 
+        # ── Per-domain memory: bind this run to its business domain's substrate ──
+        # Each domain has an isolated physical DB + vector/KG namespace, so a
+        # finance task recalls/persists only finance memory. Unknown/general
+        # domains collapse to the shared core substrate (resolve_domain). Falls
+        # back to the module-level substrate when the registry is unavailable.
+        mem = self._memory
+        try:
+            from src.domains.registry import resolve_domain as _resolve_domain
+            from src.memory import get_substrate as _get_substrate
+            mem = _get_substrate(_resolve_domain(domain))
+        except Exception as _mem_exc:
+            logger.debug("Per-domain substrate fallback to core: %s", _mem_exc)
+
         # ── Ingress guardrails: injection/jailbreak check + PII redaction ─────
         # Applied before any wave executes or memory is recalled. A BLOCK verdict
         # raises GuardrailError and aborts the run immediately (fail-loud).
@@ -430,12 +443,12 @@ class WaveOrchestrator:
         # ── Recursive memory: recall related prior memories before wave 0 ──
         recalled_facts: List[str] = []
         memory_status: Dict[str, Any] = {"recalled": 0, "substrate": "unavailable"}
-        if self._memory is not None:
+        if mem is not None:
             try:
-                recalled_facts = self._memory.inject_for_task(goal, top_k=5)
+                recalled_facts = mem.inject_for_task(goal, top_k=5)
                 memory_status = {
                     "recalled": len(recalled_facts),
-                    "substrate": self._memory.status(),
+                    "substrate": mem.status(),
                 }
                 if recalled_facts:
                     logger.info(
@@ -989,9 +1002,9 @@ class WaveOrchestrator:
 
         # ── Recursive memory: persist load-bearing facts/decisions at task end ──
         memory_events: List[Dict] = []
-        if self._memory is not None:
+        if mem is not None:
             try:
-                persisted = self._memory.persist_handoff(
+                persisted = mem.persist_handoff(
                     goal=goal,
                     facts=clamp_list(handoff.facts, 10),
                     decisions=clamp_list(handoff.decisions, 8),
@@ -1008,7 +1021,7 @@ class WaveOrchestrator:
                         _re.IGNORECASE,
                     )
                     for vline in verified_lines[:5]:
-                        self._memory.write_claim(
+                        mem.write_claim(
                             content=vline[:400],
                             category="verified_claim",
                             confidence=0.95,
@@ -1018,12 +1031,12 @@ class WaveOrchestrator:
                         )
 
                 # Consolidate high-confidence memories, apply decay
-                promoted = self._memory.consolidate(min_confidence=0.8)
+                promoted = mem.consolidate(min_confidence=0.8)
 
                 # Run a deferred background sync (local→cloud direction only)
                 try:
-                    sync_report = self._memory.sync(direction="local→cloud", min_confidence=0.6)
-                    memory_events = self._memory.audit_events(limit=10)
+                    sync_report = mem.sync(direction="local→cloud", min_confidence=0.6)
+                    memory_events = mem.audit_events(limit=10)
                     memory_status["persisted"] = len(persisted)
                     memory_status["promoted"] = promoted
                     memory_status["sync"] = sync_report.summary()

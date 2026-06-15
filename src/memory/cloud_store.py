@@ -18,10 +18,22 @@ logger = logging.getLogger(__name__)
 class CloudMemoryAdapter(MemoryAdapterBase):
     """Mem0-backed cloud memory store (or local-file fallback)."""
 
-    def __init__(self) -> None:
+    def __init__(self, domain: str = "core") -> None:
+        # Each domain container keeps an isolated Mem0 local store and a distinct
+        # agent_id namespace so per-domain cloud-side memory never co-mingles.
+        # Core keeps the default path (preserving existing data).
+        self._domain = domain or "core"
         try:
             from src.vendors.mem0.store import Mem0Store
-            self._store = Mem0Store()
+            if self._domain != "core":
+                import os
+                base = os.getenv("MEM0_DATA_DIR", ".mem0_data")
+                data_dir = os.path.join(base, self._domain)
+                self._store = Mem0Store(
+                    agent_id=f"mydude-{self._domain}", data_dir=data_dir
+                )
+            else:
+                self._store = Mem0Store()
             self._available = True
         except Exception as e:
             logger.warning("CloudMemoryAdapter (Mem0) init failed: %s", e)
@@ -63,7 +75,7 @@ class CloudMemoryAdapter(MemoryAdapterBase):
         self._cache[entry.memory_id] = entry
         try:
             from . import db_store
-            db_store.upsert_entry("cloud", entry)
+            db_store.upsert_entry("cloud", entry, domain=self._domain)
         except Exception as e:
             logger.warning("CloudMemoryAdapter.add DB persist failed: %s", e)
         return entry
@@ -106,7 +118,7 @@ class CloudMemoryAdapter(MemoryAdapterBase):
             deleted = True
         try:
             from . import db_store
-            if db_store.delete_entry("cloud", memory_id):
+            if db_store.delete_entry("cloud", memory_id, domain=self._domain):
                 deleted = True
         except Exception as e:
             logger.warning("CloudMemoryAdapter.delete DB remove failed: %s", e)
@@ -116,7 +128,7 @@ class CloudMemoryAdapter(MemoryAdapterBase):
         """Load the durable cloud-side entries from the DB on startup."""
         try:
             from . import db_store
-            for entry in db_store.load_entries("cloud"):
+            for entry in db_store.load_entries("cloud", domain=self._domain):
                 self._cache[entry.memory_id] = entry
         except Exception as e:
             logger.warning("CloudMemoryAdapter cache restore from DB failed: %s", e)

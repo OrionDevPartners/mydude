@@ -57,7 +57,7 @@ class _NullCloudAdapter:
         return {"provider": "null", "count": 0, "blocked_by_jurisdiction": True}
 
 
-def _adapters_from_resolver():
+def _adapters_from_resolver(domain: str = "core"):
     """Use the unified capability resolver to select knowledge_store adapters.
 
     Returns (local_adapter, cloud_adapter). The resolver selects adapters in
@@ -88,21 +88,21 @@ def _adapters_from_resolver():
         resolver_succeeded = True
         for cap_adapter in all_adapters:
             if isinstance(cap_adapter, CogneeKnowledgeAdapter) and local_adapter is None:
-                local_adapter = LocalMemoryAdapter()
+                local_adapter = LocalMemoryAdapter(domain=domain)
             elif isinstance(cap_adapter, Mem0KnowledgeAdapter) and cloud_adapter is None:
-                cloud_adapter = CloudMemoryAdapter()
+                cloud_adapter = CloudMemoryAdapter(domain=domain)
     except Exception as exc:
         logger.debug("knowledge_store resolver fallback: %s", exc)
 
     # Local storage is always available — always fall back.
     if local_adapter is None:
-        local_adapter = LocalMemoryAdapter()
+        local_adapter = LocalMemoryAdapter(domain=domain)
 
     if cloud_adapter is None:
         if not resolver_succeeded:
             # Resolver failed (early boot / test isolation): preserve original
             # behavior by instantiating CloudMemoryAdapter as before.
-            cloud_adapter = CloudMemoryAdapter()
+            cloud_adapter = CloudMemoryAdapter(domain=domain)
         else:
             # Resolver ran but selected no permitted cloud adapter (jurisdiction
             # gate excluded it). Use the null adapter so MemoryBridge operates
@@ -113,7 +113,7 @@ def _adapters_from_resolver():
 
 logger = logging.getLogger(__name__)
 
-_SUBSTRATE: Optional["MemorySubstrate"] = None
+_SUBSTRATES: Dict[str, "MemorySubstrate"] = {}
 _SUBSTRATE_LOCK = threading.Lock()
 
 _AUDIT_MAXLEN = 200
@@ -125,13 +125,17 @@ class MemorySubstrate:
     or Mem0 directly.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, domain: str = "core") -> None:
+        # Each domain container gets its own substrate bound to its physical DB
+        # and isolated vector/KG namespace. ``domain`` decides which database the
+        # memory + audit rows land in and which pgvector table is searched.
+        self._domain = domain or "core"
         # Adapter selection goes through the unified capability resolver so
         # jurisdiction gating (cloud_shift, exec_locus_pin) and cost-ordered
         # backend selection apply to knowledge_store the same way they apply
         # to LLM and browser. Direct instantiation is the fallback when the
         # resolver is not yet initialized (very early boot or isolated tests).
-        self._local, self._cloud = _adapters_from_resolver()
+        self._local, self._cloud = _adapters_from_resolver(self._domain)
         self._bridge = MemoryBridge(self._local, self._cloud)
         self._audit: Deque[MemoryEvent] = deque(maxlen=_AUDIT_MAXLEN)
         self._last_sync: Optional[float] = None
@@ -143,7 +147,7 @@ class MemorySubstrate:
     def _hydrate_audit_from_db(self) -> None:
         try:
             from . import db_store
-            for ev in db_store.load_audit_events(limit=_AUDIT_MAXLEN):
+            for ev in db_store.load_audit_events(limit=_AUDIT_MAXLEN, domain=self._domain):
                 self._audit.append(ev)
         except Exception as e:
             logger.warning("MemorySubstrate audit hydrate from DB failed: %s", e)
@@ -153,9 +157,78 @@ class MemorySubstrate:
         self._audit.append(event)
         try:
             from . import db_store
-            db_store.append_audit_event(event)
+            db_store.append_audit_event(event, domain=self._domain)
         except Exception as e:
             logger.warning("MemorySubstrate audit DB persist failed: %s", e)
+
+    def _index_vector(self, entry: MemoryEntry) -> None:
+        """Embed the entry content and upsert it into this domain's pgvector
+        table so semantic recall can use true ANN search.
+
+        Fail-soft: when no embedding backend is available or pgvector is absent,
+        this is a no-op and recall falls back to the TF-IDF/lexical path. We
+        never fabricate a vector — the absence of an embedding is honest.
+        """
+        try:
+            from src.providers.embeddings import embed_text, get_embedding_backend
+            vec = embed_text(entry.content)
+            if not vec:
+                return
+            try:
+                model_name = get_embedding_backend().name
+            except Exception:
+                model_name = ""
+            from . import vector_store
+            vector_store.upsert(
+                self._domain,
+                entry.memory_id,
+                entry.content,
+                vec,
+                model_name=model_name,
+            )
+        except Exception as e:
+            logger.debug("MemorySubstrate vector index skipped: %s", e)
+
+    def _vector_recall(self, query: str, top_k: int) -> List[MemoryEntry]:
+        """Search this domain's pgvector table and resolve hits to MemoryEntry.
+
+        Returns an empty list when embeddings/pgvector are unavailable so the
+        caller transparently falls back to the adapter search path.
+        """
+        try:
+            from src.providers.embeddings import embed_text
+            qvec = embed_text(query)
+            if not qvec:
+                return []
+            from . import vector_store
+            hits = vector_store.search(self._domain, qvec, top_k=top_k)
+            if not hits:
+                return []
+            resolved: List[MemoryEntry] = []
+            for hit in hits:
+                mid = hit.get("memory_id")
+                if not mid:
+                    continue
+                entry = None
+                try:
+                    cache = getattr(self._local, "_local_cache", None)
+                    if cache and mid in cache:
+                        entry = cache[mid]
+                except Exception:
+                    entry = None
+                if entry is None:
+                    entry = MemoryEntry(
+                        memory_id=mid,
+                        content=hit.get("content", ""),
+                        category=hit.get("category", "concept") or "concept",
+                        confidence=float(hit.get("score", 0.8) or 0.8),
+                        source=hit.get("source", "") or "",
+                    )
+                resolved.append(entry)
+            return resolved
+        except Exception as e:
+            logger.debug("MemorySubstrate vector recall skipped: %s", e)
+            return []
 
     def write_claim(
         self,
@@ -192,6 +265,10 @@ class MemorySubstrate:
                 # keeping both stores keyed by the same memory_id.
                 self._cloud.add(entry)
             self._local.add(entry)
+            # Index into this domain's pgvector space for true semantic recall.
+            # Runs under the same lock so the vector row is keyed by the final
+            # (post-cloud) memory_id. Fail-soft: no-op without embeddings/pgvector.
+            self._index_vector(entry)
 
         scope = "private/local-only" if local_only else "local+cloud"
         event = MemoryEvent(
@@ -242,9 +319,26 @@ class MemorySubstrate:
     ) -> List[MemoryEntry]:
         """Recall semantically related memories for a given query."""
         results: List[MemoryEntry] = []
+        seen_ids: set = set()
+
+        # True ANN recall over this domain's pgvector space first (when an
+        # embedding backend + pgvector are available). Honest no-op otherwise.
+        try:
+            for e in self._vector_recall(query, top_k):
+                if category is not None and e.category != category:
+                    continue
+                if e.memory_id not in seen_ids:
+                    results.append(e)
+                    seen_ids.add(e.memory_id)
+        except Exception as e:
+            logger.warning("Recall vector search failed: %s", e)
+
         try:
             local = self._local.search(query, top_k=top_k, category=category)
-            results.extend(local)
+            for e in local:
+                if e.memory_id not in seen_ids:
+                    results.append(e)
+                    seen_ids.add(e.memory_id)
         except Exception as e:
             logger.warning("Recall local search failed: %s", e)
 
@@ -425,14 +519,22 @@ class MemorySubstrate:
         }
 
 
-def get_substrate() -> MemorySubstrate:
-    """Return the process-wide shared MemorySubstrate (lazy init)."""
-    global _SUBSTRATE
-    if _SUBSTRATE is None:
+def get_substrate(domain: str = "core") -> MemorySubstrate:
+    """Return the process-wide shared MemorySubstrate for *domain* (lazy init).
+
+    Each domain container gets its own substrate bound to its physical DB and
+    isolated vector/KG namespace, so a finance recall never sees fleet memory.
+    Callers that don't care about isolation get the shared ``core`` substrate.
+    """
+    slug = domain or "core"
+    inst = _SUBSTRATES.get(slug)
+    if inst is None:
         with _SUBSTRATE_LOCK:
-            if _SUBSTRATE is None:
-                _SUBSTRATE = MemorySubstrate()
-    return _SUBSTRATE
+            inst = _SUBSTRATES.get(slug)
+            if inst is None:
+                inst = MemorySubstrate(domain=slug)
+                _SUBSTRATES[slug] = inst
+    return inst
 
 
 # Type alias for compatibility
