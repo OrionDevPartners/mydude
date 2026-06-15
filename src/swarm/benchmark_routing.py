@@ -137,6 +137,10 @@ class BenchmarkRouting:
     bias_applied: bool = False
     bias_reason: str = "not_evaluated"
     bias_delta: float = 0.0
+    # Whether conversational trajectory momentum was blended into the category
+    # scores for this routing decision (only ever true when a session_id was
+    # supplied and the session had non-zero momentum). Pure audit metadata.
+    trajectory_bias_applied: bool = False
 
     def mark_bias_applied(self, delta: float) -> None:
         self.bias_applied = True
@@ -159,6 +163,7 @@ class BenchmarkRouting:
             "bias_applied": self.bias_applied,
             "bias_reason": self.bias_reason,
             "bias_delta": self.bias_delta,
+            "trajectory_bias_applied": self.trajectory_bias_applied,
         }
 
 
@@ -175,13 +180,17 @@ def _kw_matches(kw: str, text: str) -> bool:
     return re.search(r"\b" + re.escape(kw), text) is not None
 
 
-def classify_category(prompt: str, domain: str = "general") -> Tuple[str, str]:
-    """Deterministically map (prompt, domain) -> (category, short_signal).
+def _score_categories(
+    prompt: str, domain: str = "general"
+) -> Tuple[Dict[str, int], Dict[str, List[str]], Optional[str], str]:
+    """Deterministic keyword/domain scoring shared by classify + route.
 
-    Scores each category by counting keyword substring hits in a bounded,
-    lower-cased prefix of the prompt, plus a domain nudge. Returns ``general``
-    when nothing matches. ``signal`` is a compact, auditable reason that NEVER
-    contains a raw prompt excerpt — only matched tokens / the domain.
+    Returns ``(scores, matched, domain_hint, domain_slug)`` where ``scores`` is
+    the per-category integer keyword-hit count (with the domain nudge already
+    folded in) over the non-``general`` categories. Exposed so ``route()`` can
+    blend trajectory momentum into the REAL keyword scores — not a binary
+    one-hot — so a weak/ambiguous base signal can be tipped while a strong
+    multi-hit signal is never overridden.
     """
     text = (prompt or "")[:_MAX_INSPECT_CHARS].lower()
     domain_slug = (domain or "general").strip().lower()
@@ -198,6 +207,19 @@ def classify_category(prompt: str, domain: str = "general") -> Tuple[str, str]:
     domain_hint = _DOMAIN_HINTS.get(domain_slug)
     if domain_hint and domain_hint in scores:
         scores[domain_hint] += _DOMAIN_WEIGHT
+
+    return scores, matched, domain_hint, domain_slug
+
+
+def classify_category(prompt: str, domain: str = "general") -> Tuple[str, str]:
+    """Deterministically map (prompt, domain) -> (category, short_signal).
+
+    Scores each category by counting keyword substring hits in a bounded,
+    lower-cased prefix of the prompt, plus a domain nudge. Returns ``general``
+    when nothing matches. ``signal`` is a compact, auditable reason that NEVER
+    contains a raw prompt excerpt — only matched tokens / the domain.
+    """
+    scores, matched, domain_hint, domain_slug = _score_categories(prompt, domain)
 
     best = max(scores, key=lambda c: scores[c]) if scores else "general"
     if not scores or scores[best] == 0:
@@ -288,11 +310,16 @@ def route(
         keyword scores. Range [0, 1]; capped at 0.3 to prevent momentum from
         dominating deterministic keyword classification. Default: 0.15.
     """
+    base_scores, _matched, _domain_hint, _domain_slug = _score_categories(prompt, domain)
     category, signal = classify_category(prompt, domain)
 
     # ── Trajectory momentum bias ────────────────────────────────────────────
-    # Blend conversational momentum into the keyword scores so multi-turn
+    # Blend conversational momentum into the REAL keyword scores so multi-turn
     # sessions steer toward the model that leads in the user's ongoing domain.
+    # The momentum nudge is additive and capped (weight<=0.3 * bias<=1.0), so a
+    # category with a clear keyword lead (>=1 extra hit) is never overridden,
+    # while an ambiguous / keywordless prompt (the ``general`` default, or a tie)
+    # can be tipped toward the conversation's dominant category.
     trajectory_applied = False
     if session_id is not None:
         try:
@@ -300,16 +327,21 @@ def route(
             momentum = get_momentum(session_id)
             if momentum.dominant_score > 0.0:
                 weight = max(0.0, min(0.3, momentum_weight))
-                keyword_scores: Dict[str, float] = {
-                    c: 0.0 for c in CATEGORIES if c != "general"
+                blend_base: Dict[str, float] = {
+                    c: float(base_scores.get(c, 0)) for c in base_scores
                 }
-                keyword_scores[category] = 1.0
-                biased = apply_momentum_bias(keyword_scores, momentum, weight=weight)
-                best_biased = max(biased, key=lambda c: biased[c]) if biased else category
-                if best_biased != category:
+                biased = apply_momentum_bias(blend_base, momentum, weight=weight)
+                best_biased = (
+                    max(biased, key=lambda c: biased[c]) if biased else category
+                )
+                # Only adopt the momentum-tipped category when it beats the base
+                # category on the blended score (argmax of the blended dict).
+                if best_biased != category and biased.get(best_biased, 0.0) > biased.get(
+                    category, 0.0
+                ):
                     signal = (
                         f"{signal}; trajectory_bias={momentum.dominant_category}"
-                        f"(w={weight:.2f}) -> {best_biased}"
+                        f"(w={weight:.2f}) {category} -> {best_biased}"
                     )
                     category = best_biased
                 trajectory_applied = True
@@ -327,6 +359,6 @@ def route(
         lead_specialty=specialty,
         lead_score=lead_score,
         scores_considered=scores,
+        trajectory_bias_applied=trajectory_applied,
     )
-    result.trajectory_bias_applied = trajectory_applied
     return result

@@ -330,6 +330,83 @@ def test_call_team_suppresses_bias_when_lead_below_floor():
     assert "answer from beta" in merged, merged  # not dropped
 
 
+# ───────────────────────── trajectory momentum bias ─────────────────────────
+
+def _fresh_trajectory_store():
+    """Reset the trajectory router singleton so each test is isolated."""
+    import src.swarm.trajectory_router as tr
+    tr._STORE = None
+    return tr
+
+
+def test_route_without_session_has_trajectory_flag_false():
+    cands = [("a", "sa", {"general": 0.5})]
+    r = route("hello there friend", "general", cands)
+    assert r.trajectory_bias_applied is False
+    assert r.to_dict()["trajectory_bias_applied"] is False
+
+
+def test_route_unknown_session_is_failsoft_no_bias():
+    _fresh_trajectory_store()
+    cands = [("a", "sa", {"general": 0.5})]
+    # session_id provided but never recorded -> no momentum -> inert, no error.
+    r = route("hello there friend", "general", cands, session_id="never-seen")
+    assert r.category == "general", r.category
+    assert r.trajectory_bias_applied is False
+    assert r.to_dict()["trajectory_bias_applied"] is False
+
+
+def test_momentum_tips_ambiguous_prompt_toward_conversation():
+    tr = _fresh_trajectory_store()
+    sid = "sess-coding"
+    # Build a coding-heavy conversation history.
+    for txt in (
+        "Refactor this python function and fix the bug in the algorithm",
+        "Now add a unit test and fix the compile error in the class method",
+        "Debug the exception in the api endpoint code",
+    ):
+        tr.record_turn(sid, txt)
+
+    cands = [
+        ("coder", "code", {"coding": 0.95, "general": 0.5}),
+        ("misc", "general", {"general": 0.6}),
+    ]
+    # Keywordless follow-up: base classify -> general. Momentum should tip it
+    # toward 'coding' (the conversation's dominant category) and pick the coder.
+    r = route("do that again please", "general", cands, session_id=sid)
+    assert r.trajectory_bias_applied is True, r.to_dict()
+    assert r.category == "coding", r.to_dict()
+    assert r.lead_provider == "coder", r.to_dict()
+    assert "trajectory_bias=" in r.classification_signal, r.classification_signal
+
+
+def test_momentum_never_overrides_strong_base_signal():
+    tr = _fresh_trajectory_store()
+    sid = "sess-mixed"
+    # Conversation drifting toward security...
+    for txt in (
+        "Find the security vulnerability and the exploit and the xss injection",
+        "Threat model the auth bypass and harden the attack surface owasp",
+    ):
+        tr.record_turn(sid, txt)
+
+    cands = [
+        ("coder", "code", {"coding": 0.95, "security": 0.4, "general": 0.5}),
+        ("sec", "security", {"security": 0.95, "coding": 0.3, "general": 0.5}),
+    ]
+    # Strong coding prompt (many keyword hits) must NOT be flipped to security
+    # by momentum — the deterministic keyword lead wins.
+    strong_coding = (
+        "Refactor this python function, fix the bug, write a unit test, "
+        "implement the api endpoint and fix the compile error in the class method"
+    )
+    r = route(strong_coding, "general", cands, session_id=sid)
+    assert r.category == "coding", r.to_dict()
+    assert r.lead_provider == "coder", r.to_dict()
+    # momentum was still evaluated (flag true) even though it changed nothing.
+    assert r.trajectory_bias_applied is True, r.to_dict()
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
