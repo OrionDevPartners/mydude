@@ -9,10 +9,14 @@ TF-IDF fallback. These tests prove:
   * the temporal contradiction "finish by Friday" vs "deadline is Monday" — a
     pair with no shared content words — is now surfaced by the KG because the
     embedding similarity clears the gate that TF-IDF could not;
-  * with NO backend (the default in this container) every path degrades cleanly
-    to the existing TF-IDF / lexical behavior and never raises;
+  * with NO backend every path degrades cleanly to the existing TF-IDF / lexical
+    behavior and never raises (a local fastembed fallback is now always offered,
+    so the no-backend tests force the candidate list empty);
   * the resolver honors the cloud_shift kill switch (cloud backends are dropped
     when cloud egress is off; local backends still resolve);
+  * vault-keyed cloud defaults are offered automatically when a key is present,
+    and a broken cloud endpoint is probe-skipped so resolution falls through to
+    the local fallback rather than silently pinning to TF-IDF;
   * embedding models are discovered from the local model registry.
 
 A deterministic in-process *fake* backend is injected so the tests are hermetic
@@ -90,18 +94,26 @@ def _fake_backend():
 
 @contextmanager
 def _no_backend():
-    """Ensure no backend resolves (no env config) for the duration."""
+    """Ensure no backend resolves for the duration.
+
+    A local fastembed fallback is now always offered, so clearing env vars is no
+    longer enough — force the candidate list empty so the resolver returns None
+    and callers exercise the TF-IDF / lexical path.
+    """
     saved = {k: os.environ.get(k) for k in (
         "EMBEDDING_MODEL", "EMBEDDING_PROVIDER", "EMBEDDING_BASE_URL",
         "EMBEDDING_API_KEY_ENV", "EMBEDDING_EXEC_LOCUS",
     )}
     for k in saved:
         os.environ.pop(k, None)
+    orig_candidates = emb._candidate_specs
+    emb._candidate_specs = lambda: []
     emb.reset_embedding_backend()
     emb._emb_cache.clear()
     try:
         yield
     finally:
+        emb._candidate_specs = orig_candidates
         for k, v in saved.items():
             if v is not None:
                 os.environ[k] = v
@@ -296,7 +308,11 @@ def test_cloud_shift_gates_cloud_backend(monkeypatch=None):
         return _AlwaysAvail(spec.exec_locus)
 
     orig_spec = emb._spec_to_backend
+    orig_vault = emb._vault_default_specs
     emb._spec_to_backend = fake_spec_to_backend
+    # Isolate the env spec: drop the always-on vault/fastembed defaults so the
+    # cloud-OFF case truly resolves to None.
+    emb._vault_default_specs = lambda: []
     try:
         # Cloud egress OFF -> a cloud embedding backend must be skipped.
         juris.get_cloud_shift = lambda: False
@@ -320,9 +336,83 @@ def test_cloud_shift_gates_cloud_backend(monkeypatch=None):
             assert b is not None and b.exec_locus == "local"
     finally:
         emb._spec_to_backend = orig_spec
+        emb._vault_default_specs = orig_vault
         juris.get_cloud_shift = saved
         emb.reset_embedding_backend()
     print("ok test_cloud_shift_gates_cloud_backend")
+
+
+# --------------------------------------------------------------------------- #
+# Vault-keyed defaults + probe-validated fall-through
+# --------------------------------------------------------------------------- #
+def test_vault_default_specs_offered_when_keyed():
+    """A keyed cloud provider is offered automatically; fastembed is always last."""
+    orig = emb.has_secret
+    emb.has_secret = lambda name: name == "OPENAI_API_KEY"
+    try:
+        specs = emb._vault_default_specs()
+    finally:
+        emb.has_secret = orig
+    providers = [s.provider for s in specs]
+    assert "openai" in providers, "keyed OpenAI cloud default not offered"
+    assert "gemini" not in providers, "unkeyed Gemini default should not appear"
+    assert providers[-1] == "fastembed", "fastembed local fallback must be last"
+    openai_spec = next(s for s in specs if s.provider == "openai")
+    assert openai_spec.api_key_env == "OPENAI_API_KEY"
+    assert openai_spec.exec_locus == "cloud"
+    fe_spec = next(s for s in specs if s.provider == "fastembed")
+    assert fe_spec.exec_locus == "local" and fe_spec.api_key_env == ""
+    print("ok test_vault_default_specs_offered_when_keyed")
+
+
+def test_broken_cloud_falls_through_to_local():
+    """A credentialed-but-broken cloud endpoint is probe-skipped; resolution
+    falls through to the working local backend instead of pinning to TF-IDF."""
+    import src.swarm.jurisdiction as juris
+
+    saved = juris.get_cloud_shift
+    juris.get_cloud_shift = lambda: True
+
+    class _BrokenCloud(EmbeddingBackend):
+        exec_locus = "cloud"
+        name = "broken-cloud"
+
+        def is_available(self):
+            return True  # credentialed, client builds...
+
+        def embed(self, texts):
+            raise RuntimeError("Error code: 500")  # ...but every embed errors
+
+    class _GoodLocal(EmbeddingBackend):
+        exec_locus = "local"
+        name = "good-local"
+
+        def is_available(self):
+            return True
+
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    def fake_spec(spec):
+        return _BrokenCloud() if spec.exec_locus == "cloud" else _GoodLocal()
+
+    orig_spec = emb._spec_to_backend
+    orig_vault = emb._vault_default_specs
+    emb._spec_to_backend = fake_spec
+    emb._vault_default_specs = lambda: [
+        emb._EmbeddingSpec("cloud-model", "openai", None, "cloud", "OPENAI_API_KEY"),
+        emb._EmbeddingSpec("fe", "fastembed", None, "local", ""),
+    ]
+    try:
+        b = emb.get_embedding_backend(force_refresh=True)
+        assert b is not None, "should resolve the local fallback"
+        assert b.exec_locus == "local" and b.name == "good-local"
+    finally:
+        emb._spec_to_backend = orig_spec
+        emb._vault_default_specs = orig_vault
+        juris.get_cloud_shift = saved
+        emb.reset_embedding_backend()
+    print("ok test_broken_cloud_falls_through_to_local")
 
 
 def test_registry_embedding_models_discovery():

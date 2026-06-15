@@ -22,6 +22,9 @@ Governance pillars honored:
 
 Backends
 --------
+* ``FastEmbedBackend`` — in-process fastembed (e.g. ``BAAI/bge-small-en-v1.5``).
+  Local, no secret, no network at inference (one-time model download on first
+  load). This is the always-available semantic default when no key is keyed.
 * ``SentenceTransformerBackend`` — in-process sentence-transformers (e.g.
   ``sentence-transformers/all-MiniLM-L6-v2``). Local, no network, no secret.
 * ``OpenAICompatEmbeddingBackend`` — any OpenAI-compatible ``/embeddings``
@@ -34,13 +37,21 @@ Configuration (first match wins)
 1. Env vars (operator override, no file needed)::
 
      EMBEDDING_MODEL          e.g. nomic-embed-text  /  all-MiniLM-L6-v2
-     EMBEDDING_PROVIDER       ollama | mlx | openai | sentence-transformers
+     EMBEDDING_PROVIDER       ollama | mlx | openai | gemini | fastembed |
+                              sentence-transformers
      EMBEDDING_BASE_URL       override the OpenAI-compatible endpoint
      EMBEDDING_API_KEY_ENV    NAME of the secret holding the key (cloud only)
      EMBEDDING_EXEC_LOCUS     local | cloud   (inferred from provider if unset)
 
 2. The local model registry (``~/.mydude/local/model_registry.yaml``) — any
    entry tagged ``kind: embedding`` (see local_registry.embedding_models()).
+
+3. Vault-keyed defaults (zero-config) — when a cloud embedding key is already
+   present in the credential vault the matching cloud backend is offered
+   automatically (``OPENAI_API_KEY`` -> ``text-embedding-3-small``,
+   ``GEMINI_API_KEY`` -> ``text-embedding-004`` via Gemini's OpenAI-compatible
+   endpoint), gated on ``cloud_shift``. A local ``fastembed`` backend is always
+   appended last so semantic routing works offline with no key at all.
 """
 from __future__ import annotations
 
@@ -54,7 +65,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 from urllib.parse import urlparse
 
-from src.providers.secrets import get_secret, get_env
+from src.providers.secrets import get_secret, get_env, has_secret
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +89,21 @@ _PROVIDER_BASE_URLS = {
 
 # Providers whose models run locally (no cloud egress). Used for cloud_shift
 # gating: when cloud egress is off only these are eligible.
-_LOCAL_PROVIDERS = {"ollama", "mlx", "sentence-transformers", "st", "local"}
+_LOCAL_PROVIDERS = {
+    "ollama", "mlx", "sentence-transformers", "st", "local", "fastembed", "fe",
+}
 
 _PLACEHOLDER_KEY = "local"
+
+# Zero-config vault-keyed cloud defaults. When one of these keys is already
+# present in the vault the matching cloud embedding backend is offered without
+# any operator config. Model ids are operator-overridable via the env vars.
+_DEFAULT_OPENAI_EMBED_MODEL = "text-embedding-3-small"
+_DEFAULT_GEMINI_EMBED_MODEL = "text-embedding-004"
+# Gemini exposes an OpenAI-compatible embeddings endpoint.
+_GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# Always-available local default (no secret, no network at inference).
+_DEFAULT_FASTEMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 # --------------------------------------------------------------------------- #
@@ -168,6 +191,49 @@ class SentenceTransformerBackend(EmbeddingBackend):
             return [list(map(float, v)) for v in vecs]
         except Exception:
             return [list(map(float, vecs))]  # single-vector edge case
+
+
+class FastEmbedBackend(EmbeddingBackend):
+    """In-process fastembed backend (fully local, no secret, no network at
+    inference time).
+
+    fastembed downloads the ONNX model once on first load (cached on disk).
+    When the package is absent or the one-time download fails the backend gates
+    itself out so callers fall back to TF-IDF — never a hard failure.
+    """
+
+    def __init__(self, model_id: str) -> None:
+        self.model_id = model_id or _DEFAULT_FASTEMBED_MODEL
+        self.name = f"fastembed:{self.model_id}"
+        self.exec_locus = "local"
+        self._model = None
+        self._tried = False
+
+    def _load(self):
+        if self._tried:
+            return self._model
+        self._tried = True
+        try:
+            from fastembed import TextEmbedding  # type: ignore
+
+            self._model = TextEmbedding(model_name=self.model_id)
+        except Exception as exc:
+            logger.info(
+                "fastembed backend unavailable (%s); embeddings will fall back "
+                "to TF-IDF.", exc,
+            )
+            self._model = None
+        return self._model
+
+    def is_available(self) -> bool:
+        return self._load() is not None
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        model = self._load()
+        if model is None:
+            raise RuntimeError("fastembed model not loaded")
+        vecs = list(model.embed(list(texts)))
+        return [list(map(float, v)) for v in vecs]
 
 
 class OpenAICompatEmbeddingBackend(EmbeddingBackend):
@@ -295,6 +361,8 @@ def _spec_to_backend(spec: _EmbeddingSpec) -> Optional[EmbeddingBackend]:
     provider = (spec.provider or "").lower()
     if provider in ("sentence-transformers", "st"):
         return SentenceTransformerBackend(spec.model)
+    if provider in ("fastembed", "fe"):
+        return FastEmbedBackend(spec.model)
     base_url = spec.base_url or _PROVIDER_BASE_URLS.get(provider)
     return OpenAICompatEmbeddingBackend(
         model=spec.model,
@@ -338,12 +406,55 @@ def _registry_specs() -> List[_EmbeddingSpec]:
     return specs
 
 
+def _vault_default_specs() -> List[_EmbeddingSpec]:
+    """Zero-config candidates derived from keys already present in the vault.
+
+    Honors the governance pillars: code names no vendor at the call site, keys
+    are read by *name* (never raw), and the local fastembed fallback keeps
+    semantic routing working with no key and no cloud egress at all.
+    """
+    specs: List[_EmbeddingSpec] = []
+    # Prefer a cloud embedding API when its key is already keyed in the vault.
+    if has_secret("OPENAI_API_KEY"):
+        specs.append(
+            _EmbeddingSpec(
+                model=get_env("OPENAI_EMBEDDING_MODEL", _DEFAULT_OPENAI_EMBED_MODEL),
+                provider="openai",
+                base_url=None,
+                exec_locus="cloud",
+                api_key_env="OPENAI_API_KEY",
+            )
+        )
+    if has_secret("GEMINI_API_KEY"):
+        specs.append(
+            _EmbeddingSpec(
+                model=get_env("GEMINI_EMBEDDING_MODEL", _DEFAULT_GEMINI_EMBED_MODEL),
+                provider="gemini",
+                base_url=_GEMINI_OPENAI_BASE_URL,
+                exec_locus="cloud",
+                api_key_env="GEMINI_API_KEY",
+            )
+        )
+    # Always-available local fallback (no secret; survives cloud_shift off).
+    specs.append(
+        _EmbeddingSpec(
+            model=get_env("EMBEDDING_FASTEMBED_MODEL", _DEFAULT_FASTEMBED_MODEL),
+            provider="fastembed",
+            base_url=None,
+            exec_locus="local",
+            api_key_env="",
+        )
+    )
+    return specs
+
+
 def _candidate_specs() -> List[_EmbeddingSpec]:
     specs: List[_EmbeddingSpec] = []
     env = _env_spec()
     if env is not None:
         specs.append(env)
     specs.extend(_registry_specs())
+    specs.extend(_vault_default_specs())
     return specs
 
 
@@ -381,10 +492,25 @@ def _resolve() -> Optional[EmbeddingBackend]:
         except Exception as exc:
             logger.debug("embedding backend build failed for %s (%s)", spec.model, exc)
             continue
-        if backend is not None and backend.is_available():
-            logger.info("Embedding backend active: %s (exec_locus=%s)",
-                        backend.name, backend.exec_locus)
-            return backend
+        if backend is None or not backend.is_available():
+            continue
+        # Liveness probe: a credentialed-but-broken endpoint (down server, wrong
+        # model id, disabled API) passes is_available() yet errors on every
+        # embed — which would silently pin us to TF-IDF. Verify one real embed so
+        # resolution falls through to the next candidate (ultimately fastembed).
+        try:
+            probe = backend.embed(["ok"])
+            if not probe or not probe[0]:
+                raise RuntimeError("empty embedding")
+        except Exception as exc:
+            logger.info(
+                "embedding candidate %s skipped: probe failed (%s)",
+                backend.name, str(exc)[:120],
+            )
+            continue
+        logger.info("Embedding backend active: %s (exec_locus=%s)",
+                    backend.name, backend.exec_locus)
+        return backend
     return None
 
 
