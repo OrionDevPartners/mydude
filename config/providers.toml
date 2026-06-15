@@ -378,7 +378,7 @@ adapter = "apify"
 cost = 20
 label = "Apify"
 secrets = ["APIFY_API_TOKEN"]
-notes = "Apify web-scraper Actor via REST (run-sync). Open-page only (non-interactive); enforces the redirect allow-list on requested + final URL; no screenshots."
+notes = "Apify web-scraper Actor via REST (run-sync). Open-page only (non-interactive); enforces the redirect allow-list on requested + final URL; returns a base64 viewport screenshot captured by the Actor's pageFunction (gracefully null if capture fails)."
 
 [browserbackends.agentcore]
 adapter = "agentcore"

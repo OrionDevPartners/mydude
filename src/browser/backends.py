@@ -1017,9 +1017,15 @@ class ApifyBackend(BrowserBackend):
     via ``page.url()``, whose host is re-checked before any content is returned.
     A run that lands off-list yields a ``blocked`` result with no page content,
     so an off-list redirect can never exfiltrate page data through this backend.
-    Apify cannot return a screenshot through the dataset, so screenshots are not
-    available on this backend (``screenshot_b64`` is always None) — honest by
-    omission rather than faked.
+
+    Screenshots: when requested, the Actor's ``pageFunction`` captures a
+    viewport screenshot with Puppeteer (``page.screenshot``) and returns it
+    base64-encoded inside the dataset item, so no second key-value-store fetch is
+    needed. The screenshot rides the same return path as the title/text, so the
+    final-URL allow-list check gates it identically — an off-list redirect yields
+    a blocked result with neither content nor screenshot. If the capture itself
+    fails inside the Actor, the field comes back null and ``open_page`` still
+    succeeds with ``screenshot_b64=None`` (degrade, don't fail the whole page).
     """
 
     API_BASE = "https://api.apify.com/v2"
@@ -1033,25 +1039,38 @@ class ApifyBackend(BrowserBackend):
     def _actor(self) -> str:
         return self.spec.settings.get("actor") or self.DEFAULT_ACTOR
 
-    def _run_actor(self, url, timeout_ms):
-        """Blocking: run the scraper Actor for a single page and return its item."""
+    def _run_actor(self, url, timeout_ms, screenshot=True):
+        """Blocking: run the scraper Actor for a single page and return its item.
+
+        When ``screenshot`` is true the Actor captures a viewport PNG with
+        Puppeteer and returns it base64-encoded in the dataset item's
+        ``screenshot`` field. The capture is wrapped so a failure yields a null
+        screenshot rather than aborting the page extraction.
+        """
         import requests
 
         token = require_secret("APIFY_API_TOKEN")
         page_function = (
             "async function pageFunction(context) {"
-            "  const { page, request } = context;"
+            "  const { page, request, customData } = context;"
             "  const title = await page.title();"
             "  let text = '';"
             "  try {"
             "    text = await page.evaluate(() => document.body ? document.body.innerText : '');"
             "  } catch (e) {}"
-            "  return { url: request.url, finalUrl: page.url(), title: title, text: text };"
+            "  let screenshot = null;"
+            "  if (customData && customData.screenshot) {"
+            "    try {"
+            "      screenshot = await page.screenshot({ type: 'png', encoding: 'base64', fullPage: false });"
+            "    } catch (e) { screenshot = null; }"
+            "  }"
+            "  return { url: request.url, finalUrl: page.url(), title: title, text: text, screenshot: screenshot };"
             "}"
         )
         body = {
             "startUrls": [{"url": url}],
             "pageFunction": page_function,
+            "customData": {"screenshot": bool(screenshot)},
             "proxyConfiguration": {"useApifyProxy": True},
             "maxRequestRetries": 1,
             "maxPagesPerCrawl": 1,
@@ -1081,7 +1100,7 @@ class ApifyBackend(BrowserBackend):
                 attempts=[self.key],
             )
 
-        item = await asyncio.to_thread(self._run_actor, url, timeout_ms)
+        item = await asyncio.to_thread(self._run_actor, url, timeout_ms, screenshot)
         final_url = item.get("finalUrl") or item.get("url") or url
 
         if allow_host is not None and not allow_host(_host_of(final_url)):
@@ -1099,11 +1118,15 @@ class ApifyBackend(BrowserBackend):
                 attempts=[self.key],
             )
 
+        shot = item.get("screenshot") if screenshot else None
+        if not isinstance(shot, str) or not shot:
+            shot = None
+
         return BrowserResult(
             ok=True, backend=self.key, url=url, final_url=final_url,
             title=item.get("title"),
             text=(item.get("text") or "").strip()[:max_chars],
-            screenshot_b64=None,
+            screenshot_b64=shot,
             attempts=[self.key],
         )
 
