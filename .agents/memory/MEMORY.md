@@ -13,6 +13,7 @@
 - [Embedding semantic layer](embedding-semantic-layer.md) — optional cloud_shift-gated vector backend over TF-IDF; embeddings raise the similarity gate but don't alone create contradictions.
 - [SPA vs Jinja](spa-vs-jinja.md) — live UI is the React SPA + /api router; Jinja templates/routes are legacy; dashboard features need api.ts + page + SPA rebuild.
 - [SPA chunk splitting](spa-chunk-splitting.md) — never maxSize-split streamdown (silent blank screen); lazy-load streamdown's consumer; livekit is irreducible → chunkSizeWarningLimit.
+- [SPA build rebase conflicts](spa-build-rebase-conflicts.md) — committed static/spa can carry git conflict markers → JS SyntaxError + asset 404s; fix by rebuilding, never hand-editing.
 - [Web security test harness](web-security-test-harness.md) — test auth/abuse guards via /api with a minted cookie + no-startup TestClient; reset shared limiters; no DB needed.
 - [Outbound write endpoints](outbound-write-endpoints.md) — async endpoints with blocking outbound calls must use asyncio.to_thread; gated confirm fns then need a FOR UPDATE row lock.
 - [DevGuard broker wiring](devguard-broker-wiring.md) — dev-gated dedup alarm into live async broker + SentinelEvent inbox: gate pre-check before heavy import, fire-and-forget off hot path, name-registry not pseudo-units.
