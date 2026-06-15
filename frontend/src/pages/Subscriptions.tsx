@@ -2,7 +2,7 @@ import { useState } from 'react'
 import {
   getSubscriptions, setSubStatus, setSubCredentials, deleteSub,
   openSub, cancelRequest, cancelConfirm, discoverSubscriptions,
-  discoverEmailSubscriptions, addSubscription, Subscription, SubActionResult
+  discoverEmailSubscriptions, addSubscription, Subscription, SubActionResult, SubSpend
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, Screenshot, FormField } from '@/components/ui'
@@ -82,6 +82,8 @@ export function Subscriptions() {
         data.subscriptions.length === 0
           ? <Empty message="No subscriptions yet. Use Discover to find them." icon={<CreditCard size={32} />} />
           : (
+            <>
+            <SpendSummary spend={data.spend} />
             <GlassSection title="Tracked subscriptions" className="animate-fade-in-up">
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {data.subscriptions.map(sub => (
@@ -128,6 +130,7 @@ export function Subscriptions() {
               ))}
             </div>
             </GlassSection>
+            </>
           )
       )}
 
@@ -200,6 +203,36 @@ export function Subscriptions() {
 
       {/* Add subscription modal */}
       <AddSubModal open={showAdd} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); setMsg('Subscription added'); refetch() }} onError={setErr} />
+    </div>
+  )
+}
+
+function SpendSummary({ spend }: { spend?: SubSpend }) {
+  if (!spend) return null
+  const { currencies, counted, unknown } = spend
+  const fmt = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const hasTotal = currencies.length > 0
+  return (
+    <div className="glass-card animate-fade-in-up" style={{ padding: '18px 22px', marginBottom: 16 }}>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>
+        Estimated monthly spend
+      </p>
+      {hasTotal ? (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, flexWrap: 'wrap' }}>
+          {currencies.map(c => (
+            <span key={c.currency} style={{ fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>
+              ~{c.currency}{fmt(c.monthly_total)}<span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-muted)' }}>/mo</span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p style={{ fontSize: 14, color: 'var(--text-secondary)' }}>No parseable costs on your confirmed subscriptions yet.</p>
+      )}
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+        Across {counted} confirmed subscription{counted === 1 ? '' : 's'}
+        {unknown > 0 && ` · ${unknown} with unknown cost excluded`}
+        . Yearly and weekly costs are normalised to a monthly figure.
+      </p>
     </div>
   )
 }

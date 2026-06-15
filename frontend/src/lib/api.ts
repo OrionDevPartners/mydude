@@ -834,7 +834,8 @@ export interface SshStatus { configured: boolean; host: string; user: string; po
 export interface EmailStatus { configured: boolean; host: string; user: string; port: number; mailbox: string; ssl: boolean }
 export interface CapabilityAudit { capability: string; target: string; backend: string; status: string; detail: string; source: string; created_at: string }
 export interface TestResult { allowed: boolean; reason: string; output: string | null; screenshot?: string | null }
-export interface SubscriptionsData { subscriptions: Subscription[]; audit: SubAuditEntry[]; catalog: unknown[] }
+export interface SubSpend { currencies: { currency: string; monthly_total: number }[]; counted: number; unknown: number }
+export interface SubscriptionsData { subscriptions: Subscription[]; audit: SubAuditEntry[]; catalog: unknown[]; spend: SubSpend }
 export interface Subscription { id: number; name: string; domain: string; login_url: string; account_url: string; login_username: string; has_credential: boolean; status: string; est_cost: string; currency: string; source: string; notes: string; last_checked_at: string | null; created_at: string }
 export interface SubAuditEntry { subscription: string; action: string; status: string; detail: string; created_at: string }
 export interface SubActionResult { kind: string; ok: boolean | null; message: string; screenshot?: string | null; pending?: boolean; sub_id: number }

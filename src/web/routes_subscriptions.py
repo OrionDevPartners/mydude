@@ -85,11 +85,13 @@ def _context(request, result=None):
         } for a in actions]
     finally:
         db.close()
+    from src.subscriptions.spend import summarize_monthly_spend
     return {
         "request": request,
         "subscriptions": rows,
         "audit": audit,
         "catalog": all_services(),
+        "spend": summarize_monthly_spend(rows),
         "result": result,
     }
 
