@@ -7,7 +7,7 @@ import {
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, PageHeader, Toggle, FormField, Screenshot } from '@/components/ui'
-import { GlassStatCard } from '@/components/glass'
+import { GlassStatCard, GlassSection } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
 import { Globe, Terminal, Mail, CheckCircle, XCircle, Zap, Grid, RefreshCw } from 'lucide-react'
 
@@ -109,8 +109,10 @@ export function Capabilities() {
       {/* MATRIX TAB — full 11-category capability matrix                    */}
       {/* ------------------------------------------------------------------ */}
       {tab === 'Matrix' && (
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+        <GlassSection
+          title="Capability matrix"
+          className="animate-fade-in-up"
+          actions={
             <button
               className="btn btn-secondary btn-sm"
               onClick={handleReload}
@@ -120,7 +122,8 @@ export function Capabilities() {
               <RefreshCw size={13} style={reloading ? { animation: 'spin 1s linear infinite' } : undefined} />
               {reloading ? 'Reloading…' : 'Reload registry'}
             </button>
-          </div>
+          }
+        >
           {matrixLoading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
           {matrixError && <Alert type="error">{matrixError}</Alert>}
           {matrix && matrix.categories.map(cat => {
@@ -173,7 +176,7 @@ export function Capabilities() {
                         >
                           {p.secrets_present ? 'secrets ✓' : 'secrets missing'}
                         </span>
-                        {p.required && <span className="badge" style={{ fontSize: 10.5, background: 'rgba(234,93,60,0.15)', color: '#e94560' }}>required</span>}
+                        {p.required && <span className="badge" style={{ fontSize: 10.5, background: 'rgba(233,69,96,0.15)', color: 'var(--accent)' }}>required</span>}
                         {p.cost > 0 && <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>cost={p.cost}</span>}
                       </div>
                       {p.health?.detail && (
@@ -214,7 +217,7 @@ export function Capabilities() {
               </Card>
             )
           })}
-        </div>
+        </GlassSection>
       )}
 
       {/* ------------------------------------------------------------------ */}

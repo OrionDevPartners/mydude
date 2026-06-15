@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { getMemory } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Empty } from '@/components/ui'
-import { GlassStatCard } from '@/components/glass'
+import { GlassStatCard, GlassSection } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
 import { Search, Brain, Database, Layers, Cloud, ChevronLeft, ChevronRight } from 'lucide-react'
 
@@ -127,7 +127,7 @@ export function Memory() {
 
       {data && (
         <>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Long-term memories</div>
+          <GlassSection title="Long-term memories" className="animate-fade-in-up">
           {entries.length === 0
             ? <Empty message="No memories match these filters." icon={<Brain size={32} />} />
             : (
@@ -159,10 +159,10 @@ export function Memory() {
               </button>
             </div>
           )}
+          </GlassSection>
 
           {data.layers.length > 0 && (
-            <div style={{ marginTop: 28 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Memory layers</div>
+            <GlassSection title="Memory layers" className="animate-fade-in-up">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {data.layers.map(l => (
                   <Card key={l.id} style={{ padding: '14px 18px' }}>
@@ -183,7 +183,7 @@ export function Memory() {
                   </Card>
                 ))}
               </div>
-            </div>
+            </GlassSection>
           )}
         </>
       )}

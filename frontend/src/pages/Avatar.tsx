@@ -8,6 +8,7 @@ import {
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, FormField, Toggle } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { AvatarCall, VoiceOnlyCall } from '@/components/AvatarCall'
 import { fmtDate } from '@/lib/utils'
 import {
@@ -122,21 +123,24 @@ function Overview({ data }: { data: AvatarData }) {
         </div>
       </Card>
 
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <Card style={{ padding: '14px 18px', flex: 1, minWidth: 160 }}>
-          <div style={{ fontSize: 24, fontWeight: 800 }}>{data.profiles.length}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Profiles ({activeProfiles} active)</div>
-        </Card>
-        <Card style={{ padding: '14px 18px', flex: 1, minWidth: 160 }}>
-          <div style={{ fontSize: 24, fontWeight: 800 }}>{data.sessions.length}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Recent sessions</div>
-        </Card>
-        <Card style={{ padding: '14px 18px', flex: 1, minWidth: 160 }}>
-          <div style={{ fontSize: 24, fontWeight: 800, color: data.avatar.configured ? '#3fb950' : undefined }}>
-            {data.avatar.configured ? 'Video' : 'Voice'}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Default mode</div>
-        </Card>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+        <GlassStatCard
+          value={data.profiles.length}
+          label={`Profiles (${activeProfiles} active)`}
+          icon={<UserSquare size={16} />}
+          glow={activeProfiles > 0}
+        />
+        <GlassStatCard
+          value={data.sessions.length}
+          label="Recent sessions"
+          icon={<Video size={16} />}
+        />
+        <GlassStatCard
+          value={data.avatar.configured ? 'Video' : 'Voice'}
+          label="Default mode"
+          icon={data.avatar.configured ? <Video size={16} /> : <Mic size={16} />}
+          glow={data.avatar.configured}
+        />
       </div>
     </div>
   )

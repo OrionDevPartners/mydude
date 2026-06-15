@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { getProvenance } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, PageHeader, Empty } from '@/components/ui'
-import { GlassStatCard } from '@/components/glass'
+import { GlassStatCard, GlassSection } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
 import { Search, ChevronLeft, ChevronRight, GitBranch, CheckCircle, AlertTriangle } from 'lucide-react'
 
@@ -33,7 +33,8 @@ export function Provenance() {
         </div>
       )}
 
-      <div style={{ position: 'relative', marginBottom: 18 }}>
+      <GlassSection title="Claim records" className="animate-fade-in-up">
+      <div style={{ position: 'relative', marginBottom: 14 }}>
         <Search size={14} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
         <input
           className="form-input"
@@ -92,6 +93,7 @@ export function Provenance() {
           )}
         </>
       )}
+      </GlassSection>
     </div>
   )
 }

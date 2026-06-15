@@ -6,7 +6,7 @@ import {
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, Screenshot, FormField } from '@/components/ui'
-import { GlassStatCard } from '@/components/glass'
+import { GlassStatCard, GlassSection } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
 import { Plus, Trash2, ExternalLink, XCircle, CreditCard, RefreshCw, CheckCircle, Search } from 'lucide-react'
 
@@ -82,6 +82,7 @@ export function Subscriptions() {
         data.subscriptions.length === 0
           ? <Empty message="No subscriptions yet. Use Discover to find them." icon={<CreditCard size={32} />} />
           : (
+            <GlassSection title="Tracked subscriptions" className="animate-fade-in-up">
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {data.subscriptions.map(sub => (
                 <Card key={sub.id} style={{ padding: '14px 18px' }}>
@@ -126,6 +127,7 @@ export function Subscriptions() {
                 </Card>
               ))}
             </div>
+            </GlassSection>
           )
       )}
 

@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import { getDirectory } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Empty } from '@/components/ui'
-import { GlassStatCard } from '@/components/glass'
+import { GlassStatCard, GlassSection } from '@/components/glass'
 import { ExternalLink, CheckCircle, Globe, Plus, Grid3x3 } from 'lucide-react'
 
 export function Directory() {
@@ -35,10 +35,7 @@ export function Directory() {
       {error && <Alert type="error">{error}</Alert>}
 
       {data && data.grouped.map(group => (
-        <div key={group.category} style={{ marginBottom: 28 }}>
-          <h2 style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 12 }}>
-            {group.category}
-          </h2>
+        <GlassSection key={group.category} title={group.category} className="animate-fade-in-up">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
             {group.services.map(svc => (
               <Card key={svc.slug} style={{ padding: '16px 18px', position: 'relative' }}>
@@ -97,7 +94,7 @@ export function Directory() {
               </Card>
             ))}
           </div>
-        </div>
+        </GlassSection>
       ))}
     </div>
   )

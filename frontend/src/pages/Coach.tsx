@@ -9,6 +9,7 @@ import {
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, FormField, Toggle } from '@/components/ui'
+import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
 import {
   Heart, RefreshCw, Plus, CheckCircle2, XCircle, AlertTriangle, Plug, Sparkles,
@@ -28,9 +29,9 @@ const ACTION_STATUS_COLOR: Record<string, string> = {
 
 function valenceColor(v: number | null | undefined): string {
   if (v === null || v === undefined) return 'var(--text-muted)'
-  if (v > 0.15) return '#3fb950'
-  if (v < -0.15) return 'var(--danger, #e94560)'
-  return '#e0a800'
+  if (v > 0.15) return '#34d399'
+  if (v < -0.15) return 'var(--accent)'
+  return '#fbbf24'
 }
 
 export function Coach() {
@@ -196,19 +197,10 @@ function Overview({ data, working, action }: {
           onChange={(v) => action(() => setCoachAutoreflect(v), v ? 'Auto-reflection enabled' : 'Auto-reflection disabled')} />
       </Card>
 
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <Card style={{ padding: '14px 18px', flex: 1, minWidth: 160 }}>
-          <div style={{ fontSize: 24, fontWeight: 800 }}>{data.recent_signals.length}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Recent signals</div>
-        </Card>
-        <Card style={{ padding: '14px 18px', flex: 1, minWidth: 160 }}>
-          <div style={{ fontSize: 24, fontWeight: 800 }}>{openInsights}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Open insights</div>
-        </Card>
-        <Card style={{ padding: '14px 18px', flex: 1, minWidth: 160 }}>
-          <div style={{ fontSize: 24, fontWeight: 800, color: data.pending_actions.length ? 'var(--danger, #e94560)' : undefined }}>{data.pending_actions.length}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Pending approvals</div>
-        </Card>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+        <GlassStatCard value={data.recent_signals.length} label="Recent signals" icon={<Heart size={16} />} />
+        <GlassStatCard value={openInsights} label="Open insights" icon={<Sparkles size={16} />} glow={openInsights > 0} />
+        <GlassStatCard value={data.pending_actions.length} label="Pending approvals" icon={<AlertTriangle size={16} />} glow={data.pending_actions.length > 0} />
       </div>
 
       {data.pending_actions.length > 0 && (
@@ -444,7 +436,7 @@ function VoiceCapture({ strictPrivate, onClose, onSaved, onError }: {
           {!recording
             ? <button type="button" className="btn btn-secondary btn-sm" onClick={startRecording}><Mic size={14} /> Record</button>
             : <button type="button" className="btn btn-primary btn-sm" onClick={stopRecording}><Square size={14} /> Stop</button>}
-          {recording && <span style={{ fontSize: 12, color: 'var(--danger, #e94560)' }}>● recording…</span>}
+          {recording && <span style={{ fontSize: 12, color: 'var(--accent)' }}>● recording…</span>}
           <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer', margin: 0 }}>
             <Upload size={14} /> Upload file
             <input type="file" accept="audio/*" onChange={onPick} style={{ display: 'none' }} />

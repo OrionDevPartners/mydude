@@ -1,7 +1,7 @@
 import { getConnected } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Empty } from '@/components/ui'
-import { GlassStatCard } from '@/components/glass'
+import { GlassStatCard, GlassSection } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
 import { CheckCircle, XCircle, Plug, AlertTriangle, Link2 } from 'lucide-react'
 
@@ -49,6 +49,7 @@ export function Connected() {
         data.rows.length === 0
           ? <Empty message="No connector services configured." icon={<Plug size={32} />} />
           : (
+            <GlassSection title="Integration status" className="animate-fade-in-up">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
               {data.rows.map(row => (
                 <Card key={row.connector} style={{ padding: '16px 18px' }}>
@@ -75,6 +76,7 @@ export function Connected() {
                 </Card>
               ))}
             </div>
+            </GlassSection>
           )
       )}
     </div>

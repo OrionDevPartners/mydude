@@ -1,7 +1,7 @@
 import { getSystem } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Empty } from '@/components/ui'
-import { GlassStatCard } from '@/components/glass'
+import { GlassStatCard, GlassSection } from '@/components/glass'
 import { Activity, CheckCircle, XCircle, AlertTriangle, RefreshCw } from 'lucide-react'
 
 export function System() {
@@ -59,20 +59,35 @@ export function System() {
         entries.length === 0
           ? <Empty message="No health check results." icon={<Activity size={32} />} />
           : (
+            <GlassSection title="Health checks" className="animate-fade-in-up">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
               {entries.map(([key, val], i) => {
                 const v = val as Record<string, unknown>
                 const status = v?.status ?? v?.ok ?? val
+                const fields = (typeof v === 'object' && v !== null)
+                  ? Object.entries(v).filter(([k]) => k !== 'status' && k !== 'ok')
+                  : []
                 return (
                   <Card key={key} style={{ padding: '16px 18px', animationDelay: `${i * 40}ms` }} className="animate-fade-in-up">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                      {statusIcon(status)}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
                       <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{key}</span>
+                      {statusIcon(status)}
                     </div>
                     {typeof v === 'object' && v !== null ? (
-                      <pre style={{ fontSize: 11.5, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-                        {JSON.stringify(v, null, 2)}
-                      </pre>
+                      fields.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {fields.map(([fk, fv]) => (
+                            <div key={fk} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+                              <span style={{ fontSize: 11.5, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>{fk}</span>
+                              <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', fontFamily: 'monospace', textAlign: 'right', wordBreak: 'break-word', minWidth: 0 }}>
+                                {typeof fv === 'object' && fv !== null ? JSON.stringify(fv) : String(fv)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{String(status)}</p>
+                      )
                     ) : (
                       <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{String(val)}</p>
                     )}
@@ -80,6 +95,7 @@ export function System() {
                 )
               })}
             </div>
+            </GlassSection>
           )
       )}
     </div>

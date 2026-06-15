@@ -7,6 +7,7 @@ import {
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Badge, Empty, Collapsible } from '@/components/ui'
+import { GlassStatCard, GlassSection } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
 import {
   FlaskConical, ChevronRight, ChevronLeft, Play, Square, RotateCcw,
@@ -48,9 +49,9 @@ function pct(n: number | null | undefined) {
 
 function scoreColor(n: number | null | undefined) {
   if (n === null || n === undefined) return 'var(--text-muted)'
-  if (n >= 0.6) return '#2ecc71'
-  if (n >= 0.35) return '#f39c12'
-  return '#e74c3c'
+  if (n >= 0.6) return '#34d399'
+  if (n >= 0.35) return '#fbbf24'
+  return '#f87171'
 }
 
 // ---------------------------------------------------------------------------
@@ -58,9 +59,9 @@ function scoreColor(n: number | null | undefined) {
 // ---------------------------------------------------------------------------
 function IterationRow({ iter }: { iter: ReturnType<typeof Object.create> }) {
   const icon = iter.outcome === 'pass'
-    ? <CheckCircle size={13} color="#2ecc71" />
+    ? <CheckCircle size={13} color="#34d399" />
     : iter.outcome === 'error' || iter.outcome === 'fail'
-    ? <AlertCircle size={13} color="#e74c3c" />
+    ? <AlertCircle size={13} color="#f87171" />
     : <Clock size={13} />
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 12.5 }}>
@@ -78,7 +79,7 @@ function IterationRow({ iter }: { iter: ReturnType<typeof Object.create> }) {
       </span>
       <Badge color="gray" style={{ marginLeft: 'auto', fontSize: 10 }}>{iter.sandbox_label}</Badge>
       {iter.error && (
-        <span style={{ color: '#e74c3c', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 }} title={iter.error}>
+        <span style={{ color: '#f87171', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 }} title={iter.error}>
           {iter.error}
         </span>
       )}
@@ -137,7 +138,7 @@ function ThesisCard({ thesis, expanded }: { thesis: EvolutionThesis; expanded?: 
       )}
       <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
         created {fmtDate(thesis.created_at)}
-        {thesis.stalled_at && <span style={{ color: '#e74c3c' }}> · stalled {fmtDate(thesis.stalled_at)}</span>}
+        {thesis.stalled_at && <span style={{ color: '#f87171' }}> · stalled {fmtDate(thesis.stalled_at)}</span>}
       </div>
     </Card>
   )
@@ -148,10 +149,10 @@ function ThesisCard({ thesis, expanded }: { thesis: EvolutionThesis; expanded?: 
 // ---------------------------------------------------------------------------
 function CycleLogRow({ log }: { log: EvolutionCycleLog }) {
   const icon = log.outcome === 'promoted'
-    ? <CheckCircle size={13} color="#2ecc71" />
+    ? <CheckCircle size={13} color="#34d399" />
     : log.outcome === 'rejected'
-    ? <AlertCircle size={13} color="#e74c3c" />
-    : <AlertTriangle size={13} color="#f39c12" />
+    ? <AlertCircle size={13} color="#f87171" />
+    : <AlertTriangle size={13} color="#fbbf24" />
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 12.5 }}>
       {icon}
@@ -278,7 +279,7 @@ function ComponentDetail({ id, onBack }: { id: number; onBack: () => void }) {
             <Badge color={LOOP_COLOR[c.loop_state] || 'gray'}>{c.loop_state}</Badge>
             {c.thread_alive && <Badge color="green">thread alive</Badge>}
             {isRunning && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: '#2ecc71' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: '#34d399' }}>
                 <Spinner size={11} /> live
               </span>
             )}
@@ -408,7 +409,7 @@ function ComponentCard({ c, onSelect }: { c: CognitionComponent; onSelect: () =>
             <Badge color="gray">{c.component_type}</Badge>
             <Badge color={LOOP_COLOR[c.loop_state] || 'gray'}>{c.loop_state}</Badge>
             {isRunning && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: '#2ecc71' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: '#34d399' }}>
                 <Spinner size={11} /> evolving
               </span>
             )}
@@ -419,9 +420,9 @@ function ComponentCard({ c, onSelect }: { c: CognitionComponent; onSelect: () =>
           <div style={{ display: 'flex', gap: 14, marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
             <span><b>{c.cycle_count}</b> cycles</span>
             <span><b>{c.total_theses}</b> theses</span>
-            <span style={{ color: '#2ecc71' }}><b>{c.promoted_theses}</b> promoted</span>
+            <span style={{ color: '#34d399' }}><b>{c.promoted_theses}</b> promoted</span>
             {c.active_thesis && (
-              <span style={{ color: '#f39c12' }}>
+              <span style={{ color: '#fbbf24' }}>
                 active thesis: {c.active_thesis.branch_cell} ({c.active_thesis.status})
               </span>
             )}
@@ -445,11 +446,25 @@ function ComponentList({ onSelect }: { onSelect: (id: number) => void }) {
     />
   )
 
+  const running = data.components.filter(c => c.loop_state === 'running' || c.thread_alive).length
+  const totalCycles = data.components.reduce((s, c) => s + c.cycle_count, 0)
+  const totalPromoted = data.components.reduce((s, c) => s + c.promoted_theses, 0)
+
   return (
-    <div style={{ display: 'grid', gap: 10 }}>
-      {data.components.map(c => (
-        <ComponentCard key={c.id} c={c} onSelect={() => onSelect(c.id)} />
-      ))}
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
+        <GlassStatCard value={data.components.length} label="Components" icon={<FlaskConical size={16} />} />
+        <GlassStatCard value={running} label="Evolving now" icon={<Activity size={16} />} glow={running > 0} />
+        <GlassStatCard value={totalCycles} label="Total cycles" icon={<RotateCcw size={16} />} />
+        <GlassStatCard value={totalPromoted} label="Promoted theses" icon={<CheckCircle size={16} />} />
+      </div>
+      <GlassSection title="Cognition components" className="animate-fade-in-up">
+        <div style={{ display: 'grid', gap: 10 }}>
+          {data.components.map(c => (
+            <ComponentCard key={c.id} c={c} onSelect={() => onSelect(c.id)} />
+          ))}
+        </div>
+      </GlassSection>
     </div>
   )
 }
