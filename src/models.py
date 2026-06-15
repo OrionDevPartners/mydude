@@ -274,6 +274,13 @@ class CapabilityAuditLog(Base):
     status = Column(String(20), nullable=False, default="ok")
     detail = Column(Text, nullable=True)
     source = Column(String(40), nullable=True)
+    # Where the capability executed (local / in_azure / cloud). Captured so the
+    # audit trail records jurisdiction, not just the action — governance pillar #4.
+    exec_locus = Column(String(20), nullable=True)
+    # Who triggered the invocation. Nullable so system/agent-initiated calls and
+    # historical rows (written before identity capture) remain representable.
+    actor_user_id = Column(Integer, nullable=True, index=True)
+    actor_username = Column(String(80), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

@@ -7,7 +7,8 @@ from typing import Dict, Any, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def audit_capability(capability, target=None, backend=None, status="ok", detail=None, source=None):
+def audit_capability(capability, target=None, backend=None, status="ok", detail=None,
+                     source=None, exec_locus=None, actor_user_id=None, actor_username=None):
     """Record a capability invocation to the CapabilityAuditLog. Never raises —
     an audit failure must not break the capability or leak details."""
     try:
@@ -22,6 +23,9 @@ def audit_capability(capability, target=None, backend=None, status="ok", detail=
                 status=status,
                 detail=(str(detail)[:2000] if detail is not None else None),
                 source=source,
+                exec_locus=exec_locus,
+                actor_user_id=actor_user_id,
+                actor_username=(str(actor_username)[:80] if actor_username is not None else None),
             ))
             db.commit()
         finally:
@@ -115,8 +119,8 @@ class Integrations:
         the resolver) when no adapter qualifies — caller surfaces this as a
         clear refusal rather than a silent no-op.
         """
-        from src.capabilities.resolver import get_resolver
-        return get_resolver().resolve(category)
+        from src.capabilities.resolver import governed_resolve
+        return governed_resolve(category)
 
     @staticmethod
     def _require_browser_engine():
@@ -990,13 +994,16 @@ class Integrations:
         status_cb = "%s/api/telephony/status?cs=%d" % (base, call_session_id)
 
         try:
-            # Route through the adapter's place_call() method so that the
-            # resolver-selected provider executes the call — not a hardcoded
-            # direct facade import. The adapter wraps the facade internally,
-            # keeping the telephony vendor abstracted behind the capability layer.
-            res = await asyncio.to_thread(
-                realtime_adapter.place_call,
+            # Route through the governed capability path so the resolver-selected
+            # provider executes the call AND the invocation is governed uniformly
+            # (jurisdiction gate + capability-level audit with exec_locus/actor),
+            # not just the resolution. governed_call_async offloads the blocking
+            # place_call() to a thread and audits its real outcome.
+            from src.capabilities.resolver import governed_call_async
+            res = await governed_call_async(
+                "realtime", "place_call",
                 to_number, answer_url, from_number, status_cb,
+                actor=params.get("actor") or {}, source=source,
             )
         except (TelephonyNotConfigured, TelephonyAuthError, TelephonyProviderError) as e:
             _mark_call_failed(call_session_id, str(e))

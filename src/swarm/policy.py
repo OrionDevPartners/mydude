@@ -124,7 +124,38 @@ class PolicyEngine:
         if capability in ("ssh_read_history", "ssh_fetch_code"):
             return PolicyDecision(True, "Allowed by policy.")
 
-        command = (params.get("command") or "").strip()
+        return self._validate_command_string(params.get("command") or "")
+
+    def evaluate_compute_command(self, command) -> PolicyDecision:
+        """Gate a local container_compute (subprocess) command against the same
+        allow-list and destructive-pattern rules the SSH bridge enforces.
+
+        ``command`` may be a string or a list of argv tokens (as the
+        SubprocessComputeAdapter expects). A list is rejoined into a single
+        shell-equivalent string so the exact same validation applies — there is
+        one allow-list (``SSH_ALLOWED_COMMANDS``) governing every command path,
+        whether it runs over SSH or in the local container.
+
+        Unlike SSH, this does NOT require ENABLE_SSH_CAPABILITY: local subprocess
+        execution is in-container (exec_locus=local) and is governed purely by
+        the allow-list, not the outbound-SSH enable flag.
+        """
+        if isinstance(command, (list, tuple)):
+            if not command:
+                return PolicyDecision(False, "A command is required.")
+            try:
+                command_str = " ".join(shlex.quote(str(t)) for t in command)
+            except Exception:
+                return PolicyDecision(False, "Command could not be parsed safely.")
+        else:
+            command_str = command or ""
+        return self._validate_command_string(command_str)
+
+    def _validate_command_string(self, command: str) -> PolicyDecision:
+        """Shared allow-list + destructive-pattern validation for a single
+        command line. Used by both the SSH bridge gate and the local
+        container_compute gate so there is exactly one command policy."""
+        command = (command or "").strip()
         if not command:
             return PolicyDecision(False, "A command is required.")
         # Reject any newline/carriage-return outright: a single command line

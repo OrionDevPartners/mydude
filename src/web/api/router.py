@@ -1631,6 +1631,43 @@ async def api_test_ssh(request: Request, command: str = Form(""), _=Depends(requ
     return {"allowed": res.decision.allowed, "reason": res.decision.reason, "output": res.output}
 
 
+@router.post("/capabilities/test/compute")
+async def api_test_compute(
+    request: Request, command: str = Form(""), session=Depends(require_auth)
+):
+    """Run a local container_compute (subprocess) command through the governed
+    capability path: jurisdiction gate + command allow-list + audit trail.
+
+    Demonstrates governance pillar #4 for a non-LLM capability — a disallowed
+    command is rejected (and audited) before any subprocess is spawned.
+    """
+    import asyncio
+    import shlex as _shlex
+    from src.capabilities.resolver import (
+        governed_call, CapabilityDenied, CapabilityNotAvailable,
+    )
+    raw = (command or "").strip()
+    if not raw:
+        return {"allowed": False, "reason": "A command is required.", "output": None}
+    try:
+        argv = _shlex.split(raw)
+    except ValueError:
+        return {"allowed": False, "reason": "Command could not be parsed safely.", "output": None}
+    try:
+        # Sync adapter method run off the event loop so the audit record
+        # reflects the real outcome (governed_call audits after execution).
+        result = await asyncio.to_thread(
+            governed_call, "container_compute", "run_command", argv,
+            actor=session, source="capabilities-ui",
+        )
+        out = result.get("stdout") or result.get("stderr") or ""
+        return {"allowed": True, "reason": "Allowed by policy.", "output": out}
+    except CapabilityDenied as exc:
+        return {"allowed": False, "reason": str(exc), "output": None}
+    except CapabilityNotAvailable as exc:
+        return {"allowed": False, "reason": str(exc), "output": None}
+
+
 @router.post("/capabilities/test/code")
 async def api_test_code(request: Request, _=Depends(require_auth)):
     from src.web.routes_capabilities import _broker
