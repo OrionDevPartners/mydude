@@ -1258,6 +1258,48 @@ class MemoryEntryRecord(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class BurstWorker(Base):
+    """An ephemeral burst compute worker provisioned by the BurstManager.
+
+    Lifecycle states:
+      provisioning → active → terminated | failed
+    Created when saturation exceeds the burst threshold and jurisdiction
+    permits cloud egress.  Torn down when saturation drains.
+
+    backend   — which backend adapter provisioned this worker (modal, ray, …)
+    worker_id — UUID4 assigned by BurstManager, stable across retries
+    status    — provisioning | active | terminated | failed
+    """
+    __tablename__ = "burst_workers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    worker_id = Column(String(36), nullable=False, unique=True, index=True)
+    backend = Column(String(60), nullable=False)
+    status = Column(String(30), nullable=False, default="provisioning", index=True)
+    config_json = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    provisioned_at = Column(DateTime, default=datetime.utcnow)
+    torn_down_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BurstEvent(Base):
+    """Audit trail of every burst worker lifecycle transition.
+
+    event_type values:
+      provisioned | provision_failed | dispatched | dispatch_failed |
+      teardown_started | torn_down | burst_blocked | drain_started
+    """
+    __tablename__ = "burst_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    worker_id = Column(String(36), nullable=False, index=True)
+    db_worker_id = Column(Integer, nullable=True, index=True)
+    event_type = Column(String(40), nullable=False, index=True)
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class MemoryAuditLog(Base):
     """Durable audit trail of substrate MemoryEvents.
 

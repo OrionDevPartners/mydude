@@ -588,3 +588,45 @@ label = "Local Subprocess"
 secrets = []
 exec_locus = "local"
 notes = "Subprocess execution in the local container. Command allow-list enforcement is the capability broker's responsibility (PolicyEngine + SSH_ALLOWED_COMMANDS). Always available."
+
+# =============================================================================
+# BURST COMPUTE capability — ephemeral cloud workers for overflow inference.
+# =============================================================================
+# When the local swarm reaches its saturation threshold (circuit-breaker
+# pressure + concurrency cap), the BurstManager provisions ephemeral workers
+# via the first configured backend.  Workers are torn down when saturation drains.
+#
+# Jurisdiction guard (non-negotiable):
+#   - cloud_shift=false  OR  exec_locus_pin=local  → burst is BLOCKED;
+#     no cloud worker is ever provisioned; degradation to local/queue instead.
+#
+# Adding a backend: add a [burstbackends.<key>] block here and create
+# src/fleet/burst/backends/<key>_adapter.py — no other files change.
+#
+# Backends are tried in `enabled` order; the first one whose is_configured()
+# returns True (i.e. has its secrets in the vault) is used.
+# =============================================================================
+[burst_compute]
+enabled = ["modal", "ray"]
+required = []
+
+# Saturation thresholds (operator-tunable via env):
+#   BURST_SATURATION_THRESHOLD  — pressure [0,1] above which burst triggers (default 0.70)
+#   BURST_DRAIN_THRESHOLD       — pressure [0,1] below which workers are torn down (default 0.30)
+#   BURST_MAX_WORKERS           — max concurrent burst workers (default 4)
+
+[burstbackends.modal]
+adapter = "modal"
+cost = 10
+label = "Modal Serverless (Functions-as-a-Service)"
+exec_locus = "provider_hosted"
+secrets = ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]
+notes = "Modal serverless functions for ephemeral LLM inference. Set MODAL_TOKEN_ID, MODAL_TOKEN_SECRET, and MODAL_BURST_ENDPOINT_URL in the vault to activate."
+
+[burstbackends.ray]
+adapter = "ray"
+cost = 20
+label = "Ray Cluster (Distributed Tasks)"
+exec_locus = "provider_hosted"
+secrets = ["RAY_ADDRESS"]
+notes = "Ray remote tasks dispatched to a running Ray cluster. Set RAY_ADDRESS (e.g. ray://localhost:10001) to activate. Optionally RAY_BURST_TOKEN for authenticated clusters."

@@ -863,6 +863,204 @@ async def get_sales_conversation(conversation_id: int, _=Depends(require_auth)):
 
 
 # ---------------------------------------------------------------------------
+# Burst compute endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/burst/status")
+async def burst_status(_=Depends(require_auth)):
+    """Live burst fabric status: active workers, recent events, backend config.
+
+    Never raises — returns a degraded summary on any internal error so the
+    fleet dashboard always gets a renderable response.
+    """
+    from src.fleet.burst.manager import get_burst_manager, measure_saturation, evaluate_burst_jurisdiction
+    from src.fleet.burst.registry import get_backends
+
+    manager = get_burst_manager()
+
+    saturation = {}
+    try:
+        sig = await measure_saturation()
+        saturation = {
+            "pressure": round(sig.pressure, 3),
+            "circuit_breaker_open_fraction": round(sig.circuit_breaker_open_fraction, 3),
+            "active_call_fraction": round(sig.active_call_fraction, 3),
+            "total_providers": sig.total_providers,
+            "open_providers": sig.open_providers,
+            "is_saturated": sig.is_saturated(),
+        }
+    except Exception as e:
+        saturation = {"error": str(e)}
+
+    jurisdiction = {}
+    try:
+        dec = evaluate_burst_jurisdiction()
+        jurisdiction = {
+            "allowed": dec.allowed,
+            "reason": dec.reason,
+            "cloud_shift_active": dec.cloud_shift_active,
+            "exec_locus_pin": dec.exec_locus_pin,
+        }
+    except Exception as e:
+        jurisdiction = {"error": str(e)}
+
+    backends = []
+    try:
+        for b in get_backends():
+            configured = False
+            try:
+                configured = b.is_configured()
+            except Exception:
+                pass
+            backends.append({"key": b.key, "configured": configured})
+    except Exception as e:
+        backends = [{"error": str(e)}]
+
+    recent_events: list = []
+    try:
+        from src.database import SessionLocal
+        from src.models import BurstEvent
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(BurstEvent)
+                .order_by(BurstEvent.id.desc())
+                .limit(20)
+                .all()
+            )
+            recent_events = [
+                {
+                    "id": r.id,
+                    "worker_id": r.worker_id,
+                    "event_type": r.event_type,
+                    "detail": r.detail,
+                    "created_at": _dt(r.created_at),
+                }
+                for r in rows
+            ]
+        finally:
+            db.close()
+    except Exception as e:
+        recent_events = [{"error": str(e)}]
+
+    active_workers_summary: list = []
+    active_count = 0
+    try:
+        active_workers_summary = manager.worker_summary()
+        active_count = manager.active_worker_count()
+    except Exception as e:
+        active_workers_summary = [{"error": str(e)}]
+
+    return {
+        "active_workers": active_count,
+        "active_worker_details": active_workers_summary,
+        "saturation": saturation,
+        "jurisdiction": jurisdiction,
+        "backends": backends,
+        "recent_events": recent_events,
+    }
+
+
+@router.get("/burst/workers")
+async def list_burst_workers(limit: int = 50, _=Depends(require_auth)):
+    """List burst worker rows from the DB (includes terminated workers)."""
+    from src.database import SessionLocal
+    from src.models import BurstWorker
+    limit = max(1, min(int(limit or 50), 200))
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(BurstWorker)
+            .order_by(BurstWorker.id.desc())
+            .limit(limit)
+            .all()
+        )
+        return {
+            "workers": [
+                {
+                    "id": r.id,
+                    "worker_id": r.worker_id,
+                    "backend": r.backend,
+                    "status": r.status,
+                    "error": r.error,
+                    "provisioned_at": _dt(r.provisioned_at),
+                    "torn_down_at": _dt(r.torn_down_at),
+                    "created_at": _dt(r.created_at),
+                }
+                for r in rows
+            ]
+        }
+    finally:
+        db.close()
+
+
+@router.post("/burst/check")
+async def burst_check(_=Depends(require_auth)):
+    """Manually trigger a saturation check and, if warranted, provision a burst worker.
+
+    The same jurisdiction guard applies: no worker is provisioned when
+    cloud_shift=False or exec_locus_pin=local.
+    Returns the saturation signal and burst decision.
+    """
+    from src.fleet.burst.manager import (
+        get_burst_manager, measure_saturation, evaluate_burst_jurisdiction,
+    )
+
+    sig = await measure_saturation()
+    decision = evaluate_burst_jurisdiction()
+
+    action_taken = None
+    burst_decision_result = None
+    if sig.is_saturated():
+        manager = get_burst_manager()
+        burst_decision_result = await manager.check_and_burst()
+        if burst_decision_result is None:
+            action_taken = "no_action_needed"
+        elif not burst_decision_result.allowed:
+            action_taken = "burst_blocked"
+        elif burst_decision_result.worker_provisioned:
+            action_taken = "burst_worker_provisioned"
+        else:
+            action_taken = "burst_at_capacity_or_no_backend"
+    else:
+        action_taken = "no_action_needed"
+
+    return {
+        "saturation": {
+            "pressure": round(sig.pressure, 3),
+            "is_saturated": sig.is_saturated(),
+            "circuit_breaker_open_fraction": round(sig.circuit_breaker_open_fraction, 3),
+            "active_call_fraction": round(sig.active_call_fraction, 3),
+        },
+        "jurisdiction": {
+            "allowed": decision.allowed,
+            "reason": decision.reason,
+        },
+        "action_taken": action_taken,
+    }
+
+
+@router.post("/burst/drain")
+async def burst_drain(_=Depends(require_auth)):
+    """Tear down all active burst workers (immediate, regardless of saturation).
+
+    Use to manually release cloud resources.  Idempotent if no workers are active.
+    """
+    from src.fleet.burst.manager import get_burst_manager
+
+    manager = get_burst_manager()
+    count_before = manager.active_worker_count()
+    await manager.teardown_all(reason="operator_drain")
+    count_after = manager.active_worker_count()
+    return {
+        "ok": True,
+        "workers_before": count_before,
+        "workers_after": count_after,
+        "torn_down": count_before - count_after,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Fleet status
 # ---------------------------------------------------------------------------
 

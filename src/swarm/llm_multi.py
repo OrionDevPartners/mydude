@@ -102,6 +102,23 @@ class MultiProviderLLM:
         # decision (category, lead provider, capped-bias outcome). Surfaced by
         # the orchestrator/API; None until the first governed call.
         self.last_benchmark_routing: Optional[Dict[str, Any]] = None
+        # Burst saturation tracking: _active_calls counts in-flight calls so
+        # measure_saturation() can derive the active_call_fraction.
+        self._active_calls: int = 0
+        self._concurrency_cap: int = self._compute_concurrency_cap()
+
+    def _compute_concurrency_cap(self) -> int:
+        """Total concurrency capacity across all providers."""
+        total = 0
+        for s in self.specs:
+            n = _env_int(s.concurrency_env, s.default_concurrency) if s.concurrency_env else s.default_concurrency
+            total += max(1, n)
+        return max(1, total)
+
+    @property
+    def _burst_active_fraction(self) -> float:
+        """Fraction of total concurrency capacity currently in use [0, 1]."""
+        return min(1.0, self._active_calls / self._concurrency_cap)
 
     def apply_jurisdiction(self, exec_locus_pin: str = "any", cloud_shift_active: bool = True) -> None:
         """Pin provider selection to a jurisdiction decision before a run."""
@@ -296,6 +313,7 @@ class MultiProviderLLM:
             async def run():
                 msg = user if not hint else f"[Specialization: {hint}]\n{user}"
                 return await adapter.generate(system, msg, self.budget_tokens)
+            self._active_calls += 1
             try:
                 t0 = time.time()
                 text = await _backoff_retry(run)
@@ -304,6 +322,8 @@ class MultiProviderLLM:
             except Exception as e:
                 await self.circuit_breaker.record_failure(adapter.key, str(e))
                 return ProviderReply(adapter.key, adapter.model, "", False, str(e))
+            finally:
+                self._active_calls = max(0, self._active_calls - 1)
 
     async def _judge_merge(self, system: str, user: str, replies: List[ProviderReply], routing=None) -> str:
         lead = routing.lead_provider if routing else None

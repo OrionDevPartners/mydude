@@ -155,16 +155,67 @@ class LLM:
             )
 
         team = self._get_team()
+        domain = (self._jurisdiction or {}).get("domain", "general")
+
+        _burst_payload = {"system": system, "user": user, "domain": domain}
+
         if team is None:
+            # No local providers configured — try burst overflow dispatch before failing.
+            try:
+                from src.fleet.burst.manager import get_burst_manager
+                _bm = get_burst_manager()
+                _overflow = await _bm.dispatch_overflow(_burst_payload)
+                if _overflow:
+                    # Backend contract returns {ok, text}; also accept {merged} for
+                    # compatibility with backends that forward call_team() responses.
+                    _text = _overflow.get("merged") or _overflow.get("text", "")
+                    if _text:
+                        logger.info("LLM.call: burst overflow dispatch succeeded (no local providers)")
+                        return _text
+            except Exception as _be:
+                logger.debug("LLM.call: burst overflow dispatch failed: %s", _be)
             raise RuntimeError("LLM_PROVIDER is set but no API keys are configured.")
 
         # Role hints are resolved from env_1 (per-provider role_hint) inside the
         # swarm; no vendor names are referenced here. The domain (jurisdiction
         # slug) feeds benchmark-aware lead routing without naming any vendor.
-        domain = (self._jurisdiction or {}).get("domain", "general")
-        out = await team.call_team(system, user, domain=domain)
-        self.last_benchmark_routing = out.get("benchmark_routing")
-        return out["merged"]
+        out = None
+        call_err = None
+        try:
+            out = await team.call_team(system, user, domain=domain)
+        except Exception as e:
+            call_err = e
+            logger.warning("LLM.call: call_team failed (%s); will try burst overflow", e)
+
+        merged = (out or {}).get("merged", "") if out is not None else ""
+        if out is not None:
+            self.last_benchmark_routing = out.get("benchmark_routing")
+
+        # Saturation overflow: when local call failed or returned a DEGRADED/empty
+        # result, try dispatching to an active burst worker before propagating the
+        # failure.  Burst workers are provisioned by check_and_burst() per wave;
+        # dispatch_overflow() returns None immediately if none are ready.
+        _needs_overflow = call_err is not None or not merged or merged.startswith("[DEGRADED")
+        if _needs_overflow:
+            try:
+                from src.fleet.burst.manager import get_burst_manager
+                _bm = get_burst_manager()
+                _overflow = await _bm.dispatch_overflow(_burst_payload)
+                if _overflow:
+                    _text = _overflow.get("merged") or _overflow.get("text", "")
+                    if _text:
+                        logger.info(
+                            "LLM.call: burst overflow dispatch succeeded "
+                            "(local %s)", "call_error" if call_err else "degraded/empty"
+                        )
+                        return _text
+            except Exception as _be:
+                logger.debug("LLM.call: burst overflow dispatch failed: %s", _be)
+
+        if call_err is not None:
+            raise call_err
+
+        return merged
 
 
 class _StubProviderReply:
@@ -299,6 +350,15 @@ class WaveOrchestrator:
         all_dissent: List[str] = []
         aborted = False
 
+        # Burst compute tracking: live across all waves.
+        try:
+            from src.fleet.burst.manager import get_burst_manager as _get_burst_mgr
+            _burst_mgr = _get_burst_mgr()
+        except Exception as _be:
+            logger.debug("BurstManager unavailable: %s", _be)
+            _burst_mgr = None
+        _burst_triggered_waves: List[int] = []
+
         # Extra debate rounds: appended as additional wave iterations when enacted
         total_waves = MAX_WAVES + gov.extra_debate_rounds
 
@@ -310,7 +370,49 @@ class WaveOrchestrator:
             else:
                 self._skeptic_override_active = False
 
-            wave_results = await self._run_wave(w, handoff)
+            # ── Burst compute: concurrent saturation check during wave ────────
+            # Run the burst check CONCURRENTLY with _run_wave so that
+            # _burst_active_fraction (concurrency pressure) is sampled while
+            # provider calls are actually in-flight — not before they start.
+            # The 50 ms delay lets the wave's initial calls ramp up so the
+            # pressure reading reflects real load, not idle state.
+            _w = w  # capture for closure
+
+            async def _concurrent_burst_check():
+                if _burst_mgr is None:
+                    return None
+                await asyncio.sleep(0.05)  # let in-flight calls ramp up
+                try:
+                    return await _burst_mgr.check_and_burst(self.llm._get_team())
+                except Exception as _be:
+                    logger.debug(
+                        "BurstManager concurrent check at wave %d failed: %s", _w, _be
+                    )
+                    return None
+
+            _wave_outcome, _burst_decision = await asyncio.gather(
+                self._run_wave(w, handoff),
+                _concurrent_burst_check(),
+                return_exceptions=True,
+            )
+            # Propagate wave errors; burst check failures are non-fatal.
+            if isinstance(_wave_outcome, Exception):
+                raise _wave_outcome
+            wave_results = _wave_outcome
+            if isinstance(_burst_decision, Exception):
+                _burst_decision = None
+            if _burst_decision is not None:
+                _burst_triggered_waves.append(w)
+                if _burst_decision.allowed:
+                    logger.info(
+                        "BurstManager: wave %d burst decision — provisioned=%s",
+                        w, _burst_decision.worker_provisioned,
+                    )
+                else:
+                    logger.info(
+                        "BurstManager: wave %d burst blocked — %s",
+                        w, _burst_decision.reason,
+                    )
 
             try:
                 for r in wave_results:
@@ -441,6 +543,18 @@ class WaveOrchestrator:
 
             all_dissent.extend(handoff.dissent)
 
+            # ── Burst compute: drain idle workers when pressure has dropped ───
+            if _burst_mgr is not None:
+                try:
+                    _drained = await _burst_mgr.drain_if_idle(self.llm._get_team())
+                    if _drained:
+                        logger.info(
+                            "BurstManager: drained %d idle burst worker(s) after wave %d",
+                            _drained, w,
+                        )
+                except Exception as _bde:
+                    logger.debug("BurstManager.drain_if_idle at wave %d failed: %s", w, _bde)
+
         avg_hr = self.hr_monitor.get_average()
         trend = self.hr_monitor.get_trend()
         from src.swarm.hallucination import get_risk_tier
@@ -566,6 +680,11 @@ class WaveOrchestrator:
                 "source": jur.get("jurisdiction_source"),
             },
             "BENCHMARK_ROUTING": self.llm.last_benchmark_routing or {},
+            "BURST_COMPUTE": {
+                "active_workers": _burst_mgr.active_worker_count() if _burst_mgr else 0,
+                "triggered_at_waves": _burst_triggered_waves,
+                "manager_available": _burst_mgr is not None,
+            },
         }
 
         if aborted:
