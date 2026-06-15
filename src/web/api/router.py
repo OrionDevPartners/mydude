@@ -1129,11 +1129,11 @@ async def api_governance(request: Request, _=Depends(require_auth)):
         total_metrics = db.query(ProviderMetric).count()
 
         # Governance proposals (read-only) with quorum + participation progress.
-        from src.models import GovernanceProposal
-        from src.swarm.governance_engine import GovernanceEngine
+        from src.models import GovernanceProposal, GovernanceEnactment
+        from src.swarm.governance_engine import GovernanceEngine, enactment_is_no_op
         _ge = GovernanceEngine()
 
-        def _ser_proposal(p):
+        def _ser_proposal(p, no_op_enactment=False):
             try:
                 tally = _ge._resolve_vote_tally(db, p.id)
             except Exception:
@@ -1153,6 +1153,7 @@ async def api_governance(request: Request, _=Depends(require_auth)):
                 "total_effective": tally["total_effective"],
                 "vote_count": tally["vote_count"],
                 "participation": participation,
+                "no_op_enactment": no_op_enactment,
                 "created_at": _dt(p.created_at),
             }
 
@@ -1168,8 +1169,33 @@ async def api_governance(request: Request, _=Depends(require_auth)):
             .order_by(GovernanceProposal.created_at.desc())
             .limit(15).all()
         )
+        # Flag enacted proposals whose only applied result was a pending note
+        # (the wording matched no tuning keyword, so nothing actually changed).
+        # Map each enacted proposal id to its latest enactment's applied_settings.
+        _noop_map: dict = {}
+        _enacted_ids = [p.id for p in recent_props if p.status == "enacted"]
+        if _enacted_ids:
+            _seen: set = set()
+            for _en in (
+                db.query(GovernanceEnactment)
+                .filter(GovernanceEnactment.proposal_id.in_(_enacted_ids))
+                .order_by(GovernanceEnactment.created_at.desc())
+                .all()
+            ):
+                if _en.proposal_id in _seen:
+                    continue
+                _seen.add(_en.proposal_id)
+                try:
+                    _applied = (json.loads(_en.change_json or "{}") or {}).get("applied_settings")
+                except Exception:
+                    _applied = None
+                _noop_map[_en.proposal_id] = enactment_is_no_op(_applied)
+
         proposals = [_ser_proposal(p) for p in open_props]
-        recent_proposals = [_ser_proposal(p) for p in recent_props]
+        recent_proposals = [
+            _ser_proposal(p, no_op_enactment=_noop_map.get(p.id, False))
+            for p in recent_props
+        ]
         open_proposals = len(open_props)
 
         # Acquisition jobs — loaded here while the session is still live.

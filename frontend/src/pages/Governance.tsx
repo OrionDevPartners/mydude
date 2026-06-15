@@ -911,7 +911,22 @@ function ProposalCard({ p }: { p: GovernanceProposal }) {
       </div>
       <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)', marginBottom: p.proposed_action ? 2 : 10 }}>{p.title}</div>
       {p.proposed_action && (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>→ {p.proposed_action}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: p.no_op_enactment ? 8 : 10 }}>→ {p.proposed_action}</div>
+      )}
+      {p.no_op_enactment && (
+        <div style={{
+          display: 'flex', gap: 8, alignItems: 'flex-start',
+          fontSize: 11.5, lineHeight: 1.45, color: '#fbbf24',
+          background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)',
+          borderRadius: 6, padding: '7px 10px', marginBottom: 10,
+        }}>
+          <span aria-hidden style={{ flexShrink: 0 }}>⚠</span>
+          <span>
+            <strong>No setting changed.</strong> This proposal was enacted, but its wording
+            matched no known tuning action — it was filed as a note only. Re-raise it with a
+            concrete, mapped action to actually tune the swarm.
+          </span>
+        </div>
       )}
       {hasVotes ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>

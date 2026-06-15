@@ -30,6 +30,28 @@ TRACK_QUORUM: Dict[str, float] = {
     "safety": 0.75,
 }
 
+# Prefix used for AppSetting keys that hold an enacted proposal's free-text action
+# as an operator note ONLY — i.e. the wording matched no known tuning keyword, so
+# nothing about live swarm behavior actually changed. The governance dashboard
+# uses this prefix to warn operators that the proposal still needs a concrete,
+# mapped action (see enactment_is_no_op).
+PENDING_ACTION_PREFIX = "swarm.pending_action."
+
+
+def enactment_is_no_op(applied_settings: Optional[List[str]]) -> bool:
+    """True when an enactment's only applied result was a pending operator note.
+
+    `applied_settings` is the list of "key=value" change strings recorded in a
+    GovernanceEnactment's change_json. The enactment is a no-op (the proposal was
+    enacted but changed no real swarm setting) exactly when every applied entry is
+    a pending note (`swarm.pending_action.<id>=...`). An empty list means the
+    apply step failed outright and is intentionally NOT classified here as a
+    pending-note no-op.
+    """
+    if not applied_settings:
+        return False
+    return all(str(s).startswith(PENDING_ACTION_PREFIX) for s in applied_settings)
+
 # Minimum participation floor defaults. A proposal cannot auto-resolve (enact OR
 # reject) by quorum until at least this many distinct voters AND this much total
 # vote weight have participated — this stops a single unanimous vote from
@@ -583,7 +605,7 @@ class GovernanceEngine:
 
             if not applied:
                 # Record the free-text action as a pending operator note
-                key = f"swarm.pending_action.{prop.proposal_id}"
+                key = f"{PENDING_ACTION_PREFIX}{prop.proposal_id}"
                 note = (prop.proposed_action or "no action specified")[:500]
                 setting = db.query(AppSetting).filter(AppSetting.key == key).first()
                 if setting:
