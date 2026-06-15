@@ -1070,6 +1070,23 @@ export interface EvolutionIteration {
   all_tests_passed: boolean; outcome: string; error: string | null;
   created_at: string | null;
 }
+export interface LlmProposal {
+  status: string; // accepted | discarded | unavailable | no_signal | error
+  reason?: string | null;
+  compliance_score?: number | null;
+  hallucination_risk?: number | null;
+  hallucination_tier?: string | null;
+  rationale?: string | null;
+  directive?: string | null;
+  score_signal?: number | null;
+}
+export interface SelectionVotes {
+  source?: string; // llm_swarm | heuristic | manual
+  llm_proposal?: LlmProposal | null;
+  candidates_count?: number;
+  consensus_confidence?: number;
+  [key: string]: unknown;
+}
 export interface EvolutionThesis {
   id: number; component_id: number; branch_cell: string;
   thesis: Record<string, unknown>; rationale: string | null; status: string;
@@ -1077,7 +1094,7 @@ export interface EvolutionThesis {
   governance_proposal_id: string | null; governance_proposal_db_id: number | null;
   requires_human_gate: boolean; trial_iteration_count: number;
   stalled_at: string | null; cycle_index: number;
-  selection_votes: Record<string, unknown>;
+  selection_votes: SelectionVotes;
   iterations: EvolutionIteration[];
   created_at: string | null; updated_at: string | null;
 }

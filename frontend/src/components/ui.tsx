@@ -17,9 +17,9 @@ export function Alert({ type = 'info', children, onClose }: AlertProps) {
 }
 
 // ----- Badge -----
-export function Badge({ children, color = 'gray' }: { children: ReactNode; color?: string }) {
+export function Badge({ children, color = 'gray', style }: { children: ReactNode; color?: string; style?: React.CSSProperties }) {
   const cls = `badge badge-${color}`
-  return <span className={cls}>{children}</span>
+  return <span className={cls} style={style}>{children}</span>
 }
 
 // ----- Card -----

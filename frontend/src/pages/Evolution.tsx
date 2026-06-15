@@ -14,8 +14,9 @@ import { fmtDate } from '@/lib/utils'
 import {
   FlaskConical, ChevronRight, ChevronLeft, Play, Square, RotateCcw,
   ShieldCheck, CheckCircle, AlertCircle, Clock, Cpu, Activity, GitBranch,
-  Zap, AlertTriangle, SlidersHorizontal, Save,
+  Zap, AlertTriangle, SlidersHorizontal, Save, Sparkles, XCircle,
 } from 'lucide-react'
+import type { LlmProposal } from '@/lib/api'
 
 const STATUS_COLOR: Record<string, string> = {
   proposed: 'blue',
@@ -90,10 +91,114 @@ function IterationRow({ iter }: { iter: ReturnType<typeof Object.create> }) {
 }
 
 // ---------------------------------------------------------------------------
+// Thesis origin (LLM swarm vs heuristic) + governed LLM proposal record
+// ---------------------------------------------------------------------------
+function SourceBadge({ source }: { source?: string }) {
+  if (source === 'llm_swarm') {
+    return (
+      <Badge color="purple" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <Sparkles size={11} /> LLM swarm
+      </Badge>
+    )
+  }
+  if (source === 'manual') return <Badge color="gray">manual</Badge>
+  return <Badge color="gray">heuristic</Badge>
+}
+
+const LLM_PROPOSAL_STATUS_COLOR: Record<string, string> = {
+  accepted: 'green',
+  discarded: 'red',
+  no_signal: 'orange',
+  unavailable: 'gray',
+  error: 'red',
+}
+
+const LLM_TIER_COLOR: Record<string, string> = {
+  LOW: 'green',
+  MEDIUM: 'orange',
+  HIGH: 'red',
+  CRITICAL: 'red',
+}
+
+// Render the governed LLM-swarm proposal record captured for this cycle: whether
+// the swarm's proposal was accepted into the candidate pool or discarded by the
+// compliance / hallucination gate, with the governance scores and rationale.
+function LlmProposalBlock({ proposal }: { proposal: LlmProposal }) {
+  const status = proposal.status || 'unavailable'
+  // 'unavailable' just means no provider / feature off — not an AI proposal at
+  // all, so there is nothing meaningful to surface for operators.
+  if (status === 'unavailable') return null
+
+  const isAccepted = status === 'accepted'
+  const isDiscarded = status === 'discarded'
+  const hasScores =
+    proposal.compliance_score != null ||
+    proposal.hallucination_risk != null ||
+    proposal.hallucination_tier != null
+
+  return (
+    <div style={{
+      marginTop: 8, padding: '9px 11px', borderRadius: 7,
+      border: '1px solid var(--border)',
+      background: isDiscarded ? 'rgba(231,76,60,0.07)' : 'rgba(155,89,182,0.07)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+        {isAccepted
+          ? <Sparkles size={13} color="#9b59b6" />
+          : <XCircle size={13} color="#e74c3c" />}
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          LLM swarm proposal
+        </span>
+        <Badge color={LLM_PROPOSAL_STATUS_COLOR[status] || 'gray'}>{status.replace('_', ' ')}</Badge>
+        {hasScores && (
+          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 10, fontSize: 11.5 }}>
+            {proposal.compliance_score != null && (
+              <span style={{ color: 'var(--text-muted)' }}>
+                CS <b style={{ color: 'var(--text-secondary)' }}>{proposal.compliance_score.toFixed(1)}</b>
+              </span>
+            )}
+            {proposal.hallucination_risk != null && (
+              <span style={{ color: 'var(--text-muted)' }}>
+                HR <b style={{ color: 'var(--text-secondary)' }}>{proposal.hallucination_risk.toFixed(3)}</b>
+              </span>
+            )}
+            {proposal.hallucination_tier && (
+              <Badge color={LLM_TIER_COLOR[proposal.hallucination_tier] || 'gray'} style={{ fontSize: 10 }}>
+                {proposal.hallucination_tier}
+              </Badge>
+            )}
+          </span>
+        )}
+      </div>
+      {(isAccepted ? proposal.rationale : proposal.reason) && (
+        <p style={{
+          fontSize: 12, margin: '7px 0 0', lineHeight: 1.5,
+          color: isDiscarded ? '#e67e73' : 'var(--text-muted)',
+        }}>
+          {isDiscarded && <b>Discarded: </b>}
+          {isAccepted ? proposal.rationale : proposal.reason}
+        </p>
+      )}
+      {isAccepted && proposal.directive && (
+        <Collapsible title={<span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Swarm-synthesized directive</span>}>
+          <pre style={{
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, lineHeight: 1.5,
+            background: 'rgba(0,0,0,0.25)', padding: 10, borderRadius: 6, marginTop: 6,
+            color: 'var(--text-secondary, #cbd5e1)', maxHeight: 200, overflow: 'auto',
+          }}>{proposal.directive}</pre>
+        </Collapsible>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Thesis card
 // ---------------------------------------------------------------------------
 function ThesisCard({ thesis, expanded }: { thesis: EvolutionThesis; expanded?: boolean }) {
   const [open, setOpen] = useState(expanded ?? false)
+  const sv = thesis.selection_votes || {}
+  const llmProposal = (sv.llm_proposal as LlmProposal | null | undefined) ?? null
   return (
     <Card style={{ padding: '12px 14px', marginBottom: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap', cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
@@ -101,6 +206,7 @@ function ThesisCard({ thesis, expanded }: { thesis: EvolutionThesis; expanded?: 
           {thesis.branch_cell}
         </span>
         <Badge color={STATUS_COLOR[thesis.status] || 'gray'}>{thesis.status}</Badge>
+        <SourceBadge source={sv.source as string | undefined} />
         {thesis.requires_human_gate && <Badge color="orange">human-gate</Badge>}
         {thesis.governance_proposal_id && (
           <Badge color="blue" style={{ fontSize: 10 }}>proposal: {thesis.governance_proposal_id}</Badge>
@@ -119,6 +225,7 @@ function ThesisCard({ thesis, expanded }: { thesis: EvolutionThesis; expanded?: 
           {thesis.rationale}
         </p>
       )}
+      {llmProposal && <LlmProposalBlock proposal={llmProposal} />}
       {open && (
         <div style={{ marginTop: 10 }}>
           {thesis.iterations.length > 0 && (

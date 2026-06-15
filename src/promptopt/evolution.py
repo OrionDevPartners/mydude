@@ -617,6 +617,7 @@ def _llm_thesis_candidate(
     component: Any,
     cycle_index: int,
     settings: Dict[str, Any],
+    report: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Generate ONE governed, LLM-backed thesis candidate via the swarm.
 
@@ -625,21 +626,49 @@ def _llm_thesis_candidate(
     output fails the compliance/hallucination gate, or no actionable signal was
     produced. Returning None is the graceful fallback — the caller keeps its
     heuristic candidates.
+
+    When ``report`` is supplied it is filled in-place with an auditable record
+    of the gate decision so operators can see — per cycle — whether the LLM
+    swarm proposal was accepted, discarded (with the reason + governance scores),
+    or never attempted. The report keys mirror what the dashboard renders:
+    ``status`` (accepted | discarded | unavailable | no_signal | error),
+    ``reason``, ``compliance_score``, ``hallucination_risk``,
+    ``hallucination_tier``, and the LLM-synthesized ``rationale``.
     """
+    def _set(payload: Dict[str, Any]) -> None:
+        if report is not None:
+            report.update(payload)
+
     if not _llm_thesis_enabled():
+        _set({
+            "status": "unavailable",
+            "reason": "LLM-backed thesis generation disabled (EVOLUTION_LLM_THESIS=0)",
+        })
         return None
 
     try:
         from src.promptopt.lm_bridge import available_provider
         if available_provider() is None:
+            _set({
+                "status": "unavailable",
+                "reason": "No LLM provider configured — using heuristic candidates",
+            })
             return None
-    except Exception:
+    except Exception as e:
+        _set({
+            "status": "unavailable",
+            "reason": "Provider lookup failed: %s" % e,
+        })
         return None
 
     component_type = component.component_type
     component_name = component.name
     branch_cells = BRANCH_CELLS_BY_TYPE.get(component_type, [])
     if not branch_cells:
+        _set({
+            "status": "unavailable",
+            "reason": "No branch cells for component type '%s'" % component_type,
+        })
         return None
 
     live_instructions = ""
@@ -667,6 +696,10 @@ def _llm_thesis_candidate(
             "[EVOLUTION] LLM thesis dispatch failed for %s — falling back to "
             "heuristics: %s", component_name, e,
         )
+        _set({
+            "status": "error",
+            "reason": "Swarm dispatch failed: %s" % str(e)[:300],
+        })
         return None
 
     # ── Governance gate on the swarm output (pillar 4) ──
@@ -675,6 +708,10 @@ def _llm_thesis_candidate(
             "[EVOLUTION] LLM thesis discarded for %s (swarm aborted: %s)",
             component_name, result.get("ABORT_REASON"),
         )
+        _set({
+            "status": "discarded",
+            "reason": "Swarm aborted: %s" % str(result.get("ABORT_REASON"))[:300],
+        })
         return None
 
     hr = result.get("HALLUCINATION_RISK") or {}
@@ -690,10 +727,28 @@ def _llm_thesis_candidate(
             "(avg_cs=%.1f hr=%.3f tier=%s) — falling back to heuristics",
             component_name, avg_cs, avg_hr, tier,
         )
+        _set({
+            "status": "discarded",
+            "reason": (
+                "Failed governance gate: hallucination tier=%s, CS=%.1f "
+                "(min CS=%.0f, tier must be below HIGH)"
+                % (tier, avg_cs, LLM_THESIS_MIN_CS)
+            ),
+            "compliance_score": round(avg_cs, 1),
+            "hallucination_risk": round(avg_hr, 3),
+            "hallucination_tier": tier,
+        })
         return None
 
     directive, flat_text = _synthesis_parts(result)
     if not directive:
+        _set({
+            "status": "no_signal",
+            "reason": "Swarm passed governance but produced no actionable directive",
+            "compliance_score": round(avg_cs, 1),
+            "hallucination_risk": round(avg_hr, 3),
+            "hallucination_tier": tier,
+        })
         return None
 
     # Governance-derived selection signal: high CS + low HR ⇒ stronger signal.
@@ -702,17 +757,30 @@ def _llm_thesis_candidate(
         cycle_index, avg_cs, avg_hr,
     )
 
+    def _accept(rationale: str) -> None:
+        _set({
+            "status": "accepted",
+            "compliance_score": round(avg_cs, 1),
+            "hallucination_risk": round(avg_hr, 3),
+            "hallucination_tier": tier,
+            "rationale": rationale,
+            "directive": directive,
+            "score_signal": score_signal,
+        })
+
     if component_type == "prompt_program":
         new_instructions = (live_instructions or "") + (
             "\n\nGOVERNED LLM IMPROVEMENT DIRECTIVE (cycle %d; swarm CS=%.0f HR=%.2f):\n%s"
             % (cycle_index, avg_cs, avg_hr, directive)
         )
+        rationale = gov_prefix + (
+            "append a governed improvement directive synthesized by the swarm."
+        )
+        _accept(rationale)
         return {
             "branch_cell": "instructions",
             "thesis": {"instructions": new_instructions},
-            "rationale": gov_prefix + (
-                "append a governed improvement directive synthesized by the swarm."
-            ),
+            "rationale": rationale,
             "requires_human_gate": False,
             "score_signal": score_signal,
             "source": "llm_swarm",
@@ -721,20 +789,36 @@ def _llm_thesis_candidate(
     if component_type == "swarm_config":
         direction = _direction_from_text(flat_text)
         if direction == 0:
+            _set({
+                "status": "no_signal",
+                "reason": "Swarm gave no clear raise/lower direction for evidence_strength",
+                "compliance_score": round(avg_cs, 1),
+                "hallucination_risk": round(avg_hr, 3),
+                "hallucination_tier": tier,
+            })
             return None
         cur = float(settings.get("swarm.min_evidence_strength", "0.6") or "0.6")
         lo, hi = _BRANCH_CELL_BOUNDS["evidence_strength"]
         new_val = round(min(hi, max(lo, cur + direction * LLM_THESIS_NUMERIC_STEP)), 3)
         if new_val == round(cur, 3):
+            _set({
+                "status": "no_signal",
+                "reason": "Proposed evidence_strength already at bound (%.2f)" % cur,
+                "compliance_score": round(avg_cs, 1),
+                "hallucination_risk": round(avg_hr, 3),
+                "hallucination_tier": tier,
+            })
             return None
+        rationale = gov_prefix + (
+            "%s evidence_strength %.2f→%.2f based on swarm reasoning." % (
+                "raise" if direction > 0 else "lower", cur, new_val,
+            )
+        )
+        _accept(rationale)
         return {
             "branch_cell": "evidence_strength",
             "thesis": {"value": new_val, "key": "swarm.min_evidence_strength"},
-            "rationale": gov_prefix + (
-                "%s evidence_strength %.2f→%.2f based on swarm reasoning." % (
-                    "raise" if direction > 0 else "lower", cur, new_val,
-                )
-            ),
+            "rationale": rationale,
             "requires_human_gate": False,
             "score_signal": score_signal,
             "source": "llm_swarm",
@@ -744,30 +828,54 @@ def _llm_thesis_candidate(
         from src.swarm.contract import ROLE_BASE_WEIGHTS, CognitiveRole
         direction = _direction_from_text(flat_text)
         if direction == 0:
+            _set({
+                "status": "no_signal",
+                "reason": "Swarm gave no clear raise/lower direction for skeptic weight",
+                "compliance_score": round(avg_cs, 1),
+                "hallucination_risk": round(avg_hr, 3),
+                "hallucination_tier": tier,
+            })
             return None
         cur = float(ROLE_BASE_WEIGHTS.get(CognitiveRole.SKEPTIC, 0.9))
         new_w = round(min(1.0, max(0.0, cur + direction * LLM_THESIS_NUMERIC_STEP)), 3)
         if new_w == round(cur, 3):
+            _set({
+                "status": "no_signal",
+                "reason": "Proposed skeptic weight already at bound (%.2f)" % cur,
+                "compliance_score": round(avg_cs, 1),
+                "hallucination_risk": round(avg_hr, 3),
+                "hallucination_tier": tier,
+            })
             return None
+        rationale = gov_prefix + (
+            "%s skeptic weight %.2f→%.2f based on swarm reasoning." % (
+                "raise" if direction > 0 else "lower", cur, new_w,
+            )
+        )
+        _accept(rationale)
         return {
             "branch_cell": "role_weights.skeptic",
             "thesis": {"weight": new_w, "role": "skeptic"},
-            "rationale": gov_prefix + (
-                "%s skeptic weight %.2f→%.2f based on swarm reasoning." % (
-                    "raise" if direction > 0 else "lower", cur, new_w,
-                )
-            ),
+            "rationale": rationale,
             "requires_human_gate": False,
             "score_signal": score_signal,
             "source": "llm_swarm",
         }
 
+    _set({
+        "status": "no_signal",
+        "reason": "No thesis shape for component type '%s'" % component_type,
+        "compliance_score": round(avg_cs, 1),
+        "hallucination_risk": round(avg_hr, 3),
+        "hallucination_tier": tier,
+    })
     return None
 
 
 def _generate_thesis_candidates(
     component: Any,
     cycle_index: int,
+    llm_report: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Generate candidate theses from governance signals.
 
@@ -895,7 +1003,9 @@ def _generate_thesis_candidates(
     # available; governed by compliance + hallucination checks). Never raises:
     # any failure leaves the heuristic candidates intact (graceful fallback).
     try:
-        llm_candidate = _llm_thesis_candidate(component, cycle_index, settings)
+        llm_candidate = _llm_thesis_candidate(
+            component, cycle_index, settings, report=llm_report
+        )
         if llm_candidate is not None:
             candidates.insert(0, llm_candidate)
     except Exception as e:
@@ -903,6 +1013,11 @@ def _generate_thesis_candidates(
             "[EVOLUTION] LLM thesis augmentation failed for %s — using "
             "heuristics: %s", component_name, e,
         )
+        if llm_report is not None and not llm_report:
+            llm_report.update({
+                "status": "error",
+                "reason": "LLM thesis augmentation failed: %s" % str(e)[:300],
+            })
 
     if not candidates and branch_cells:
         candidates.append({
@@ -929,7 +1044,10 @@ def select_next_thesis(
         CognitiveRole, ROLE_BASE_WEIGHTS, run_consensus, compute_vote_weight,
     )
 
-    candidates = _generate_thesis_candidates(component, cycle_index)
+    llm_report: Dict[str, Any] = {}
+    candidates = _generate_thesis_candidates(
+        component, cycle_index, llm_report=llm_report
+    )
     if not candidates:
         raise RuntimeError("No thesis candidates generated for component '%s'" % component.name)
 
@@ -1012,6 +1130,8 @@ def select_next_thesis(
         ),
         "cycle_index": cycle_index,
         "dissent_count": len(result.dissent),
+        "source": best_candidate.get("source", "heuristic"),
+        "llm_proposal": (llm_report or None),
     }
 
     return best_candidate, selection_votes
