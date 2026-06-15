@@ -349,8 +349,14 @@ class Subscription(Base):
     credential_key_id = Column(Integer, nullable=True, index=True)
     # candidate | confirmed | dismissed | cancel_pending | cancelled
     status = Column(String(30), default="candidate", index=True)
+    # Human-readable estimate kept for display/back-compat, e.g. "$9.99/mo".
     est_cost = Column(String(60), nullable=True)
+    # Structured cost: numeric amount + currency symbol + billing cadence,
+    # split out of ``est_cost`` so spend math/sorting/filtering need no
+    # re-parsing. cadence is one of monthly | yearly | weekly (or None).
+    amount = Column(Float, nullable=True)
     currency = Column(String(10), nullable=True)
+    cadence = Column(String(20), nullable=True)
     # How this row was detected: browser_history | manual
     source = Column(String(40), nullable=True)
     notes = Column(Text, nullable=True)

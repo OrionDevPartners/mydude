@@ -52,7 +52,9 @@ def _serialize(sub):
         "has_credential": bool(sub.credential_key_id),
         "status": sub.status,
         "est_cost": sub.est_cost or "",
+        "amount": sub.amount,
         "currency": sub.currency or "",
+        "cadence": sub.cadence or "",
         "source": sub.source or "",
         "notes": sub.notes or "",
         "last_checked_at": sub.last_checked_at,
@@ -118,6 +120,59 @@ def _merge_sources(existing, incoming):
     return "+".join(tokens)
 
 
+def _structured_cost(cand):
+    """Derive ``(amount, currency, cadence)`` for a candidate.
+
+    The receipt parser's explicit ``cadence`` (extracted from the email text)
+    wins over whatever a catalog-default ``est_cost`` string happens to carry;
+    amount and currency are parsed from the chosen ``est_cost``.
+    """
+    from src.subscriptions.discovery import parse_cost_string
+    amount, currency, parsed_cadence = parse_cost_string(cand.get("est_cost"))
+    return amount, currency, (cand.get("cadence") or parsed_cadence)
+
+
+def backfill_structured_costs():
+    """Best-effort one-time backfill of the structured cost columns from the
+    legacy ``est_cost`` string for rows that predate the split.
+
+    Only fills values that are still missing — the human-readable ``est_cost``
+    is left untouched — so re-running it is a no-op. Returns the number of rows
+    enriched. Safe to call at startup before any structured-cost reads.
+    """
+    from src.subscriptions.discovery import parse_cost_string
+    enriched = 0
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Subscription)
+            .filter(
+                Subscription.est_cost.isnot(None),
+                (Subscription.amount.is_(None)) | (Subscription.cadence.is_(None)),
+            )
+            .all()
+        )
+        for sub in rows:
+            amount, currency, cadence = parse_cost_string(sub.est_cost)
+            changed = False
+            if sub.amount is None and amount is not None:
+                sub.amount = amount
+                changed = True
+            if not sub.currency and currency:
+                sub.currency = currency
+                changed = True
+            if not sub.cadence and cadence:
+                sub.cadence = cadence
+                changed = True
+            if changed:
+                enriched += 1
+        if enriched:
+            db.commit()
+    finally:
+        db.close()
+    return enriched
+
+
 def _insert_candidates(candidates):
     """Insert discovered candidates as ``candidate`` rows, de-duped by domain.
 
@@ -145,6 +200,7 @@ def _insert_candidates(candidates):
                 db.query(Subscription).filter(Subscription.domain == domain).first()
                 if domain else None
             )
+            cand_amount, cand_currency, cand_cadence = _structured_cost(cand)
             if existing:
                 changed = False
                 merged_source = _merge_sources(existing.source, cand_source)
@@ -158,9 +214,26 @@ def _insert_candidates(candidates):
                 prefer_receipt = (
                     existing.status == "candidate" and cand.get("cost_from_receipt")
                 )
-                if cand_cost and (not existing.est_cost or prefer_receipt) \
-                        and cand_cost != existing.est_cost:
+                upgrade = (
+                    cand_cost and (not existing.est_cost or prefer_receipt)
+                    and cand_cost != existing.est_cost
+                )
+                if upgrade:
                     existing.est_cost = cand_cost
+                    changed = True
+                # Keep the structured columns in lockstep: overwrite on an
+                # est_cost upgrade, otherwise only backfill what's still missing.
+                if cand_amount is not None and (upgrade or existing.amount is None) \
+                        and existing.amount != cand_amount:
+                    existing.amount = cand_amount
+                    changed = True
+                if cand_currency and (upgrade or not existing.currency) \
+                        and existing.currency != cand_currency:
+                    existing.currency = cand_currency
+                    changed = True
+                if cand_cadence and (upgrade or not existing.cadence) \
+                        and existing.cadence != cand_cadence:
+                    existing.cadence = cand_cadence
                     changed = True
                 for field in ("login_url", "account_url"):
                     if not getattr(existing, field) and cand.get(field):
@@ -175,6 +248,9 @@ def _insert_candidates(candidates):
                 login_url=cand.get("login_url"),
                 account_url=cand.get("account_url"),
                 est_cost=cand.get("est_cost"),
+                amount=cand_amount,
+                currency=cand_currency,
+                cadence=cand_cadence,
                 status="candidate",
                 source=cand_source,
             ))
@@ -241,6 +317,8 @@ async def add_manual(
 
     # Fill in known URLs from the catalog when the user only gives a domain.
     entry = match_host(domain.strip()) if domain.strip() else None
+    est_cost_val = (est_cost.strip() or (entry.get("est_cost") if entry else None))
+    amount, currency, cadence = _structured_cost({"est_cost": est_cost_val})
     db = SessionLocal()
     try:
         db.add(Subscription(
@@ -249,7 +327,10 @@ async def add_manual(
             login_url=(login_url.strip() or (entry["login_url"] if entry else None)),
             account_url=(account_url.strip() or (entry["account_url"] if entry else None)),
             login_username=(login_username.strip() or None),
-            est_cost=(est_cost.strip() or (entry.get("est_cost") if entry else None)),
+            est_cost=est_cost_val,
+            amount=amount,
+            currency=currency,
+            cadence=cadence,
             notes=(notes.strip() or None),
             status="confirmed",
             source="manual",

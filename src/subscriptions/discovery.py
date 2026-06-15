@@ -146,6 +146,30 @@ def _cost_label(amount, cadence):
     return "%s%s" % (amount, suffix)
 
 
+def parse_cost_string(text):
+    """Best-effort split of a cost string/text into ``(amount, currency, cadence)``.
+
+    ``amount`` is a float, ``currency`` a symbol (``$``/``€``/``£``), and
+    ``cadence`` one of ``monthly``/``yearly``/``weekly`` — any of which may be
+    ``None`` when the text doesn't carry it. Robust to both catalog/display
+    strings like ``"$9.99/mo"`` and free-form receipt text, so it serves both
+    fresh discovery and the best-effort backfill of legacy ``est_cost`` rows.
+    """
+    if not text:
+        return None, None, None
+    amount = None
+    currency = None
+    m = _AMOUNT_RE.search(text)
+    if m:
+        currency = m.group("sym") or _SYM.get((m.group("code") or "").upper(), "$")
+        num = (m.group("num") or "").replace(",", ".")
+        try:
+            amount = float(num)
+        except ValueError:
+            amount = None
+    return amount, currency, _extract_cadence(text)
+
+
 # Words that, alongside a money amount, mark an email as a billing/receipt rather
 # than marketing. Used only to surface *unmatched* receipts so genuine
 # subscriptions from merchants not yet in the catalog are not silently dropped.

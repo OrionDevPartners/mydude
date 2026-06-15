@@ -148,6 +148,14 @@ async def startup():
         logger.error("Database init failed: %s", e)
 
     try:
+        from src.web.routes_subscriptions import backfill_structured_costs
+        n = backfill_structured_costs()
+        if n:
+            logger.info("Backfilled structured cost columns for %d subscription(s)", n)
+    except Exception as e:
+        logger.error("Subscription structured-cost backfill failed: %s", e)
+
+    try:
         from src.promptopt.lm_bridge import harden_dspy_cache
         harden_dspy_cache()
     except Exception as e:
