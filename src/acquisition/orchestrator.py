@@ -22,14 +22,83 @@ import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 _ACQUISITION_KILL_SWITCH_ENV = "ENABLE_AUTO_SIPHON_ACQUISITION"
 
+# How many days a previously-rejected candidate stays deduplicated (skipped on
+# re-acquisition). Configurable via env; falls back to a sane default.
+_ACQUISITION_DEDUP_DAYS_ENV = "ACQUISITION_DEDUP_DAYS"
+_DEFAULT_DEDUP_DAYS = 7
+
 MIN_COMPLIANCE = 0.80
 MAX_HALLUCINATION_RISK = 0.25
+
+
+def _dedup_days() -> int:
+    """Window (in days) for skipping candidates that already failed governance.
+
+    Reads ACQUISITION_DEDUP_DAYS; defaults to 7. Non-positive / unparseable
+    values fall back to the default.
+    """
+    raw = os.environ.get(_ACQUISITION_DEDUP_DAYS_ENV, "").strip()
+    if raw:
+        try:
+            val = int(raw)
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return _DEFAULT_DEDUP_DAYS
+
+
+def _candidate_history(capability: str, days: int) -> Dict[str, str]:
+    """Recent per-candidate outcomes for a capability within the last `days`.
+
+    Returns a map of normalized candidate name -> "approved" | "rejected".
+    A candidate that ever passed governance in the window is "approved" (and
+    that verdict wins over any rejection); otherwise "rejected". Joins
+    AcquisitionCandidate to its parent job to scope by capability.
+
+    Never raises — on any failure returns {} so acquisition proceeds normally.
+    """
+    history: Dict[str, str] = {}
+    try:
+        from src.database import SessionLocal
+        from src.models import AcquisitionCandidate, CapabilityAcquisitionJob
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(AcquisitionCandidate)
+                .join(
+                    CapabilityAcquisitionJob,
+                    AcquisitionCandidate.job_id == CapabilityAcquisitionJob.id,
+                )
+                .filter(
+                    CapabilityAcquisitionJob.capability == capability,
+                    AcquisitionCandidate.created_at >= cutoff,
+                )
+                .all()
+            )
+            for row in rows:
+                name = (row.candidate_name or "").strip().lower()
+                if not name:
+                    continue
+                if row.passed_governance:
+                    history[name] = "approved"
+                elif history.get(name) != "approved":
+                    history[name] = "rejected"
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.debug(
+            "acquisition: candidate history lookup failed (non-blocking): %s", exc
+        )
+    return history
 
 
 def _kill_switch_enabled() -> bool:
@@ -300,7 +369,61 @@ def _run_acquisition(capability: str, params: Dict[str, Any], job_id: int) -> No
             return
 
         all_candidates.sort(key=lambda c: c.score, reverse=True)
-        candidates_to_verify = all_candidates[:3]
+
+        # Learn from past rejections: skip candidates that already failed
+        # governance review recently, and warn (instead of re-running) on
+        # candidates that were already approved — the capability may already be
+        # registered. This avoids redundant network fetches, wasted sandbox
+        # time, and duplicate governance proposals for the same package.
+        dedup_days = _dedup_days()
+        history = _candidate_history(capability, dedup_days)
+        fresh_candidates: List[PackageCandidate] = []
+        skipped_rejected: List[str] = []
+        warned_approved: List[str] = []
+        for pkg in all_candidates:
+            status = history.get((pkg.name or "").strip().lower())
+            if status == "rejected":
+                skipped_rejected.append(f"{pkg.name}=={pkg.version}")
+            elif status == "approved":
+                warned_approved.append(f"{pkg.name}=={pkg.version}")
+            else:
+                fresh_candidates.append(pkg)
+
+        if skipped_rejected:
+            msg = (
+                f"dedup: skipping {len(skipped_rejected)} candidate(s) that failed "
+                f"governance within {dedup_days}d: {', '.join(skipped_rejected[:5])}"
+            )
+            logger.info("acquisition %s: %s", capability, msg)
+            _audit(capability, "info", msg, target=capability)
+        if warned_approved:
+            msg = (
+                f"dedup warning: {len(warned_approved)} candidate(s) already approved "
+                f"within {dedup_days}d (capability may already be registered): "
+                f"{', '.join(warned_approved[:5])}"
+            )
+            logger.warning("acquisition %s: %s", capability, msg)
+            _audit(capability, "warning", msg, target=capability)
+
+        candidates_to_verify = fresh_candidates[:3]
+
+        if not candidates_to_verify:
+            if warned_approved:
+                note = (
+                    f"Skipped: all candidates already approved within {dedup_days}d "
+                    f"(capability may already be registered): "
+                    f"{', '.join(warned_approved[:3])}"
+                )
+            elif skipped_rejected:
+                note = (
+                    f"Skipped: all candidates failed governance within {dedup_days}d; "
+                    f"no re-acquisition: {', '.join(skipped_rejected[:3])}"
+                )
+            else:
+                note = "Skipped: all candidates deduplicated against recent history."
+            _update_job(job_id, state="rejected", notes=note[:1000])
+            _audit(capability, "rejected", note, target=capability)
+            return
 
         _update_job(job_id, state="sandboxing")
 
