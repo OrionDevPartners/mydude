@@ -204,12 +204,14 @@ class HealthMonitor:
                 # swarm now has no local fallback; otherwise medium.
                 severity = "high" if up_count == 0 else "medium"
                 await self._raise_local_offline_event(node, severity)
-            elif (not now_down) and was_down:
-                logger.info(
-                    "Local node %s back online at %s",
-                    key,
-                    node.get("endpoint") or "unknown",
-                )
+            elif (not now_down) and (was_down or prev is None):
+                # Node is reachable again. Close out any open offline alert for it
+                # and post a one-time recovery notice. Driven off the DB row (not
+                # just the in-memory transition) so it still fires after a process
+                # restart that cleared the in-memory state (prev is None). Once the
+                # open offline alert is acked the gate is consumed, so steady-state
+                # ticks (prev=True) skip the DB query entirely.
+                await self._resolve_local_offline(node)
 
     async def _raise_local_offline_event(self, node: Dict, severity: str) -> None:
         provider = node.get("provider", "unknown")
@@ -271,6 +273,84 @@ class HealthMonitor:
                 f"Restore the endpoint at {endpoint}, then acknowledge this alert."
             ),
             alert_id=alert_id,
+        )
+        return True
+
+    async def _resolve_local_offline(self, node: Dict) -> None:
+        """When a local node is reachable again, close the loop on its alert.
+
+        Auto-acknowledges the open ``LOCAL-OFFLINE-<provider>`` SentinelEvent and
+        posts a one-time informational "node recovered" notice so operators get
+        positive confirmation in the live governance view, not just the logs.
+        """
+        provider = node.get("provider", "unknown")
+        endpoint = node.get("endpoint") or "unknown"
+        alert_id = f"LOCAL-OFFLINE-{provider}"
+        try:
+            resolved = await asyncio.to_thread(
+                self._resolve_local_offline_if_present, alert_id, provider, endpoint
+            )
+            if resolved:
+                logger.info(
+                    "Local node %s recovered at %s; offline alert auto-acknowledged "
+                    "and recovery notice posted",
+                    provider, endpoint,
+                )
+        except Exception:
+            logger.exception("Failed to resolve local-node-offline event for %s", provider)
+
+    @staticmethod
+    def _resolve_local_offline_if_present(
+        alert_id: str, provider: str, endpoint: str
+    ) -> bool:
+        """Ack any open offline alert for a recovered node and post a recovery notice.
+
+        Idempotent and self-gating: it only acts when an unacknowledged
+        ``local_node_offline`` event with this ``alert_id`` exists, and it
+        acknowledges that event in the same transaction. Because the open offline
+        row is the trigger, the recovery notice is raised exactly once per
+        offline->online cycle — even across process restarts, where the in-memory
+        transition state was lost but the DB row survives. Returns True if a
+        recovery was recorded. The recovery notice uses a distinct
+        ``LOCAL-RECOVERED-<provider>`` alert_id so it never collides with the
+        offline-dedup guard (which would otherwise suppress a later real drop).
+        """
+        from src.database import SessionLocal
+        from src.models import SentinelEvent
+        from src.swarm.error_metrics import record_sentinel_event
+
+        db = SessionLocal()
+        try:
+            open_offline = (
+                db.query(SentinelEvent)
+                .filter(
+                    SentinelEvent.alert_id == alert_id,
+                    SentinelEvent.alert_type == "local_node_offline",
+                    SentinelEvent.acknowledged == False,  # noqa: E712
+                )
+                .all()
+            )
+            if not open_offline:
+                return False
+            for ev in open_offline:
+                ev.acknowledged = True
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+        record_sentinel_event(
+            "local_node_recovered",
+            "info",
+            (
+                f"Mesh-connected local model node '{provider}' is back online at "
+                f"{endpoint}. The earlier offline alert was auto-acknowledged; "
+                f"tasks can route to the local node again."
+            ),
+            "No action needed — the node is reachable again.",
+            alert_id=f"LOCAL-RECOVERED-{provider}",
         )
         return True
 

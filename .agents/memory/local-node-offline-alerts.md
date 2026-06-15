@@ -22,6 +22,19 @@ flips to unreachable it writes a `SentinelEvent(alert_type="local_node_offline")
 - Severity: `high` when no local node is still up (no local fallback left), else
   `medium`.
 
+**Recovery (down→up):** auto-ack the open `LOCAL-OFFLINE-<provider>` event and
+post a one-time `local_node_recovered` "info" notice. Two non-obvious constraints:
+- The recovery notice MUST use a *distinct* alert_id (`LOCAL-RECOVERED-<provider>`).
+  If it reused the offline alert_id, the offline-dedup guard (filters by alert_id
+  + acknowledged==False) would treat the unacknowledged recovery row as an "open
+  offline alert" and suppress a later real drop.
+- Drive recovery off the open DB row, not just the in-memory transition. In-memory
+  `_previous_local_status` resets on restart (prev=None), so gate on
+  `was_down or prev is None`, and make the resolver self-gating/idempotent: it only
+  acts when an unacknowledged offline row exists and acks it in the same txn, so the
+  notice fires exactly once per offline→online cycle even across restarts. Steady
+  ticks (prev=True, up) skip the DB query.
+
 **SPA governance field-mapping gotcha:** the live UI is the React SPA hitting
 `/api/governance` (NOT the Jinja `/governance` route). That endpoint maps
 `SentinelEvent` into the frontend `Alert` shape, but the model columns are
