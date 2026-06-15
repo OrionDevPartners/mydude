@@ -34,6 +34,7 @@ import inspect
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from src.capabilities.base import CapabilityAdapter, CapabilitySpec
@@ -218,38 +219,73 @@ class CapabilityResolver:
               ...
             }
         """
-        result: Dict[str, Any] = {}
+        # Phase 1 — gather cached entries per category (cheap; availability is
+        # served from the short-lived probe cache).
+        cat_entries: Dict[str, tuple] = {}
         for category in ALL_CATEGORIES:
             required_keys = set(category_required_keys(category))
-            entries = self._get_entries(category)
-            providers = []
-            active_key = None
-            for spec, adapter, ok, _ts in entries:
-                health = adapter.health_probe()
-                providers.append({
-                    "key": spec.key,
-                    "label": spec.label or spec.key,
-                    "adapter": spec.adapter,
-                    "exec_locus": spec.exec_locus,
-                    "available": ok,
-                    "secrets_present": adapter.secrets_present(),
-                    "health": health,
-                    "required": spec.key in required_keys,
-                    "cost": spec.cost,
-                    "notes": spec.notes,
-                })
-                if ok and active_key is None:
-                    # Apply the same jurisdiction gate as resolve() so the
-                    # reported active_key matches what resolve() would actually
-                    # return. A backend that is available but blocked by the
-                    # current exec_locus_pin or cloud_shift policy must NOT
-                    # be reported as the active provider.
-                    try:
-                        if adapter.jurisdiction_allowed():
-                            active_key = spec.key
-                    except Exception:
-                        active_key = spec.key
+            cat_entries[category] = (required_keys, self._get_entries(category))
 
+        # Phase 2 — run the live per-provider probes (health_probe / secrets /
+        # jurisdiction) concurrently. These are independent network/IO calls;
+        # running them serially across every provider in all categories made
+        # the matrix endpoint take ~18s. A thread pool collapses that to roughly
+        # the slowest single probe while keeping the data live.
+        tasks: List[tuple] = []
+        for category, (required_keys, entries) in cat_entries.items():
+            for idx, (spec, adapter, ok, _ts) in enumerate(entries):
+                tasks.append((category, idx, spec, adapter, ok, required_keys))
+
+        def _probe(task: tuple) -> tuple:
+            category, idx, spec, adapter, ok, required_keys = task
+            try:
+                health = adapter.health_probe()
+            except Exception as exc:
+                health = {"ok": False, "detail": str(exc)}
+            try:
+                secrets_present = adapter.secrets_present()
+            except Exception:
+                secrets_present = False
+            # Apply the same jurisdiction gate as resolve() so the reported
+            # active_key matches what resolve() would actually return. A backend
+            # that is available but blocked by the current exec_locus_pin or
+            # cloud_shift policy must NOT be reported as the active provider.
+            try:
+                jurisdiction_ok = adapter.jurisdiction_allowed()
+            except Exception:
+                jurisdiction_ok = True
+            provider = {
+                "key": spec.key,
+                "label": spec.label or spec.key,
+                "adapter": spec.adapter,
+                "exec_locus": spec.exec_locus,
+                "available": ok,
+                "secrets_present": secrets_present,
+                "health": health,
+                "required": spec.key in required_keys,
+                "cost": spec.cost,
+                "notes": spec.notes,
+            }
+            return category, idx, provider, ok, jurisdiction_ok
+
+        probed: List[tuple] = []
+        if tasks:
+            with ThreadPoolExecutor(max_workers=min(16, len(tasks))) as pool:
+                probed = list(pool.map(_probe, tasks))
+
+        # Phase 3 — assemble, preserving each category's cost-ordered sequence.
+        by_cat: Dict[str, List[tuple]] = {c: [] for c in ALL_CATEGORIES}
+        for category, idx, provider, ok, jurisdiction_ok in probed:
+            by_cat[category].append((idx, provider, ok, jurisdiction_ok))
+
+        result: Dict[str, Any] = {}
+        for category in ALL_CATEGORIES:
+            rows = sorted(by_cat[category], key=lambda r: r[0])
+            providers = [r[1] for r in rows]
+            active_key = None
+            for _idx, provider, ok, jurisdiction_ok in rows:
+                if ok and active_key is None and jurisdiction_ok:
+                    active_key = provider["key"]
             result[category] = {
                 "providers": providers,
                 "active_key": active_key,

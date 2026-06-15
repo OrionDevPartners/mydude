@@ -2,7 +2,7 @@ import { useState } from 'react'
 import {
   getCapabilities, toggleCapability, testBrowser, testSsh, testCode, testHistory,
   testReceipts, saveEmailConfig, saveSshConfig, TestResult,
-  getCapabilityMatrix, reloadCapabilities,
+  getCapabilityMatrix, reloadCapabilities, swapCapabilityTest,
   CapabilityProviderStatus, CapabilityCategoryStatus,
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
@@ -34,6 +34,8 @@ export function Capabilities() {
   const [testErr, setTestErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [reloading, setReloading] = useState(false)
+  const [swapResults, setSwapResults] = useState<Record<string, { ok: boolean; detail: string }>>({})
+  const [swapTesting, setSwapTesting] = useState<string | null>(null)
 
   async function toggle(cap: string, current: boolean) {
     try {
@@ -48,6 +50,19 @@ export function Capabilities() {
     try { setResult(await fn()) }
     catch (e: unknown) { setTestErr(e instanceof Error ? e.message : 'Test failed') }
     finally { setTesting(false) }
+  }
+
+  async function handleSwapTest(category: string, key: string) {
+    const id = `${category}:${key}`
+    setSwapTesting(id)
+    try {
+      const res = await swapCapabilityTest(category, key)
+      setSwapResults(prev => ({ ...prev, [id]: { ok: res.ok, detail: res.detail } }))
+    } catch (e: unknown) {
+      setSwapResults(prev => ({ ...prev, [id]: { ok: false, detail: e instanceof Error ? e.message : 'Swap test failed' } }))
+    } finally {
+      setSwapTesting(null)
+    }
   }
 
   async function handleReload() {
@@ -133,7 +148,11 @@ export function Capabilities() {
                 {status.providers.length === 0 && (
                   <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>No providers configured.</p>
                 )}
-                {status.providers.map((p: CapabilityProviderStatus, i: number) => (
+                {status.providers.map((p: CapabilityProviderStatus, i: number) => {
+                  const swapId = `${cat}:${p.key}`
+                  const swap = swapResults[swapId]
+                  const swapBusy = swapTesting === swapId
+                  return (
                   <div key={i} style={{
                     display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 0',
                     borderTop: i > 0 ? '1px solid var(--border)' : undefined,
@@ -147,6 +166,13 @@ export function Capabilities() {
                           {p.available ? 'available' : 'unavailable'}
                         </span>
                         <span className="badge badge-gray" style={{ fontSize: 10.5 }}>{p.exec_locus}</span>
+                        <span
+                          className={`badge ${p.secrets_present ? 'badge-green' : 'badge-yellow'}`}
+                          style={{ fontSize: 10.5 }}
+                          title={p.secrets_present ? 'All required secrets are present' : 'One or more required secrets are missing'}
+                        >
+                          {p.secrets_present ? 'secrets ✓' : 'secrets missing'}
+                        </span>
                         {p.required && <span className="badge" style={{ fontSize: 10.5, background: 'rgba(234,93,60,0.15)', color: '#e94560' }}>required</span>}
                         {p.cost > 0 && <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>cost={p.cost}</span>}
                       </div>
@@ -155,14 +181,36 @@ export function Capabilities() {
                           {p.health.detail}
                         </p>
                       )}
+                      {swap && (
+                        <p style={{
+                          fontSize: 11, margin: '5px 0 0', lineHeight: 1.4,
+                          display: 'flex', alignItems: 'flex-start', gap: 6,
+                          color: swap.ok ? '#34d399' : '#fbbf24',
+                        }}>
+                          {swap.ok
+                            ? <CheckCircle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+                            : <XCircle size={12} style={{ flexShrink: 0, marginTop: 1 }} />}
+                          <span>{swap.detail}</span>
+                        </p>
+                      )}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => handleSwapTest(cat, p.key)}
+                        disabled={swapBusy}
+                        title="Prove a config-only swap to this provider would take effect with zero code change"
+                        style={{ fontSize: 11, padding: '3px 9px' }}
+                      >
+                        {swapBusy ? 'Testing…' : 'Swap test'}
+                      </button>
                       {p.available
                         ? <CheckCircle size={14} style={{ color: '#34d399' }} />
                         : <XCircle size={14} style={{ color: '#6b7280' }} />}
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </Card>
             )
           })}
