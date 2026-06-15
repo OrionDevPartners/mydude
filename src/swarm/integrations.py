@@ -102,8 +102,79 @@ class Integrations:
     #: Base64 PNG of the most recent successful browser_open (UI render channel).
     last_browser_screenshot: Optional[str] = None
 
-    async def browser_open(self, params: Dict[str, Any]) -> str:
+    @staticmethod
+    def _require_capability(category: str):
+        """Resolve ``category`` via the unified capability resolver.
+
+        This is the single entry point through which all capability calls must
+        pass — it enforces availability gating, jurisdiction routing (exec_locus
+        pin, cloud_shift kill-switch), and the adapter selection ordering from
+        env_1 before any outbound action is attempted.
+
+        Returns the resolved adapter. Raises ``CapabilityNotAvailable`` (from
+        the resolver) when no adapter qualifies — caller surfaces this as a
+        clear refusal rather than a silent no-op.
+        """
+        from src.capabilities.resolver import get_resolver
+        return get_resolver().resolve(category)
+
+    @staticmethod
+    def _require_browser_engine():
+        """Return a BrowserEngine constrained to all resolver-permitted backends.
+
+        Uses ``resolve_all("browser")`` to collect every jurisdiction-permitted
+        and available adapter (in cost order), extracts their underlying
+        BrowserBackend instances, and returns a BrowserEngine whose
+        ``backends()`` method is overridden to yield exactly that filtered
+        ordered list.
+
+        This design:
+        * Enforces the resolver's jurisdiction/availability gate (no non-permitted
+          backend can slip in via BrowserEngine's normal re-resolution).
+        * Preserves BrowserEngine's runtime failover across the permitted set —
+          if the cheapest permitted backend fails a live request, the engine
+          falls over to the next permitted one automatically.
+        * Raises ``CapabilityNotAvailable`` when no permitted backend exists,
+          never silently degrades.
+        """
+        from src.capabilities.resolver import get_resolver, CapabilityNotAvailable
+        resolver = get_resolver()
+        permitted_adapters = resolver.resolve_all("browser")
+        if not permitted_adapters:
+            raise CapabilityNotAvailable(
+                "No browser backend is available or permitted under current "
+                "jurisdiction/cloud-shift policy."
+            )
+        # Extract the underlying BrowserBackend from each permitted adapter in
+        # cost order (resolve_all returns cheapest-first).
+        permitted_backends = []
+        for cap_adapter in permitted_adapters:
+            try:
+                backend = cap_adapter._get_browser_backend()
+                if backend is not None:
+                    permitted_backends.append(backend)
+            except Exception:
+                pass
+        if not permitted_backends:
+            raise CapabilityNotAvailable(
+                "Browser adapters resolved but no underlying backends could be built. "
+                "Check browser backend configuration and secrets."
+            )
         from src.browser.engine import BrowserEngine
+        engine = BrowserEngine()
+        # Bind engine.backends() to the resolver-filtered ordered backend list so
+        # BrowserEngine's failover loop operates within the jurisdiction-permitted
+        # set only, not the full set of configured backends.
+        _permitted = permitted_backends
+        engine.backends = lambda: _permitted
+        return engine
+
+    async def browser_open(self, params: Dict[str, Any]) -> str:
+        # Unified capability gate — resolves availability, jurisdiction, and
+        # adapter selection before any outbound navigation. All jurisdiction-
+        # permitted backends are available for failover; none outside the
+        # permitted set can be selected.
+        engine = self._require_browser_engine()
 
         self.last_browser_screenshot = None
         url = (params.get("url") or "").strip()
@@ -116,7 +187,6 @@ class Integrations:
         # post-navigation check would leave open. Policy stays the source of truth.
         from src.swarm.policy import PolicyEngine
         allow_host = PolicyEngine().is_host_allowed
-        engine = BrowserEngine()
         result = await engine.open_page(
             url,
             timeout_ms=int(params.get("timeout_ms", 30000)),
@@ -154,7 +224,9 @@ class Integrations:
         or returned in the summary. Only the (non-secret) login/account URLs and
         username are referenced.
         """
-        from src.browser.engine import BrowserEngine
+        # Unified capability gate — all jurisdiction-permitted backends available
+        # for failover; execution stays within the resolver-approved set.
+        engine = self._require_browser_engine()
         from src.swarm.policy import PolicyEngine
 
         self.last_browser_screenshot = None
@@ -172,7 +244,7 @@ class Integrations:
             return ("No stored password for this subscription. Add the account "
                     "password to the vault first.")
         allow_host = PolicyEngine().is_host_allowed
-        result = await BrowserEngine().login_page(
+        result = await engine.login_page(
             login_url, account_url, username, password,
             otp=params.get("otp"),
             timeout_ms=int(params.get("timeout_ms", 45000)),
@@ -187,7 +259,9 @@ class Integrations:
         This must only be reached after an explicit user confirmation upstream.
         Same secret-handling rules as :meth:`browser_login`.
         """
-        from src.browser.engine import BrowserEngine
+        # Unified capability gate — all jurisdiction-permitted backends available
+        # for failover; execution stays within the resolver-approved set.
+        engine = self._require_browser_engine()
         from src.swarm.policy import PolicyEngine
 
         self.last_browser_screenshot = None
@@ -204,7 +278,7 @@ class Integrations:
                              detail="no stored credential", source=source)
             return "No stored password for this subscription."
         allow_host = PolicyEngine().is_host_allowed
-        result = await BrowserEngine().cancel_action(
+        result = await engine.cancel_action(
             login_url, account_url, username, password,
             otp=params.get("otp"),
             confirm_texts=params.get("confirm_texts"),
@@ -865,14 +939,23 @@ class Integrations:
         """Governed outbound call. Called only by the broker after contract+policy
         validation. Creates a CallSession, asks the provider to dial, and records
         the provider call SID. Provider errors fail loud (no mock SID)."""
+        # Unified capability gate — resolves realtime availability + jurisdiction
+        # before any outbound telephony action is attempted. Execution then goes
+        # through the adapter's place_call() method so the resolver-selected
+        # provider is used exclusively — no direct facade import at execution time.
+        realtime_adapter = self._require_capability("realtime")
+
         import json
         from datetime import datetime
         from src.database import SessionLocal
         from src.models import Bot, CallSession
         from src.telephony.facade import (
-            place_call, public_base_url,
+            public_base_url,
             TelephonyNotConfigured, TelephonyAuthError, TelephonyProviderError,
         )
+        # Derive the backend label from the resolved adapter for audit records.
+        _backend_label = getattr(realtime_adapter, "spec", None)
+        _backend_label = (getattr(_backend_label, "key", None) or "realtime")
         source = params.get("source")
         bot_id = params.get("bot_id")
         to_number = (params.get("to_number") or "").strip()
@@ -886,7 +969,7 @@ class Integrations:
                 return json.dumps({"ok": False, "error": "Unknown bot_id %s." % bot_id})
             from_number = (params.get("from_number") or bot.phone_number or "").strip() or None
             cs = CallSession(
-                bot_id=bot.id, provider="twilio", direction="outbound",
+                bot_id=bot.id, provider=_backend_label, direction="outbound",
                 status="queued", to_number=to_number, from_number=from_number,
             )
             db.add(cs)
@@ -907,13 +990,17 @@ class Integrations:
         status_cb = "%s/api/telephony/status?cs=%d" % (base, call_session_id)
 
         try:
+            # Route through the adapter's place_call() method so that the
+            # resolver-selected provider executes the call — not a hardcoded
+            # direct facade import. The adapter wraps the facade internally,
+            # keeping the telephony vendor abstracted behind the capability layer.
             res = await asyncio.to_thread(
-                place_call, to_number, answer_url,
-                from_number, status_cb,
+                realtime_adapter.place_call,
+                to_number, answer_url, from_number, status_cb,
             )
         except (TelephonyNotConfigured, TelephonyAuthError, TelephonyProviderError) as e:
             _mark_call_failed(call_session_id, str(e))
-            audit_capability("telephony_place_call", target=to_number, backend="twilio",
+            audit_capability("telephony_place_call", target=to_number, backend=_backend_label,
                              status="error", detail=str(e)[:500], source=source)
             return json.dumps({"ok": False, "error": str(e), "call_session_id": call_session_id})
 
@@ -928,7 +1015,7 @@ class Integrations:
                 db.commit()
         finally:
             db.close()
-        audit_capability("telephony_place_call", target=to_number, backend="twilio",
+        audit_capability("telephony_place_call", target=to_number, backend=_backend_label,
                          status="ok", detail="sid=%s" % res.get("sid"), source=source)
         return json.dumps({"ok": True, "call_sid": res.get("sid"),
                            "status": res.get("status"), "call_session_id": call_session_id})

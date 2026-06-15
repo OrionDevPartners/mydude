@@ -393,3 +393,184 @@ cost = 40
 label = "Azure Playwright Testing"
 secrets = ["AZURE_PLAYWRIGHT_ACCESS_TOKEN", "PLAYWRIGHT_SERVICE_URL"]
 notes = "Azure Playwright Workspaces cloud Chromium over WebSocket (Bearer access token). Fully interactive; api-version/os overridable via settings."
+
+# =============================================================================
+# DATABASE capability — relational database backends.
+# =============================================================================
+[database]
+# Backends in cost order. `postgresql` is the only real relational backend
+# today; adding MySQL/SQLite means one config block + one adapter class.
+enabled = ["postgresql"]
+required = []
+
+[databasebackends.postgresql]
+adapter = "postgresql"
+cost = 0
+label = "PostgreSQL (Replit built-in)"
+secrets = []
+exec_locus = "local"
+notes = "Replit managed PostgreSQL. DATABASE_URL is injected by the platform; no manual secret needed."
+
+# =============================================================================
+# VECTOR SEARCH capability — dense embedding / lexical search backends.
+# =============================================================================
+[vector_search]
+# TF-IDF is always available (no deps). Embedding is optional but richer.
+enabled = ["tfidf", "embedding"]
+required = []
+
+[vectorbackends.tfidf]
+adapter = "tfidf"
+cost = 0
+label = "TF-IDF (lexical, always local)"
+secrets = []
+exec_locus = "local"
+notes = "Pure-Python TF-IDF fallback. Always available; no secret or model server needed."
+
+[vectorbackends.embedding]
+adapter = "embedding"
+cost = 5
+label = "Dense Embedding (semantic)"
+secrets = []
+exec_locus = "local"
+notes = "Semantic embeddings via sentence-transformers or any OpenAI-compatible /embeddings endpoint. Configure via EMBEDDING_MODEL / EMBEDDING_PROVIDER."
+
+# =============================================================================
+# KNOWLEDGE STORE capability — graph / semantic memory backends.
+# =============================================================================
+[knowledge_store]
+enabled = ["cognee", "mem0"]
+required = []
+
+[knowledgebackends.cognee]
+adapter = "cognee"
+cost = 0
+label = "Cognee (local knowledge graph)"
+secrets = []
+exec_locus = "local"
+notes = "Vendored in-process knowledge graph. No secrets required; runs fully local."
+
+[knowledgebackends.mem0]
+adapter = "mem0"
+cost = 10
+label = "Mem0 (cloud semantic memory)"
+secrets = []
+exec_locus = "provider_hosted"
+notes = "Mem0 cloud memory. Optional package; degrades gracefully when not installed."
+
+# =============================================================================
+# OBJECT STORAGE capability — file/blob/document storage backends.
+# =============================================================================
+[object_storage]
+# Memory (ephemeral) is always available. local_fs and db_store add durability.
+enabled = ["memory", "local_fs", "db_store"]
+required = []
+
+[storagebackends.memory]
+adapter = "memory"
+cost = 0
+label = "In-Process Ephemeral Store"
+secrets = []
+exec_locus = "local"
+notes = "In-process dict; no persistence. Cleared on restart. For dev/test or short-lived blobs."
+
+[storagebackends.local_fs]
+adapter = "local_fs"
+cost = 5
+label = "Local Filesystem Store"
+secrets = []
+exec_locus = "local"
+notes = "Flat-file blobs under LOCAL_STORAGE_PATH (default /tmp/mydude_storage). Persists across restarts within the same container."
+
+[storagebackends.db_store]
+adapter = "db_store"
+cost = 10
+label = "Database Blob Store"
+secrets = []
+exec_locus = "local"
+notes = "Blobs stored in the relational database via src.memory.db_store. Durable; available when the database is reachable."
+
+# =============================================================================
+# SECRETS VAULT capability — credential resolution backends.
+# =============================================================================
+[secrets_vault]
+# env_vault is always available (reads os.environ). connector_proxy wins when
+# the Replit integration proxy is present (richer; resolves OAuth tokens).
+enabled = ["connector_proxy", "env_vault"]
+required = []
+
+[vaultbackends.connector_proxy]
+adapter = "connector_proxy"
+cost = 0
+label = "Replit Connector Proxy"
+secrets = []
+exec_locus = "local"
+notes = "Replit OAuth / integration connector proxy. Available when REPLIT_CONNECTORS_HOSTNAME is set. Resolves integration tokens without operator copying keys."
+
+[vaultbackends.env_vault]
+adapter = "env_vault"
+cost = 10
+label = "Environment / Replit Secrets"
+secrets = []
+exec_locus = "local"
+notes = "Reads secrets from the process environment (Replit Secrets / the credential vault sync target). Always available as the env_2 fallback."
+
+# =============================================================================
+# REALTIME capability — voice / telephony / live-communication backends.
+# =============================================================================
+[realtime]
+enabled = ["twilio"]
+required = []
+
+[realtimebackends.twilio]
+adapter = "twilio"
+cost = 0
+label = "Twilio Voice"
+secrets = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]
+exec_locus = "provider_hosted"
+notes = "Twilio outbound/inbound calling via the existing telephony facade. Set TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN in the vault to activate."
+
+# =============================================================================
+# ORCHESTRATOR capability — cognitive wave orchestrator backends.
+# =============================================================================
+[orchestrator]
+enabled = ["wave_orchestrator"]
+required = []
+
+[orchestratorbackends.wave_orchestrator]
+adapter = "wave_orchestrator"
+cost = 0
+label = "Wave Orchestrator (5-wave, 9-role)"
+secrets = []
+exec_locus = "local"
+notes = "WaveOrchestrator with full governance wiring: compliance scoring, hallucination control, provenance tracking, reflexive auditing, and jurisdiction routing. Available when any LLM provider is reachable."
+
+# =============================================================================
+# SIGNATURE OPTIMIZER capability — prompt/signature optimization backends.
+# =============================================================================
+[sig_optimizer]
+enabled = ["dspy_bridge"]
+required = []
+
+[optimizerbackends.dspy_bridge]
+adapter = "dspy_bridge"
+cost = 0
+label = "DSPy Bridge (MIPROv2 / GEPA)"
+secrets = []
+exec_locus = "local"
+notes = "DSPy-powered prompt optimizer. Requires the dspy package and at least one LLM provider. Cache hardened per CVE-2025-69872 mitigation."
+
+# =============================================================================
+# CONTAINER COMPUTE capability — subprocess / container execution backends.
+# =============================================================================
+[container_compute]
+enabled = ["subprocess_local"]
+required = []
+
+[computebackends.subprocess_local]
+adapter = "subprocess_local"
+cost = 0
+label = "Local Subprocess"
+secrets = []
+exec_locus = "local"
+notes = "Subprocess execution in the local container. Command allow-list enforcement is the capability broker's responsibility (PolicyEngine + SSH_ALLOWED_COMMANDS). Always available."

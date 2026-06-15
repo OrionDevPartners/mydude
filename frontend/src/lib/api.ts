@@ -235,8 +235,39 @@ export const testLocalNode = (base_url: string, timeout?: string) =>
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 
-// Capabilities
+// Capabilities — legacy bridges console (browser / SSH / email)
 export const getCapabilities = () => request<CapabilitiesData>('/capabilities')
+
+// Unified capability matrix (all 11 categories: LLM, browser, database, …)
+export interface CapabilityProviderStatus {
+  key: string
+  label: string
+  adapter: string
+  exec_locus: string
+  available: boolean
+  secrets_present: boolean
+  health: { ok: boolean; detail: string; exec_locus: string }
+  required: boolean
+  cost: number
+  notes: string
+}
+export interface CapabilityCategoryStatus {
+  providers: CapabilityProviderStatus[]
+  active_key: string | null
+  enabled_count: number
+  available_count: number
+}
+export interface CapabilityMatrix {
+  matrix: Record<string, CapabilityCategoryStatus>
+  categories: string[]
+}
+export const getCapabilityMatrix = () => request<CapabilityMatrix>('/capabilities/matrix')
+export const swapCapabilityTest = (category: string, key: string) =>
+  request<{ ok: boolean; resolved_key: string | null; detail: string }>(
+    `/capabilities/swap-test?category=${encodeURIComponent(category)}&key=${encodeURIComponent(key)}`
+  )
+export const reloadCapabilities = () =>
+  request<{ ok: boolean; detail: string }>('/capabilities/reload', { method: 'POST' })
 export const toggleCapability = (capability: string, enabled: boolean) =>
   request<{ ok: boolean; enabled: boolean }>('/capabilities/toggle', {
     method: 'POST',

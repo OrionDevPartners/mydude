@@ -1,18 +1,39 @@
 import { useState } from 'react'
-import { getCapabilities, toggleCapability, testBrowser, testSsh, testCode, testHistory, testReceipts, saveEmailConfig, saveSshConfig, TestResult } from '@/lib/api'
+import {
+  getCapabilities, toggleCapability, testBrowser, testSsh, testCode, testHistory,
+  testReceipts, saveEmailConfig, saveSshConfig, TestResult,
+  getCapabilityMatrix, reloadCapabilities,
+  CapabilityProviderStatus, CapabilityCategoryStatus,
+} from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, PageHeader, Toggle, FormField, Screenshot } from '@/components/ui'
 import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { Globe, Terminal, Mail, CheckCircle, XCircle, Zap } from 'lucide-react'
+import { Globe, Terminal, Mail, CheckCircle, XCircle, Zap, Grid, RefreshCw } from 'lucide-react'
+
+const CATEGORY_LABELS: Record<string, string> = {
+  llm: 'LLM',
+  browser: 'Browser',
+  database: 'Database',
+  vector_search: 'Vector Search',
+  knowledge_store: 'Knowledge Store',
+  object_storage: 'Object Storage',
+  secrets_vault: 'Secrets Vault',
+  realtime: 'Realtime',
+  orchestrator: 'Orchestrator',
+  sig_optimizer: 'Sig Optimizer',
+  container_compute: 'Container Compute',
+}
 
 export function Capabilities() {
-  const [tab, setTab] = useState('Browser')
+  const [tab, setTab] = useState('Matrix')
   const { data, loading, error, refetch } = useApi(getCapabilities, [])
+  const { data: matrix, loading: matrixLoading, error: matrixError, refetch: matrixRefetch } = useApi(getCapabilityMatrix, [])
   const [result, setResult] = useState<TestResult | null>(null)
   const [testing, setTesting] = useState(false)
   const [testErr, setTestErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+  const [reloading, setReloading] = useState(false)
 
   async function toggle(cap: string, current: boolean) {
     try {
@@ -29,37 +50,128 @@ export function Capabilities() {
     finally { setTesting(false) }
   }
 
-  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}><Spinner /></div>
-  if (error) return <Alert type="error">{error}</Alert>
+  async function handleReload() {
+    setReloading(true)
+    try {
+      await reloadCapabilities()
+      setMsg('Capability registry reloaded')
+      matrixRefetch()
+    } catch (e: unknown) {
+      setTestErr(e instanceof Error ? e.message : 'Reload failed')
+    } finally {
+      setReloading(false)
+    }
+  }
 
   const enabledCount = data ? [data.browser_enabled, data.ssh_enabled, data.email_enabled].filter(Boolean).length : 0
+  const availableCount = matrix ? Object.values(matrix.matrix).filter(c => c.available_count > 0).length : 0
+  const totalCategories = matrix ? matrix.categories.length : 11
 
   return (
     <div className="animate-fade-in">
-      <PageHeader title="Capabilities Console" subtitle="Manage browser, SSH and email automation bridges" />
+      <PageHeader title="Capabilities Console" subtitle="Unified capability layer — all 11 provider categories" />
       {msg && <Alert type="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {testErr && <Alert type="error" onClose={() => setTestErr(null)}>{testErr}</Alert>}
 
-      {data && (
+      {matrix && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 22 }}>
+          <GlassStatCard value={`${availableCount} / ${totalCategories}`} label="Categories live" icon={<Grid size={16} />} glow={availableCount > 0} />
           <GlassStatCard value={`${enabledCount} / 3`} label="Bridges enabled" icon={<Zap size={16} />} glow={enabledCount > 0} />
-          <GlassStatCard value={data.browser_enabled ? 'On' : 'Off'} label="Browser" icon={<Globe size={16} />} glow={data.browser_enabled} />
-          <GlassStatCard value={data.ssh_enabled ? 'On' : 'Off'} label="SSH bridge" icon={<Terminal size={16} />} glow={data.ssh_enabled} />
-          <GlassStatCard value={data.email_enabled ? 'On' : 'Off'} label="Email / IMAP" icon={<Mail size={16} />} glow={data.email_enabled} />
+          <GlassStatCard value={data?.browser_enabled ? 'On' : 'Off'} label="Browser" icon={<Globe size={16} />} glow={!!data?.browser_enabled} />
+          <GlassStatCard value={data?.ssh_enabled ? 'On' : 'Off'} label="SSH bridge" icon={<Terminal size={16} />} glow={!!data?.ssh_enabled} />
         </div>
       )}
       {data && !data.encryption_persistent && (
         <Alert type="error">
-          <strong>ENCRYPTION_KEY is not set.</strong> Saved credentials (Browserbase
-          keys, SSH bridge config) are encrypted with a temporary key generated for
-          this session only and will become undecryptable after a restart. Set{' '}
-          <code>ENCRYPTION_KEY</code> as a persistent deployment secret to keep them
-          across restarts.
+          <strong>ENCRYPTION_KEY is not set.</strong> Saved credentials will become undecryptable after a restart. Set{' '}
+          <code>ENCRYPTION_KEY</code> as a persistent deployment secret.
         </Alert>
       )}
 
-      <Tabs tabs={['Browser', 'SSH', 'Email', 'Audit']} active={tab} onChange={setTab} />
+      <Tabs tabs={['Matrix', 'Browser', 'SSH', 'Email', 'Audit']} active={tab} onChange={setTab} />
 
+      {/* ------------------------------------------------------------------ */}
+      {/* MATRIX TAB — full 11-category capability matrix                    */}
+      {/* ------------------------------------------------------------------ */}
+      {tab === 'Matrix' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={handleReload}
+              disabled={reloading}
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <RefreshCw size={13} style={reloading ? { animation: 'spin 1s linear infinite' } : undefined} />
+              {reloading ? 'Reloading…' : 'Reload registry'}
+            </button>
+          </div>
+          {matrixLoading && <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>}
+          {matrixError && <Alert type="error">{matrixError}</Alert>}
+          {matrix && matrix.categories.map(cat => {
+            const status: CapabilityCategoryStatus = matrix.matrix[cat] || { providers: [], active_key: null, enabled_count: 0, available_count: 0 }
+            return (
+              <Card key={cat} style={{ padding: '14px 18px', marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+                      {CATEGORY_LABELS[cat] || cat}
+                    </span>
+                    {status.active_key && (
+                      <span className="badge badge-green" style={{ fontSize: 11 }}>
+                        active: {status.active_key}
+                      </span>
+                    )}
+                    {!status.active_key && (
+                      <span className="badge badge-gray" style={{ fontSize: 11 }}>unavailable</span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {status.available_count}/{status.enabled_count} providers live
+                  </span>
+                </div>
+                {status.providers.length === 0 && (
+                  <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>No providers configured.</p>
+                )}
+                {status.providers.map((p: CapabilityProviderStatus, i: number) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 0',
+                    borderTop: i > 0 ? '1px solid var(--border)' : undefined,
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-primary)', fontFamily: 'monospace' }}>
+                          {p.key}
+                        </span>
+                        <span className={`badge ${p.available ? 'badge-green' : 'badge-gray'}`} style={{ fontSize: 10.5 }}>
+                          {p.available ? 'available' : 'unavailable'}
+                        </span>
+                        <span className="badge badge-gray" style={{ fontSize: 10.5 }}>{p.exec_locus}</span>
+                        {p.required && <span className="badge" style={{ fontSize: 10.5, background: 'rgba(234,93,60,0.15)', color: '#e94560' }}>required</span>}
+                        {p.cost > 0 && <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>cost={p.cost}</span>}
+                      </div>
+                      {p.health?.detail && (
+                        <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '3px 0 0', lineHeight: 1.4 }}>
+                          {p.health.detail}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      {p.available
+                        ? <CheckCircle size={14} style={{ color: '#34d399' }} />
+                        : <XCircle size={14} style={{ color: '#6b7280' }} />}
+                    </div>
+                  </div>
+                ))}
+              </Card>
+            )
+          })}
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* BROWSER TAB                                                         */}
+      {/* ------------------------------------------------------------------ */}
       {tab === 'Browser' && data && (
         <div>
           <Card style={{ padding: '18px 20px', marginBottom: 16 }}>
@@ -90,6 +202,9 @@ export function Capabilities() {
         </div>
       )}
 
+      {/* ------------------------------------------------------------------ */}
+      {/* SSH TAB                                                             */}
+      {/* ------------------------------------------------------------------ */}
       {tab === 'SSH' && data && (
         <div>
           <Card style={{ padding: '18px 20px', marginBottom: 16 }}>
@@ -115,6 +230,9 @@ export function Capabilities() {
         </div>
       )}
 
+      {/* ------------------------------------------------------------------ */}
+      {/* EMAIL TAB                                                           */}
+      {/* ------------------------------------------------------------------ */}
       {tab === 'Email' && data && (
         <div>
           <Card style={{ padding: '18px 20px', marginBottom: 16 }}>
@@ -138,6 +256,9 @@ export function Capabilities() {
         </div>
       )}
 
+      {/* ------------------------------------------------------------------ */}
+      {/* AUDIT TAB                                                           */}
+      {/* ------------------------------------------------------------------ */}
       {tab === 'Audit' && data && (
         data.audit.length === 0
           ? <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>No audit events yet.</p>

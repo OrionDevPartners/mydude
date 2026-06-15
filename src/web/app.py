@@ -199,11 +199,13 @@ async def startup():
     except Exception as e:
         logger.warning("Local model registry load failed: %s", e)
 
-    from src.providers.handshake import run_handshake
-    run_handshake()
-
-    from src.browser.handshake import run_browser_handshake
-    run_browser_handshake()
+    # Unified capability handshake — validates ALL capability categories
+    # (LLM, browser, database, vector_search, knowledge_store, object_storage,
+    #  secrets_vault, realtime, orchestrator, sig_optimizer, container_compute)
+    # in one governed pass. Internally re-uses the original per-domain
+    # handshakes so LLM and browser behavior is preserved exactly.
+    from src.capabilities.handshake import run_unified_handshake
+    run_unified_handshake()
 
     try:
         from src.finance.scheduler import get_scheduler

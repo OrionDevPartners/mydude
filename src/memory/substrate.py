@@ -26,6 +26,91 @@ from .local_store import LocalMemoryAdapter
 from .cloud_store import CloudMemoryAdapter
 from .bridge import MemoryBridge, SyncReport
 
+class _NullCloudAdapter:
+    """No-op cloud memory adapter used when no permitted cloud knowledge_store
+    backend was resolved by the capability registry.
+
+    This satisfies the MemoryBridge interface so the substrate can operate in
+    local-only mode without silently reintroducing a blocked cloud backend.
+    All writes/reads are no-ops; sync operations are skipped gracefully.
+
+    Using a null object (not None) keeps MemoryBridge's control flow clean —
+    it calls the same methods regardless and the results are benign.
+    """
+
+    def add(self, entry):
+        return entry
+
+    def search(self, query: str, top_k: int = 5, category=None):  # noqa: D401
+        return []
+
+    def get_all(self):
+        return []
+
+    def delete(self, memory_id: str) -> bool:
+        return False
+
+    def apply_decay(self) -> None:
+        pass
+
+    def stats(self) -> dict:
+        return {"provider": "null", "count": 0, "blocked_by_jurisdiction": True}
+
+
+def _adapters_from_resolver():
+    """Use the unified capability resolver to select knowledge_store adapters.
+
+    Returns (local_adapter, cloud_adapter). The resolver selects adapters in
+    cost order and respects jurisdiction / cloud_shift gating, so any configured
+    knowledge_store backend in providers.toml is automatically selected without
+    code changes.
+
+    When the resolver is unavailable (very early boot / isolated tests), both
+    adapters fall back to direct instantiation — same behavior as before the
+    capability layer was introduced.
+
+    When the resolver succeeds but finds no permitted cloud adapter (e.g. because
+    cloud_shift=False or exec_locus_pin=local blocks it), the cloud slot is
+    filled with ``_NullCloudAdapter`` rather than unconditionally constructing
+    ``CloudMemoryAdapter``. This ensures jurisdiction gating applies uniformly:
+    a blocked cloud backend is NOT silently reintroduced as a fallback.
+    """
+    local_adapter = None
+    cloud_adapter = None
+    resolver_succeeded = False
+    try:
+        from src.capabilities.resolver import get_resolver
+        from src.capabilities.adapters.knowledge_store import (
+            CogneeKnowledgeAdapter, Mem0KnowledgeAdapter,
+        )
+        resolver = get_resolver()
+        all_adapters = resolver.resolve_all("knowledge_store")
+        resolver_succeeded = True
+        for cap_adapter in all_adapters:
+            if isinstance(cap_adapter, CogneeKnowledgeAdapter) and local_adapter is None:
+                local_adapter = LocalMemoryAdapter()
+            elif isinstance(cap_adapter, Mem0KnowledgeAdapter) and cloud_adapter is None:
+                cloud_adapter = CloudMemoryAdapter()
+    except Exception as exc:
+        logger.debug("knowledge_store resolver fallback: %s", exc)
+
+    # Local storage is always available — always fall back.
+    if local_adapter is None:
+        local_adapter = LocalMemoryAdapter()
+
+    if cloud_adapter is None:
+        if not resolver_succeeded:
+            # Resolver failed (early boot / test isolation): preserve original
+            # behavior by instantiating CloudMemoryAdapter as before.
+            cloud_adapter = CloudMemoryAdapter()
+        else:
+            # Resolver ran but selected no permitted cloud adapter (jurisdiction
+            # gate excluded it). Use the null adapter so MemoryBridge operates
+            # in local-only mode without reintroducing a blocked cloud backend.
+            cloud_adapter = _NullCloudAdapter()
+
+    return local_adapter, cloud_adapter
+
 logger = logging.getLogger(__name__)
 
 _SUBSTRATE: Optional["MemorySubstrate"] = None
@@ -41,8 +126,12 @@ class MemorySubstrate:
     """
 
     def __init__(self) -> None:
-        self._local = LocalMemoryAdapter()
-        self._cloud = CloudMemoryAdapter()
+        # Adapter selection goes through the unified capability resolver so
+        # jurisdiction gating (cloud_shift, exec_locus_pin) and cost-ordered
+        # backend selection apply to knowledge_store the same way they apply
+        # to LLM and browser. Direct instantiation is the fallback when the
+        # resolver is not yet initialized (very early boot or isolated tests).
+        self._local, self._cloud = _adapters_from_resolver()
         self._bridge = MemoryBridge(self._local, self._cloud)
         self._audit: Deque[MemoryEvent] = deque(maxlen=_AUDIT_MAXLEN)
         self._last_sync: Optional[float] = None
