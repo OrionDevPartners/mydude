@@ -490,6 +490,77 @@ class Integrations:
             return json.dumps({"ok": False,
                                "error": "Governed completion failed: %s" % str(e)[:300]})
 
+    async def memory_recall(self, params: Dict[str, Any]) -> str:
+        """READ-ONLY recall from MyDude's long-term governed memory.
+
+        Surfaces semantically related entries to an MCP client. The substrate is
+        synchronous, so the read runs off the event loop. Output is sanitized to
+        a stable, non-secret projection — private (local-only digital-twin)
+        entries are NEVER returned, and arbitrary metadata is dropped (only the
+        count of filtered private entries is reported). Fails loud on error and
+        never mocks (pillars #1, #4)."""
+        import json
+        source = params.get("source")
+        query = (params.get("query") or "").strip()
+        if not query:
+            audit_capability("memory_recall", status="error",
+                             detail="missing query", source=source)
+            return json.dumps({"ok": False, "error": "query is required."})
+
+        top_k = params.get("top_k")
+        try:
+            top_k = int(top_k) if top_k is not None else 5
+        except (TypeError, ValueError):
+            top_k = 5
+        top_k = max(1, min(top_k, 50))
+
+        category = params.get("category") or None
+        min_confidence = params.get("min_confidence")
+        try:
+            min_confidence = float(min_confidence) if min_confidence is not None else 0.3
+        except (TypeError, ValueError):
+            min_confidence = 0.3
+
+        try:
+            from src.memory.substrate import get_substrate
+            substrate = get_substrate()
+            entries = await asyncio.to_thread(
+                substrate.recall, query, top_k=top_k,
+                category=category, min_confidence=min_confidence,
+            )
+            results: List[Dict[str, Any]] = []
+            private_filtered = 0
+            for e in (entries or []):
+                meta = getattr(e, "metadata", None) or {}
+                if isinstance(meta, dict) and meta.get("private"):
+                    private_filtered += 1
+                    continue  # never expose local-only digital-twin memory
+                created = getattr(e, "created_at", None)
+                results.append({
+                    "memory_id": getattr(e, "memory_id", None),
+                    "content": str(getattr(e, "content", "") or "")[:1000],
+                    "category": getattr(e, "category", None),
+                    "confidence": getattr(e, "confidence", None),
+                    "verified": getattr(e, "verified", None),
+                    "source": getattr(e, "source", None),
+                    "created_at": created.isoformat() if hasattr(created, "isoformat") else (
+                        str(created) if created is not None else None),
+                })
+            audit_capability("memory_recall", target="top_k=%s" % top_k,
+                             backend="memory_substrate", status="ok",
+                             detail="returned %d (filtered %d private)" % (
+                                 len(results), private_filtered),
+                             source=source)
+            return json.dumps({
+                "ok": True, "results": results, "count": len(results),
+                "private_filtered_count": private_filtered,
+            }, default=str)
+        except Exception as e:  # noqa: BLE001 - surface (fail loud), never mock
+            audit_capability("memory_recall", status="error",
+                             detail=str(e)[:500], source=source)
+            return json.dumps({"ok": False,
+                               "error": "Memory recall failed: %s" % str(e)[:300]})
+
     async def azure_deploy_plan(self, params: Dict[str, Any]) -> str:
         """PLAN phase: ARM what-if (no resources, no cost) -> short-lived signed
         token binding the approved plan (and its params fingerprint) to apply."""

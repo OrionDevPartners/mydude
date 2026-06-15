@@ -244,6 +244,9 @@ class PolicyEngine:
                           "azure_deploy_plan", "azure_deploy_apply"):
             return self._evaluate_azure(capability, params)
 
+        if capability == "memory_recall":
+            return self._evaluate_memory(capability, params)
+
         return PolicyDecision(True, "Allowed by policy.")
 
     def _evaluate_telephony(self, capability: str, params: Dict[str, Any]) -> PolicyDecision:
@@ -288,6 +291,24 @@ class PolicyEngine:
                 False,
                 "Azure deploy apply is blocked by policy (billable, destructive, "
                 "default-deny). Set ALLOW_AZURE_DEPLOY=true to enable the apply phase.",
+            )
+        return PolicyDecision(True, "Allowed by policy.")
+
+    def _evaluate_memory(self, capability: str, params: Dict[str, Any]) -> PolicyDecision:
+        """Gate for long-term memory recall exposed over MCP (Task #219).
+
+        Read-only semantic recall is enabled by default (it never mutates memory
+        and the integration layer filters out private digital-twin entries); the
+        operator can hard-disable the MCP memory surface with ENABLE_MEMORY_MCP=
+        false. Note this gates ONLY the explicit ``memory_recall`` capability —
+        the additive write-back siphon that distills other interactions into
+        memory lives in the MCP server and is governed there (governed output +
+        sanitization), never as a brokered capability.
+        """
+        if not _env_flag("ENABLE_MEMORY_MCP", default=True):
+            return PolicyDecision(
+                False,
+                "Memory MCP capability is disabled. Set ENABLE_MEMORY_MCP=true to enable it.",
             )
         return PolicyDecision(True, "Allowed by policy.")
 

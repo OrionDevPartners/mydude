@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from starlette.testclient import TestClient
 
 import src.mcp.azure_dev_server as S
+import src.memory.siphon as SIPHON
 
 EXPECTED_TOOLS = {
     "azure_cosmos_read", "azure_pg_select", "azure_deploy_status",
@@ -112,6 +113,29 @@ class _env:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = old
+        return False
+
+
+class _record_siphon:
+    """Context manager: patch the siphon write so dispatch tests stay hermetic
+    (no real substrate / DB) while recording whether/what was siphoned."""
+
+    def __init__(self):
+        self.calls = []
+        self._prev = None
+
+    def __enter__(self):
+        self._prev = SIPHON.siphon_interaction
+
+        def _rec(capability, params, data, substrate=None):
+            self.calls.append((capability, dict(params or {}), data))
+            return "mem-rec"
+
+        SIPHON.siphon_interaction = _rec
+        return self
+
+    def __exit__(self, *exc):
+        SIPHON.siphon_interaction = self._prev
         return False
 
 
@@ -345,6 +369,71 @@ def test_aoai_and_plan_tools_tag_governed_source():
     assert params["source"] == "mcp:azure_deploy_plan"
 
 
+# -- memory_recall tool + additive siphon hook --------------------------------
+
+def test_memory_recall_tool_registered_readonly_with_query_required():
+    by = {t.name: t for t in _call(S.mcp.list_tools())}
+    assert "memory_recall" in by
+    ann = by["memory_recall"].annotations
+    assert ann.readOnlyHint is True and ann.destructiveHint is False
+    schema = by["memory_recall"].inputSchema
+    assert isinstance(schema, dict) and schema.get("type") == "object"
+    assert "query" in (schema.get("required") or [])
+
+
+def test_memory_recall_tool_omits_then_forwards_optionals():
+    with _install_broker(_ok({"ok": True, "results": [], "count": 0})) as fake:
+        out = _call(S.memory_recall_tool(query="hi"))
+    assert out["count"] == 0
+    cap, p1 = fake.calls[0]
+    assert cap == "memory_recall" and p1["source"] == "mcp:memory_recall"
+    assert "top_k" not in p1 and "category" not in p1 and "min_confidence" not in p1
+    with _install_broker(_ok({"ok": True, "results": [], "count": 0})) as fake:
+        _call(S.memory_recall_tool(
+            query="hi", top_k=3, category="mcp_interaction", min_confidence=0.5))
+    _, p2 = fake.calls[0]
+    assert p2["top_k"] == 3 and p2["category"] == "mcp_interaction"
+    assert p2["min_confidence"] == 0.5
+
+
+def test_dispatch_siphons_successful_interaction():
+    with _install_broker(_ok({"ok": True, "rows": [1], "rowcount": 1})), \
+            _record_siphon() as rec, _env(ENABLE_MCP_MEMORY_SIPHON=None):
+        out = _call(S.azure_pg_select_tool(db_key="main", sql="SELECT 1"))
+    assert out["rowcount"] == 1  # siphon never alters the result
+    assert len(rec.calls) == 1
+    cap, _params, data = rec.calls[0]
+    assert cap == "azure_pg_select" and data["rowcount"] == 1
+
+
+def test_dispatch_does_not_siphon_memory_recall():
+    # No recall -> write feedback loop.
+    with _install_broker(_ok({"ok": True, "results": [], "count": 0})), \
+            _record_siphon() as rec, _env(ENABLE_MCP_MEMORY_SIPHON=None):
+        _call(S.memory_recall_tool(query="x"))
+    assert rec.calls == []
+
+
+def test_dispatch_siphon_disabled_by_env():
+    with _install_broker(_ok({"ok": True, "rows": []})), \
+            _record_siphon() as rec, _env(ENABLE_MCP_MEMORY_SIPHON="false"):
+        _call(S.azure_pg_select_tool(db_key="main", sql="SELECT 1"))
+    assert rec.calls == []
+
+
+def test_dispatch_does_not_siphon_failed_interactions():
+    # An honest failure raises before the siphon hook — nothing is siphoned.
+    with _install_broker(_ok({"ok": False, "error": "boom"})), \
+            _record_siphon() as rec, _env(ENABLE_MCP_MEMORY_SIPHON=None):
+        try:
+            _call(S.azure_pg_select_tool(db_key="main", sql="SELECT 1"))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("honest failure must raise")
+    assert rec.calls == []
+
+
 def _run_all():
     tests = [
         test_list_tools_exposes_six_azure_tools_with_schemas,
@@ -367,6 +456,12 @@ def _run_all():
         test_empty_output_raises_runtime_error,
         test_deploy_apply_forwards_token_hash_confirm,
         test_aoai_and_plan_tools_tag_governed_source,
+        test_memory_recall_tool_registered_readonly_with_query_required,
+        test_memory_recall_tool_omits_then_forwards_optionals,
+        test_dispatch_siphons_successful_interaction,
+        test_dispatch_does_not_siphon_memory_recall,
+        test_dispatch_siphon_disabled_by_env,
+        test_dispatch_does_not_siphon_failed_interactions,
     ]
     failed = 0
     for t in tests:

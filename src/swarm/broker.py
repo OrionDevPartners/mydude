@@ -23,6 +23,7 @@ _AUDITED_CAPABILITIES = {
     "voice_synthesize",
     "azure_cosmos_read", "azure_pg_select", "azure_deploy_status",
     "azure_aoai_complete", "azure_deploy_plan", "azure_deploy_apply",
+    "memory_recall",
 }
 
 
@@ -211,6 +212,10 @@ class CapabilityBroker:
 
         if capability == "azure_deploy_apply":
             out = await self.integrations.azure_deploy_apply(params)
+            return BrokerResult(True, decision, out)
+
+        if capability == "memory_recall":
+            out = await self.integrations.memory_recall(params)
             return BrokerResult(True, decision, out)
 
         # A genuinely-new (unimplemented) capability is being requested.

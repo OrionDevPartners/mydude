@@ -9,6 +9,12 @@ to MCP clients as governed tools:
   * ``azure_aoai_complete``  — GOVERNED completion via the MyDude swarm (no raw AOAI)
   * ``azure_deploy_plan``    — PLAN phase (ARM what-if; no resources, no cost)
   * ``azure_deploy_apply``   — APPLY phase (BILLABLE; broker-gated two-phase confirm)
+  * ``memory_recall``        — read-only recall from MyDude's long-term governed memory
+
+Every successful interaction is additionally siphoned (governed + sanitized) into
+that same long-term memory so the brain self-improves from its own headless use.
+This is purely additive — it never alters a tool's result and can be turned off
+with ``ENABLE_MCP_MEMORY_SIPHON=false``.
 
 Governance (pillars 1-6): every tool dispatches through the SAME
 contract → policy → broker → integration → audit pipeline the rest of MyDude
@@ -31,6 +37,7 @@ Run locally (after exporting a dev token) ::
 
 In the container the token is read from Key Vault; never print it.
 """
+import asyncio
 import hmac
 import json
 import logging
@@ -73,6 +80,10 @@ AZURE_MCP_ALLOWED_ORIGINS_ENV = "AZURE_MCP_ALLOWED_ORIGINS"
 #: Explicit opt-out of MCP's host check for ingress-fronted deploys where the
 #: platform (Container Apps) already validates Host. Truthy = protection OFF.
 AZURE_MCP_DISABLE_HOST_CHECK_ENV = "AZURE_MCP_DISABLE_HOST_CHECK"
+
+#: Master switch for the additive write-back siphon that distills every
+#: successful interaction into long-term governed memory. ON by default.
+ENABLE_MCP_MEMORY_SIPHON_ENV = "ENABLE_MCP_MEMORY_SIPHON"
 
 
 def _csv_env(name: str) -> List[str]:
@@ -177,6 +188,37 @@ def get_broker() -> CapabilityBroker:
     return _BROKER
 
 
+def _siphon_enabled() -> bool:
+    """Interaction siphon is ON by default; disable with a falsy env value."""
+    raw = os.environ.get(ENABLE_MCP_MEMORY_SIPHON_ENV)
+    if raw is None or not raw.strip():
+        return True
+    return _truthy(raw)
+
+
+async def _maybe_siphon(capability: str, params: Dict[str, Any], data: Any) -> None:
+    """Best-effort governed siphon of one interaction into long-term memory.
+
+    Purely additive: it runs the synchronous substrate write off the event loop,
+    never alters ``data``, and swallows + audits any failure so the capability's
+    own result is never affected. ``memory_*`` capabilities are skipped upstream
+    (no recall->write loop)."""
+    if not _siphon_enabled() or not capability or capability.startswith("memory_"):
+        return
+    try:
+        from src.memory.siphon import siphon_interaction
+        await asyncio.to_thread(siphon_interaction, capability, params, data)
+    except Exception as e:  # never break the request path
+        logger.warning("MCP memory siphon failed for %s: %s", capability, e)
+        try:
+            from src.swarm.integrations import audit_capability
+            audit_capability("mcp_memory_siphon", target=capability,
+                             status="error", detail=str(e)[:300],
+                             source=(params or {}).get("source"))
+        except Exception:
+            pass
+
+
 async def _dispatch(capability: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """Run a capability through the governed broker and return structured output.
 
@@ -198,6 +240,9 @@ async def _dispatch(capability: str, params: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(data, dict) and data.get("ok") is False:
         # Honest, sanitized failure (e.g. Azure unreachable, plan drift) — fail loud.
         raise ValueError(str(data.get("error") or "The capability failed."))
+    # Purely additive: distill this successful interaction into long-term memory
+    # so the brain self-improves. Never alters `data`; never raises (best-effort).
+    await _maybe_siphon(capability, params, data)
     return data
 
 
@@ -212,7 +257,10 @@ mcp = FastMCP(
         "two-phase deployment (plan -> apply). Every tool passes MyDude's "
         "governance pipeline (contract, policy, broker, audit). The destructive "
         "apply is default-deny and requires a signed plan token + exact confirm "
-        "phrase obtained from azure_deploy_plan."
+        "phrase obtained from azure_deploy_plan. Use memory_recall to read from "
+        "MyDude's long-term governed memory; every successful interaction here is "
+        "also siphoned back into that memory (governed + sanitized) so the system "
+        "self-improves over time."
     ),
     stateless_http=True,
     json_response=True,
@@ -380,6 +428,46 @@ async def azure_deploy_apply_tool(
         "plan_token": plan_token, "plan_hash": plan_hash, "confirm": confirm,
         "source": "mcp:azure_deploy_apply",
     })
+
+
+@mcp.tool(
+    name="memory_recall",
+    title="Recall from long-term memory (read-only)",
+    description=(
+        "Recall semantically related entries from MyDude's long-term governed "
+        "memory — the accumulated, sanitized knowledge of past interactions. "
+        "Read-only: it never mutates memory. Private (local-only) entries are "
+        "never returned, and only a stable non-secret projection of each entry "
+        "is exposed (id, content, category, confidence, verified, source, time)."
+    ),
+    annotations=ToolAnnotations(
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True,
+    ),
+    structured_output=True,
+)
+async def memory_recall_tool(
+    query: Annotated[str, Field(description="What to recall (semantic query).", min_length=1)],
+    top_k: Annotated[
+        Optional[int],
+        Field(description="Max entries to return (bounded server-side).", ge=1),
+    ] = None,
+    category: Annotated[
+        Optional[str],
+        Field(description="Restrict recall to a single memory category."),
+    ] = None,
+    min_confidence: Annotated[
+        Optional[float],
+        Field(description="Minimum confidence (0..1) for returned entries.", ge=0.0, le=1.0),
+    ] = None,
+) -> Dict[str, Any]:
+    call: Dict[str, Any] = {"query": query, "source": "mcp:memory_recall"}
+    if top_k is not None:
+        call["top_k"] = top_k
+    if category is not None:
+        call["category"] = category
+    if min_confidence is not None:
+        call["min_confidence"] = min_confidence
+    return await _dispatch("memory_recall", call)
 
 
 # -- ASGI app (auth-wrapped streamable HTTP) ----------------------------------

@@ -580,6 +580,21 @@ _CONTRACTS: Dict[str, CapabilityContract] = {
         ],
         enforced_preconditions=[],
     ),
+    "memory_recall": CapabilityContract(
+        capability="memory_recall",
+        category=CapabilityCategory.KNOWLEDGE,
+        description="Recall semantically related entries from MyDude's long-term governed memory (read-only).",
+        required_fields=["query"],
+        optional_fields=["top_k", "category", "min_confidence", "source", "domain", "team"],
+        input_schema={"query": "str", "top_k": "int", "category": "str",
+                      "min_confidence": "float", "source": "str"},
+        output_schema={"results": "list", "count": "int", "private_filtered_count": "int"},
+        epistemic_preconditions=[
+            "Read-only semantic recall; returns sanitized entries (no raw metadata)",
+            "Private (local-only digital-twin) entries are never returned",
+        ],
+        enforced_preconditions=[],
+    ),
     "azure_aoai_complete": CapabilityContract(
         capability="azure_aoai_complete",
         category=CapabilityCategory.MCP,
