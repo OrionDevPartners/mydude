@@ -1,0 +1,57 @@
+To achieve true multi-hop semantic inference without burning compute on re-evaluating the same system prompts and context prefixes, you must implement **Prefix Caching via a Radix Tree (Prefix Tree)**.
+Because you are building on Apple Silicon's Unified Memory Architecture (UMA) via mlx-lm, you have a massive structural advantage: KV Caches do not need to be shuttled between system RAM and dedicated VRAM. A cached tensor in Python memory is already instantly accessible to the Metal GPU.
+Here is the blueprint for mapping and persisting the MLX KV Cache across your Bonado OS orchestration hops.
+### 1. The Radix Tree State Manager (The Map)
+Instead of treating a prompt as a single string, treat it as a sequence of discrete semantic blocks (e.g., [System Prompt] -> [Task Context] -> [Tool Output 1]).
+You map these blocks into a Radix Tree:
+ * **Nodes:** Represent a specific sequence of tokens.
+ * **Values:** The exact MLX KVCache arrays associated with that exact token sequence.
+ * **Edges:** The sequence hash or token IDs connecting the states.
+When a new inference hop begins, the orchestrator traverses the Radix Tree to find the longest matching prefix, loads that KV Cache directly, and only runs the pre-fill phase on the *new* tokens.
+### 2. Extracting and Evaluating the MLX Cache
+By default, MLX updates the KV cache in place during generation. To persist it for a *future* hop, you must capture the state after the prompt evaluation and ensure MLX’s lazy computation graph actually evaluates it.
+```python
+import mlx.core as mx
+from mlx_lm.utils import generate_step
+
+# Assume `mlx_prompt_tensor` is your zero-copy Arrow prompt
+# and `cache` is initialized via mlx_lm.models.cache.make_prompt_cache(model)
+
+# 1. Run the initial pre-fill and capture the cache state
+logits, cache = model(mlx_prompt_tensor[None], cache=cache)
+
+# 2. FORCE EVALUATION (Critical in MLX)
+# MLX uses lazy evaluation. If you don't call mx.eval, the graph is just a promise.
+mx.eval(cache)
+
+# 3. Store the cache in your Session Dictionary mapped to the Prefix Hash
+prefix_hash = hash_token_array(mlx_prompt_tensor)
+session_cache_store[prefix_hash] = cache
+
+```
+### 3. The Multi-Hop Injection (Resuming State)
+When the Auto-Siphon or mechanical worker returns with new data, you append it to the context. Instead of passing the whole combined prompt to the model, you retrieve the saved cache and only pass the *new* tokens.
+```python
+# 1. Retrieve the saved KV cache from the previous hop
+resumed_cache = session_cache_store[prefix_hash]
+
+# 2. Pass ONLY the newly retrieved data (e.g., from an Auto-Siphon tool)
+new_data_tokens = mx.array(new_data_memoryview, copy=False)
+
+# 3. Resume generation, passing the resumed_cache
+for token in generate_step(model, prompt=new_data_tokens, cache=resumed_cache):
+    print(token)
+
+```
+### 4. Storage Tiers & Persistence Strategy
+KV Caches are massive. The size in bytes for a single sequence is roughly:
+2 \times \text{Layers} \times \text{Context Length} \times \text{KV Heads} \times \text{Head Dim} \times 2 (for FP16).
+A 100k context cache will consume gigabytes. You must tier it.
+| Tier | Substrate Component | Action / State |
+|---|---|---|
+| **Hot (Active Hop)** | mlx.core.array (UMA RAM) | Kept alive in the active Python process while the agent loop is running. Instantly ready for next step. |
+| **Warm (Paused Session)** | valkey (Comm Bus) | Store the metadata and the Radix Tree pointers here. The actual mx.array data is serialized to disk (e.g., .safetensors), and Valkey holds the file path. |
+| **Cold (Frozen Agent)** | lancedb / turingdb | If an agent is suspended indefinitely, the .safetensors cache files are versioned and committed to the graph. |
+### 5. Memory Management (Avoiding OOM)
+Because Apple Silicon shares RAM, a bloated KV cache will starve your CPU processes (like LanceDB or Memgraph). You must implement an **LRU (Least Recently Used) Eviction Policy** on your Radix Tree.
+When system memory hits a threshold (monitored via psutil and opentelemetry), the Radix Tree drops the leaf nodes of the least recently used inference paths, keeping only the highly shared root nodes (like the core System Prompt).
