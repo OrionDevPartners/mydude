@@ -364,6 +364,118 @@ def test_keyvault_token_get_error_fails():
     assert "access denied" in detail
 
 
+# -- main(): top-level orchestration -> overall PASS/FAIL + exit code ---------
+
+class _CombinedResources:
+    """Fake ``rmc.resources`` that dispatches by resource id.
+
+    ``main`` runs the managed-env and container-app checks through ONE client,
+    so ``get_by_id`` must return the right canned resource for each resource
+    type (managedEnvironments vs containerApps).
+    """
+
+    def __init__(self, env_res, app_res):
+        self._env_res = env_res
+        self._app_res = app_res
+
+    def get_by_id(self, resource_id, api_version):
+        if "managedEnvironments" in resource_id:
+            return self._env_res
+        if "containerApps" in resource_id:
+            return self._app_res
+        raise AssertionError("unexpected resource id: %s" % resource_id)
+
+
+class _CombinedRmc:
+    def __init__(self, env_res, app_res):
+        self.resources = _CombinedResources(env_res, app_res)
+
+
+@contextmanager
+def _patched_main(*, secret_value="s3cr3t", env=None, internal=True,
+                  external=False, identity_type="UserAssigned",
+                  outputs_exc=None, rmc_exc=None):
+    """Drive ``main`` fully offline.
+
+    Replaces every Azure surface ``main`` touches: ``az.get_deployment_outputs``,
+    the ARM client factory ``_rmc``, and the Key Vault helpers. Also pins
+    ``sys.argv`` so argparse doesn't pick up the test runner's args.
+    """
+    app_env = BASE_ENV if env is None else env
+    app_res = _resource(app_env, external=external, identity_type=identity_type)
+    env_res = _managed_env_resource(internal=internal)
+
+    orig_outputs = D.az.get_deployment_outputs
+    orig_rmc = D._rmc
+    orig_argv = sys.argv
+
+    def fake_outputs():
+        if outputs_exc is not None:
+            raise outputs_exc
+        return {"keyVaultUri": "https://fake-vault.vault.azure.net/"}
+
+    def fake_rmc():
+        if rmc_exc is not None:
+            raise rmc_exc
+        return _CombinedRmc(env_res, app_res)
+
+    D.az.get_deployment_outputs = fake_outputs
+    D._rmc = fake_rmc
+    sys.argv = ["azure_mcp_doctor"]
+    try:
+        with _patched_keyvault(secret_value=secret_value):
+            yield
+    finally:
+        D.az.get_deployment_outputs = orig_outputs
+        D._rmc = orig_rmc
+        sys.argv = orig_argv
+
+
+def test_main_returns_zero_when_all_checks_pass():
+    with _patched_main():
+        assert D.main() == 0
+
+
+def test_main_returns_one_when_keyvault_secret_absent():
+    # Every other check passes; only the Key Vault token is missing.
+    with _patched_main(secret_value=None):
+        assert D.main() == 1
+
+
+def test_main_returns_one_when_managed_env_not_internal():
+    with _patched_main(internal=False):
+        assert D.main() == 1
+
+
+def test_main_returns_one_when_container_app_external():
+    with _patched_main(external=True):
+        assert D.main() == 1
+
+
+def test_main_returns_one_when_container_app_misconfigured():
+    # A hard container-app env check fails (ENABLE_AZURE_MCP not true).
+    with _patched_main(env=dict(BASE_ENV, ENABLE_AZURE_MCP="false")):
+        assert D.main() == 1
+
+
+def test_main_returns_one_when_deployment_outputs_unreadable():
+    # Fail before any check runs -> exit 1.
+    with _patched_main(outputs_exc=RuntimeError("no outputs")):
+        assert D.main() == 1
+
+
+def test_main_returns_one_when_arm_client_unavailable():
+    with _patched_main(rmc_exc=RuntimeError("no creds")):
+        assert D.main() == 1
+
+
+def test_main_passes_with_only_advisory_warning():
+    # The host-pinning advisory is non-fatal: unpinned host check must NOT flip
+    # the overall verdict to FAIL when every hard check passes.
+    with _patched_main(env=BASE_ENV):  # BASE_ENV has no AZURE_MCP_ALLOWED_HOSTS
+        assert D.main() == 0
+
+
 def _run_all():
     tests = [
         test_advisory_warns_when_allowed_hosts_empty,
@@ -392,6 +504,14 @@ def _run_all():
         test_keyvault_token_empty_string_fails,
         test_keyvault_token_uri_error_fails,
         test_keyvault_token_get_error_fails,
+        test_main_returns_zero_when_all_checks_pass,
+        test_main_returns_one_when_keyvault_secret_absent,
+        test_main_returns_one_when_managed_env_not_internal,
+        test_main_returns_one_when_container_app_external,
+        test_main_returns_one_when_container_app_misconfigured,
+        test_main_returns_one_when_deployment_outputs_unreadable,
+        test_main_returns_one_when_arm_client_unavailable,
+        test_main_passes_with_only_advisory_warning,
     ]
     failed = 0
     for t in tests:
