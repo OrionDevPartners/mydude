@@ -170,10 +170,13 @@ passthrough**:
   **and** the matching plan token + exact plan/params hash + explicit confirm (broker-gated, both
   phases audited). Off unless `azureMcpEnableDeploy=true`.
 
-**Security posture:** ingress `external:false` (private FQDN only), bearer-token auth sourced from Key
+**Security posture (default):** ingress `external:false` (private FQDN only) — this is the
+**governance-default posture** and stays the default. Bearer-token auth is sourced from Key
 Vault at runtime under the `mydude-foundry-agent` user-assigned identity (the token value is never
 baked into the image or Bicep), `allowInsecure:false`. The image bakes the Bicep CLI so the
-plan/apply tools are genuinely functional (no placeholders) when enabled.
+plan/apply tools are genuinely functional (no placeholders) when enabled. To expose the server on a
+**public custom domain** instead, see *Public custom domain (opt-in)* below — there the bearer token
+becomes the **sole** gate, so host-pinning is hard-required.
 
 The two-phase deploy tools sign/verify their short-lived plan tokens with a **stable** signing secret,
 **also** sourced from Key Vault at runtime (`AZURE_MCP_DEPLOY_SECRET_NAME`, default
@@ -224,6 +227,72 @@ record can first be written (governance pillar #4).
    # Point your MCP client at https://<azureMcpUrl> with header: Authorization: Bearer $TOKEN
    ```
    To smoke-test interactively, run the MCP Inspector against that URL with the same bearer header.
+
+#### Public custom domain (opt-in)
+
+The default posture is VNet-internal (above) and **stays the default**. Exposing the server on a
+public apex domain (e.g. `MydudeMCP.com`) is an explicit, deliberate posture change: the endpoint
+becomes internet-reachable and the **bearer token is then the sole gate**. Only do this when you
+accept that trade-off; the governance pillars still apply (no placeholders, secrets via Key Vault,
+governed inference, TLS always on).
+
+**Prerequisites & invariants:**
+- You must **own the domain** and be able to create DNS records at its registrar/zone.
+- `azureMcpExternalIngress` flips `managedEnvironments.vnetConfiguration.internal`, which is
+  **immutable after the environment is created**. Switching an existing internal env to public (or
+  back) therefore requires **deleting and recreating** the MCP environment + app. They are
+  **stateless** (no data lives in them — Key Vault holds the secrets), so a delete/recreate is safe.
+- Host-pinning becomes **hard-required** in public mode: `azureMcpAllowedHosts` must include the
+  custom domain and the host-check opt-out must be off. TLS is always enforced (`allowInsecure:false`)
+  via a free, auto-renewed **Azure-managed certificate**.
+
+**Two-phase flow (the chicken-and-egg of DNS + managed cert):**
+
+1. **Phase 1 — provision public ingress, get the DNS targets.** Deploy with public ingress but
+   **no** custom domain yet (Azure can't mint a cert for a domain whose DNS records don't exist).
+   Public ingress is the sole-gate case, so the host pin is **required from the very first public
+   deploy** — set `azureMcpAllowedHosts=MydudeMCP.com` now even though the domain isn't bound yet.
+   This makes the public default FQDN reject every Host header except the intended domain (which does
+   not resolve to it yet), so the endpoint stays effectively closed during phase 1. The deploy
+   preflight (`validate_mcp_posture`) **fails loud** if you try public ingress without it, and the
+   Bicep never opts the host check out in public mode:
+   ```bash
+   python3 infra/mydude/local/deploy.py deploy --yes \
+     # deployAzureMcp=true, azureMcpExternalIngress=true, \
+     # azureMcpCustomDomain='' (empty), azureMcpAllowedHosts=MydudeMCP.com
+   ```
+   Read the two DNS targets from the stack outputs:
+   - `azureMcpStaticIp` — the managed environment's static inbound IP.
+   - `azureMcpCustomDomainVerificationId` — the domain-ownership verification id.
+2. **Create the DNS records** at your registrar and wait for propagation:
+   - Apex **A**-record: `MydudeMCP.com` → `azureMcpStaticIp`.
+   - **TXT** record: `asuid.MydudeMCP.com` → `azureMcpCustomDomainVerificationId`.
+3. **Phase 2 — bind the domain + mint the certificate + pin the host.** Re-deploy with the domain set
+   and the host allow-list pinned to it:
+   ```bash
+   python3 infra/mydude/local/deploy.py deploy --yes \
+     # deployAzureMcp=true, azureMcpExternalIngress=true, \
+     # azureMcpCustomDomain=MydudeMCP.com, azureMcpAllowedHosts=MydudeMCP.com
+   ```
+   This deploy creates the managed certificate (`domainControlValidation` defaults to `TXT`; use
+   `CNAME`/`HTTP` for a subdomain) and binds it to the ingress as `SniEnabled`.
+4. **Verify the public posture** (asserts external env + public ingress + domain bound to a cert +
+   host-pinned; fails loud otherwise):
+   ```bash
+   python3 infra/mydude/local/azure_mcp_doctor.py --public-domain MydudeMCP.com
+   ```
+5. **Connect** any MCP client (now from anywhere) to `https://MydudeMCP.com/mcp` (the `azureMcpUrl`
+   output resolves to this once the domain is bound) with the same `Authorization: Bearer <token>`
+   header. Mint/rotate the token exactly as in the internal flow (`setup_mcp_token.py`).
+
+**Public-posture parameters:**
+
+| Parameter | Default | Public-posture value |
+| --- | --- | --- |
+| `azureMcpExternalIngress` | `false` (internal) | `true` |
+| `azureMcpCustomDomain` | `''` | `MydudeMCP.com` (phase 2) |
+| `azureMcpDomainValidation` | `TXT` | `TXT` (apex) / `CNAME` / `HTTP` |
+| `azureMcpAllowedHosts` | `''` | `MydudeMCP.com` (**required** in public mode) |
 
 ---
 
@@ -301,14 +370,14 @@ infra/mydude/
       fabric.bicep                 # Microsoft Fabric capacity (gated)
       foundry.bicep                # AOAI account + fg/bg deployments; Hub/Project + dedicated NON-HNS storage, AML PE/DNS, managed-net (gated)
       monitoring.bicep             # Log Analytics + App Insights + provider-latency alert
-      mcp.bicep                    # Azure MCP Dev Accelerator — VNet-internal managedEnvironment + containerApp (gated: deployAzureMcp)
+      mcp.bicep                    # Azure MCP Dev Accelerator — managedEnvironment + containerApp (gated: deployAzureMcp); VNet-internal by default, opt-in public custom domain + managed cert
   mcp/
     Dockerfile                     # Governed MCP server image (build context = repo ROOT; bakes bicep CLI)
     entrypoint.sh                  # Fail-loud preflight (AZURE_SUBSCRIPTION_ID + auth source); never prints secrets
   local/
     deploy.py                      # Azure Python SDK deploy driver (validate/whatif/deploy/status)
     setup_mcp_token.py             # Mint the MCP bearer token into Key Vault (value never printed; --rotate/--dry-run)
-    azure_mcp_doctor.py            # Validate the deployed MCP app is private + wired + token present (control-plane reads only)
+    azure_mcp_doctor.py            # Validate the deployed MCP app is wired + token present (control-plane reads only); default=internal, --public-domain <d> asserts public posture
     sovereign_stack.yaml           # Local sovereign stack definition
   governance/                      # agents_home / provider_home DDL + migration lineage (governance.claim_ledger)
   migrators/                       # postgres_migrator.py (DDL) + corpus_migrator.py (Fabric/OneLake corpus)

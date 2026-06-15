@@ -52,3 +52,23 @@ assignment, and the BACKGROUND deployment `dependsOn` the foreground one. Fully 
 A diskANN vector index is rejected on a shared database-level throughput offer
 ("Vector Indexing is not supported for shared throughput offer"). Give the `vectors` container its
 own `options.autoscaleSettings.maxThroughput`; the other containers can stay on the shared DB offer.
+
+## MCP Container App public posture (opt-in) is immutable + must be host-pinned from phase 1
+The MCP dev accelerator (`mcp.bicep`) defaults to VNet-internal (governance default). Opting into a
+PUBLIC custom apex domain (bearer token = sole gate) has two hard constraints:
+- **`managedEnvironments.vnetConfiguration.internal` is IMMUTABLE post-create.** Flipping posture on
+  an existing env requires DELETE+RECREATE of the (stateless) MCP env+app — KV holds the secrets, so
+  it's safe. A managed cert for an apex domain needs a two-phase deploy: phase 1 (public ingress,
+  empty `customDomain`) to read `managedEnvStaticIp` + `customDomainVerificationId` → create apex
+  A-record→staticIp and TXT `asuid.<domain>`→verificationId → phase 2 set `customDomain` to mint+bind
+  the cert (`SniEnabled`).
+- **Public ingress MUST be host-pinned from the FIRST public deploy, never just at bind time.** An
+  empty allow-list + public ingress would otherwise silently disable DNS-rebinding protection and
+  expose the default FQDN. Defense is layered: Bicep only opts the host check out when
+  `empty(allowedHosts) && !externalIngress` (public mode never opts out → fails CLOSED to SDK
+  localhost-only), the deploy preflight (`deploy.py validate_mcp_posture`) FAILS LOUD before any
+  billable deploy if public has no pin / a custom domain isn't external+in-allowlist, and the doctor
+  (`--public-domain`) asserts it post-deploy. Pinning to the not-yet-resolving domain in phase 1 is
+  correct — it keeps the public default FQDN rejecting all Host headers until DNS points at it.
+**Why:** posture is a deliberate, irreversible-ish governance change; the gap (public + empty pin)
+is the one way the sole-gate token guarantee gets silently bypassed.

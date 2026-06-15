@@ -46,10 +46,14 @@ BASE_ENV = {
 
 # -- helpers ------------------------------------------------------------------
 
-def _resource(env, *, external=False, identity_type="UserAssigned"):
+def _resource(env, *, external=False, identity_type="UserAssigned",
+              custom_domains=None, allow_insecure=False):
     """Build a fake Container App resource the doctor knows how to read."""
+    ingress = {"external": external, "allowInsecure": allow_insecure}
+    if custom_domains is not None:
+        ingress["customDomains"] = custom_domains
     props = {
-        "configuration": {"ingress": {"external": external}},
+        "configuration": {"ingress": ingress},
         "template": {
             "containers": [
                 {"env": [{"name": k, "value": v} for k, v in env.items()]}
@@ -57,6 +61,17 @@ def _resource(env, *, external=False, identity_type="UserAssigned"):
         },
     }
     return types.SimpleNamespace(properties=props, identity={"type": identity_type})
+
+
+def _bound_domain(name="MydudeMCP.com", cert_id="/subscriptions/x/.../cert"):
+    """A customDomains entry bound to a managed certificate (TLS)."""
+    return [{"name": name, "certificateId": cert_id, "bindingType": "SniEnabled"}]
+
+
+#: Env that satisfies every HARD container-app check in PUBLIC posture: same as
+#: BASE_ENV but with the host allow-list pinned to the public domain (pinning is
+#: HARD-required once the bearer token is the sole gate).
+PUBLIC_ENV = dict(BASE_ENV, AZURE_MCP_ALLOWED_HOSTS="MydudeMCP.com")
 
 
 class _FakeResources:
@@ -75,6 +90,13 @@ class _FakeRmc:
 def _check(env, **kw):
     """Run the advisory against a canned resource and return (ok, detail)."""
     return D._check_container_app(_FakeRmc(_resource(env, **kw)))
+
+
+def _check_public(env, *, public_domain="MydudeMCP.com", **kw):
+    """Run the container-app check in PUBLIC posture against a canned resource."""
+    return D._check_container_app(
+        _FakeRmc(_resource(env, **kw)),
+        expect_public=True, public_domain=public_domain)
 
 
 def _managed_env_resource(*, internal):
@@ -394,15 +416,18 @@ class _CombinedRmc:
 @contextmanager
 def _patched_main(*, secret_value="s3cr3t", env=None, internal=True,
                   external=False, identity_type="UserAssigned",
-                  outputs_exc=None, rmc_exc=None):
+                  custom_domains=None, allow_insecure=False,
+                  outputs_exc=None, rmc_exc=None, argv=None):
     """Drive ``main`` fully offline.
 
     Replaces every Azure surface ``main`` touches: ``az.get_deployment_outputs``,
     the ARM client factory ``_rmc``, and the Key Vault helpers. Also pins
-    ``sys.argv`` so argparse doesn't pick up the test runner's args.
+    ``sys.argv`` so argparse doesn't pick up the test runner's args (override via
+    ``argv`` to exercise the ``--public``/``--public-domain`` posture).
     """
     app_env = BASE_ENV if env is None else env
-    app_res = _resource(app_env, external=external, identity_type=identity_type)
+    app_res = _resource(app_env, external=external, identity_type=identity_type,
+                        custom_domains=custom_domains, allow_insecure=allow_insecure)
     env_res = _managed_env_resource(internal=internal)
 
     orig_outputs = D.az.get_deployment_outputs
@@ -421,7 +446,7 @@ def _patched_main(*, secret_value="s3cr3t", env=None, internal=True,
 
     D.az.get_deployment_outputs = fake_outputs
     D._rmc = fake_rmc
-    sys.argv = ["azure_mcp_doctor"]
+    sys.argv = argv if argv is not None else ["azure_mcp_doctor"]
     try:
         with _patched_keyvault(secret_value=secret_value):
             yield
@@ -476,6 +501,130 @@ def test_main_passes_with_only_advisory_warning():
         assert D.main() == 0
 
 
+# -- PUBLIC posture: managed environment must be EXTERNAL ---------------------
+
+def test_managed_env_public_passes_when_external():
+    ok, detail = D._check_managed_env(
+        _FakeRmc(_managed_env_resource(internal=False)), expect_public=True)
+    assert ok is True
+    assert "external (public posture)" in detail
+
+
+def test_managed_env_public_fails_when_internal():
+    ok, detail = D._check_managed_env(
+        _FakeRmc(_managed_env_resource(internal=True)), expect_public=True)
+    assert ok is False
+    assert "INTERNAL but public posture expected" in detail
+
+
+# -- PUBLIC posture: container app PASS when external + bound + pinned --------
+
+def test_public_passes_when_external_domain_bound_and_pinned():
+    ok, detail = _check_public(PUBLIC_ENV, external=True,
+                               custom_domains=_bound_domain())
+    assert ok is True
+    assert "ingress external (public)" in detail
+    assert "custom domain 'MydudeMCP.com' bound (TLS)" in detail
+    assert "host check pinned (public)" in detail
+
+
+# -- PUBLIC posture: each misconfiguration is a HARD FAIL --------------------
+
+def test_public_fails_when_ingress_internal():
+    # An internal ingress in public posture is the wrong shape -> FAIL.
+    ok, detail = _check_public(PUBLIC_ENV, external=False,
+                               custom_domains=_bound_domain())
+    assert ok is False
+    assert "ingress is INTERNAL" in detail
+
+
+def test_public_fails_when_allow_insecure_true():
+    # TLS is always mandatory — plaintext HTTP must FAIL even in public mode.
+    ok, detail = _check_public(PUBLIC_ENV, external=True, allow_insecure=True,
+                               custom_domains=_bound_domain())
+    assert ok is False
+    assert "allowInsecure is TRUE" in detail
+
+
+def test_public_fails_when_custom_domain_not_bound():
+    # External + pinned, but the domain isn't bound to the app -> FAIL.
+    ok, detail = _check_public(PUBLIC_ENV, external=True, custom_domains=[])
+    assert ok is False
+    assert "custom domain 'MydudeMCP.com' is NOT bound" in detail
+
+
+def test_public_fails_when_custom_domain_bound_without_certificate():
+    # Domain present but no certificateId -> no TLS -> FAIL.
+    ok, detail = _check_public(
+        PUBLIC_ENV, external=True,
+        custom_domains=[{"name": "MydudeMCP.com", "certificateId": ""}])
+    assert ok is False
+    assert "bound without a certificate" in detail
+
+
+def test_public_fails_when_host_not_pinned():
+    # Public posture makes host pinning HARD-required (sole gate is the token).
+    env = dict(BASE_ENV)  # no AZURE_MCP_ALLOWED_HOSTS
+    ok, detail = _check_public(env, external=True, custom_domains=_bound_domain())
+    assert ok is False
+    assert "host check NOT pinned to the public domain" in detail
+
+
+def test_public_fails_when_pinned_but_domain_not_in_allowlist():
+    # An allow-list that omits the public domain doesn't actually pin it -> FAIL.
+    env = dict(BASE_ENV, AZURE_MCP_ALLOWED_HOSTS="some-other-host.example")
+    ok, detail = _check_public(env, external=True, custom_domains=_bound_domain())
+    assert ok is False
+    assert "host check NOT pinned to the public domain" in detail
+
+
+def test_public_fails_when_host_check_disabled():
+    # Opt-out re-opens the host check — fatal in public posture.
+    env = dict(PUBLIC_ENV, AZURE_MCP_DISABLE_HOST_CHECK="true")
+    ok, detail = _check_public(env, external=True, custom_domains=_bound_domain())
+    assert ok is False
+    assert "host check NOT pinned to the public domain" in detail
+
+
+def test_public_without_domain_still_requires_pinning_and_external():
+    # --public with no specific domain: external + generic pinning required, but
+    # no custom-domain binding is asserted (phase-1 style check).
+    ok, detail = D._check_container_app(
+        _FakeRmc(_resource(dict(BASE_ENV, AZURE_MCP_ALLOWED_HOSTS="anything"),
+                           external=True)),
+        expect_public=True, public_domain=None)
+    assert ok is True
+    assert "host check pinned (public)" in detail
+
+
+# -- PUBLIC posture through main(): exit code + posture wiring ----------------
+
+def test_main_public_returns_zero_when_all_public_checks_pass():
+    with _patched_main(
+            env=PUBLIC_ENV, internal=False, external=True,
+            custom_domains=_bound_domain(),
+            argv=["azure_mcp_doctor", "--public-domain", "MydudeMCP.com"]):
+        assert D.main() == 0
+
+
+def test_main_public_returns_one_when_env_still_internal():
+    # The managed env wasn't recreated as external -> public main must FAIL.
+    with _patched_main(
+            env=PUBLIC_ENV, internal=True, external=True,
+            custom_domains=_bound_domain(),
+            argv=["azure_mcp_doctor", "--public-domain", "MydudeMCP.com"]):
+        assert D.main() == 1
+
+
+def test_main_internal_default_fails_against_public_deployment():
+    # A genuinely public deployment must NOT pass the default (internal) doctor
+    # run — the posture flag is what makes the public shape acceptable.
+    with _patched_main(
+            env=PUBLIC_ENV, internal=False, external=True,
+            custom_domains=_bound_domain()):  # default argv -> internal posture
+        assert D.main() == 1
+
+
 def _run_all():
     tests = [
         test_advisory_warns_when_allowed_hosts_empty,
@@ -512,6 +661,20 @@ def _run_all():
         test_main_returns_one_when_deployment_outputs_unreadable,
         test_main_returns_one_when_arm_client_unavailable,
         test_main_passes_with_only_advisory_warning,
+        test_managed_env_public_passes_when_external,
+        test_managed_env_public_fails_when_internal,
+        test_public_passes_when_external_domain_bound_and_pinned,
+        test_public_fails_when_ingress_internal,
+        test_public_fails_when_allow_insecure_true,
+        test_public_fails_when_custom_domain_not_bound,
+        test_public_fails_when_custom_domain_bound_without_certificate,
+        test_public_fails_when_host_not_pinned,
+        test_public_fails_when_pinned_but_domain_not_in_allowlist,
+        test_public_fails_when_host_check_disabled,
+        test_public_without_domain_still_requires_pinning_and_external,
+        test_main_public_returns_zero_when_all_public_checks_pass,
+        test_main_public_returns_one_when_env_still_internal,
+        test_main_internal_default_fails_against_public_deployment,
     ]
     failed = 0
     for t in tests:

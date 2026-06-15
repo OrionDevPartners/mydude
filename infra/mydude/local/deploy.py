@@ -66,6 +66,46 @@ def compile_template() -> dict:
         return json.load(f)
 
 
+def validate_mcp_posture(params: dict) -> list:
+    """Fail-loud invariants for the Azure MCP ingress posture (pillars #1 / #4).
+
+    Public ingress makes the bearer token the SOLE network gate, so it MUST be
+    paired with host pinning: a public app with an empty allow-list would expose
+    the default FQDN with DNS-rebinding (Host-header) protection OFF. A custom
+    domain only makes sense on public ingress and must itself appear in the
+    allow-list so the server pins it. Returns a list of human-readable
+    violations (empty == OK) so callers can fail loud BEFORE a billable deploy.
+    """
+    def _val(key, default):
+        spec = params.get(key)
+        return spec.get("value", default) if isinstance(spec, dict) else default
+
+    external = bool(_val("azureMcpExternalIngress", False))
+    domain = (_val("azureMcpCustomDomain", "") or "").strip()
+    hosts_raw = _val("azureMcpAllowedHosts", "") or ""
+    hosts = {h.strip().lower() for h in hosts_raw.split(",") if h.strip()}
+
+    problems = []
+    if external and not hosts:
+        problems.append(
+            "azureMcpExternalIngress=true exposes the MCP server publicly, so "
+            "azureMcpAllowedHosts MUST pin the host(s) (DNS-rebinding hardening) "
+            "— it is empty."
+        )
+    if domain:
+        if not external:
+            problems.append(
+                f"azureMcpCustomDomain={domain!r} requires azureMcpExternalIngress=true "
+                "— a custom domain cannot bind to internal-only ingress."
+            )
+        if domain.lower() not in hosts:
+            problems.append(
+                f"azureMcpCustomDomain={domain!r} must also appear in "
+                "azureMcpAllowedHosts so the server pins the public host — it is missing."
+            )
+    return problems
+
+
 def load_parameters() -> dict:
     with open(PARAMS_JSON) as f:
         params = json.load(f)["parameters"]
@@ -84,6 +124,14 @@ def load_parameters() -> dict:
             leftovers.append(key)
     if leftovers:
         print(f"!! Unfilled parameters: {leftovers}")
+        sys.exit(2)
+    # Fail loud BEFORE any billable/irreversible deploy if the MCP ingress
+    # posture would expose the server publicly without a host pin.
+    posture = validate_mcp_posture(params)
+    if posture:
+        print("!! MCP ingress posture invalid (fail-loud; governance pillar #4):")
+        for p in posture:
+            print(f"   - {p}")
         sys.exit(2)
     return params
 

@@ -62,8 +62,22 @@ param azureMcpRegistryServer string = ''
 @description('Enable the BILLABLE two-phase deploy APPLY tool inside the MCP server. Default false (default-deny).')
 param azureMcpEnableDeploy bool = false
 
-@description('Host allow-list (comma-separated) pinning the MCP server to its own address (DNS-rebinding hardening). Leave EMPTY on the first deploy (the app FQDN is not yet known; internal ingress + bearer auth still guard it). On the SECOND deploy, set this to the app FQDN from the azureMcpUrl output to drop the host-check opt-out and pin the server.')
+@description('Host allow-list (comma-separated) pinning the MCP server to its own address (DNS-rebinding hardening). Leave EMPTY on the first deploy (the app FQDN is not yet known; internal ingress + bearer auth still guard it). On the SECOND deploy, set this to the app FQDN from the azureMcpUrl output to drop the host-check opt-out and pin the server. PUBLIC posture (azureMcpExternalIngress=true): REQUIRED from the FIRST public deploy (phase 1) — set this to the custom domain even before it is bound; the host-check opt-out is never taken in public mode and the deploy preflight fails loud if it is empty.')
 param azureMcpAllowedHosts string = ''
+
+@description('MCP posture. false (default, GOVERNANCE DEFAULT): VNet-internal managed environment + internal ingress. true: external managed environment + PUBLIC ingress (internet-reachable) — the bearer token becomes the sole gate. The environment\'s internal flag is immutable post-create; flipping posture on an existing env requires deleting + recreating the (stateless) MCP env+app.')
+param azureMcpExternalIngress bool = false
+
+@description('Public custom domain for the MCP server (e.g. MydudeMCP.com). Requires azureMcpExternalIngress=true. Two-phase: deploy with this EMPTY first to obtain azureMcpStaticIp + azureMcpCustomDomainVerificationId, create the DNS records (apex A-record -> static IP, TXT asuid.<domain> -> verification id), then deploy again with this set to mint + bind the managed TLS certificate.')
+param azureMcpCustomDomain string = ''
+
+@description('Domain-control validation method for the MCP managed certificate. TXT (default) suits an APEX domain; use CNAME for a subdomain or HTTP for token-over-HTTP validation.')
+@allowed([
+  'TXT'
+  'CNAME'
+  'HTTP'
+])
+param azureMcpDomainValidation string = 'TXT'
 
 var prefix = 'mydude'
 var tags = {
@@ -214,6 +228,9 @@ module mcp 'modules/mcp.bicep' = if (deployAzureMcp) {
     subscriptionId: subscription().subscriptionId
     enableAzureDeploy: azureMcpEnableDeploy
     allowedHosts: azureMcpAllowedHosts
+    externalIngress: azureMcpExternalIngress
+    customDomain: azureMcpCustomDomain
+    domainControlValidation: azureMcpDomainValidation
   }
 }
 
@@ -231,4 +248,9 @@ output cosmosAccountName string = cosmos.outputs.cosmosAccountName
 output cosmosEndpoint string = cosmos.outputs.cosmosEndpoint
 output fabricCapacityName string = fabricEnabled ? fabric.outputs.fabricCapacityName : 'NOT_DEPLOYED (fabricEnabled=false; create capacity as an admin step)'
 output azureMcpAppName string = deployAzureMcp ? mcp.outputs.containerAppName : 'NOT_DEPLOYED (deployAzureMcp=false)'
-output azureMcpUrl string = deployAzureMcp ? mcp.outputs.containerAppInternalUrl : 'NOT_DEPLOYED (deployAzureMcp=false)'
+// The endpoint URL: the bound custom-domain URL when set, else the default FQDN URL.
+output azureMcpUrl string = deployAzureMcp ? (empty(azureMcpCustomDomain) ? mcp.outputs.containerAppUrl : mcp.outputs.customDomainUrl) : 'NOT_DEPLOYED (deployAzureMcp=false)'
+// Public custom-domain DNS setup (phase 1 -> create records -> phase 2). For the
+// apex domain: A-record <domain> -> azureMcpStaticIp; TXT asuid.<domain> -> azureMcpCustomDomainVerificationId.
+output azureMcpStaticIp string = deployAzureMcp ? mcp.outputs.managedEnvStaticIp : 'NOT_DEPLOYED (deployAzureMcp=false)'
+output azureMcpCustomDomainVerificationId string = deployAzureMcp ? mcp.outputs.customDomainVerificationId : 'NOT_DEPLOYED (deployAzureMcp=false)'
