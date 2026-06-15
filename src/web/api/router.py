@@ -1091,6 +1091,24 @@ async def api_governance(request: Request, _=Depends(require_auth)):
     except Exception as e:
         logger.warning("Error-metric lookup failed: %s", e)
 
+    # ── Structural routing stats ──────────────────────────────────────────────
+    routing_stats: dict = {}
+    try:
+        from src.swarm.zero_token_router import get_routing_stats
+        routing_stats = get_routing_stats().to_dict()
+    except Exception as _rst_exc:
+        logger.debug("routing_stats lookup failed: %s", _rst_exc)
+
+    # ── Capability drift report (cached, ≤5 min TTL) ──────────────────────────
+    drift_report: dict = {}
+    try:
+        from src.swarm.drift_detector import get_or_refresh as _drift_refresh
+        import asyncio as _asyncio
+        _dr = await _asyncio.get_event_loop().run_in_executor(None, _drift_refresh)
+        drift_report = _dr.to_dict()
+    except Exception as _dr_exc:
+        logger.debug("drift_report lookup failed: %s", _dr_exc)
+
     return {
         "alerts": alerts, "open_alerts": open_alerts,
         "ledger": ledger, "metrics": metrics, "total_metrics": total_metrics,
@@ -1102,6 +1120,8 @@ async def api_governance(request: Request, _=Depends(require_auth)):
         "proposals": proposals,
         "recent_proposals": recent_proposals,
         "open_proposals": open_proposals,
+        "routing_stats": routing_stats,
+        "drift_report": drift_report,
     }
 
 

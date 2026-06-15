@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend, resetSwarmMetrics } from '@/lib/api'
-import type { GovernanceProposal } from '@/lib/api'
+import type { GovernanceProposal, DriftEntry, PreconditionGapEntry } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, Tabs, PageHeader, Empty } from '@/components/ui'
 import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse, Activity, Vote } from 'lucide-react'
+import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse, Activity, Vote, Zap, GitBranch } from 'lucide-react'
 
 const EP_COLORS: Record<string, string> = {
   verified: '#34d399',
@@ -116,7 +116,7 @@ export function Governance() {
         </div>
       )}
 
-      <Tabs tabs={['Alerts', 'Proposals', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction']} active={tab} onChange={setTab} />
+      <Tabs tabs={['Alerts', 'Proposals', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction', 'Routing']} active={tab} onChange={setTab} />
 
       {tab === 'Alerts' && data && (
         data.alerts.length === 0
@@ -439,6 +439,164 @@ export function Governance() {
             ? <Empty message="No exec locus data." icon={<Server size={32} />} />
             : <pre style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{JSON.stringify(data.exec_locus_dist, null, 2)}</pre>
           }
+        </div>
+      )}
+
+      {tab === 'Routing' && data && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Zero-Token Router Panel */}
+          <div className="glass-card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              <Zap size={18} color="var(--text-secondary)" />
+              <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)' }}>Zero-Token Router</span>
+              <span className="badge badge-blue" style={{ fontSize: 10, marginLeft: 4 }}>
+                {data.routing_stats?.embedding_backend ?? 'tfidf-fallback'}
+              </span>
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+              When an intent matches a known tool above the confidence threshold ({((data.routing_stats?.threshold ?? 0.92) * 100).toFixed(0)}%),
+              it is dispatched directly — bypassing the LLM swarm entirely and saving all inference tokens.
+              Below threshold, the swarm handles it normally.
+            </p>
+            {!data.routing_stats || data.routing_stats.total_evaluations === 0 ? (
+              <Empty message="No routing evaluations recorded yet. Stats populate as tasks are run." icon={<Zap size={28} />} />
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12, marginBottom: 16 }}>
+                  <Stat value={`${data.routing_stats.hit_rate_pct}%`} label="Hit rate" color={data.routing_stats.hit_rate_pct > 10 ? '#34d399' : 'var(--text-primary)'} />
+                  <Stat value={String(data.routing_stats.zero_token_hits)} label="Zero-token hits" color={data.routing_stats.zero_token_hits > 0 ? '#34d399' : 'var(--text-muted)'} />
+                  <Stat value={String(data.routing_stats.total_evaluations)} label="Total evaluated" />
+                  <Stat value={`${((data.routing_stats.threshold ?? 0.92) * 100).toFixed(0)}%`} label="Threshold" />
+                </div>
+                {data.routing_stats.last_hit_capability && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    Last hit: <span style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{data.routing_stats.last_hit_capability}</span>
+                    {' '}at <span style={{ color: 'var(--text-secondary)' }}>{(data.routing_stats.last_hit_score * 100).toFixed(1)}%</span> confidence
+                  </div>
+                )}
+                {data.routing_stats.last_reset_at && (
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                    Last reset: {fmtDate(data.routing_stats.last_reset_at)}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Capability Drift Panel */}
+          <div className="glass-card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+              <GitBranch size={18} color="var(--text-secondary)" />
+              <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)' }}>Capability Drift</span>
+              {data.drift_report && (
+                <span className={`badge ${(data.drift_report.total_drift ?? 0) === 0 ? 'badge-green' : 'badge-yellow'}`} style={{ marginLeft: 4 }}>
+                  {(data.drift_report.total_drift ?? 0) === 0 ? 'no drift' : `${data.drift_report.total_drift} drift`}
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+              Diffs declared capability contracts (the spec) against broker.py's actual dispatch table (the reality).
+              Orphaned declarations have a contract but no handler; undeclared handlers are implemented but ungoverned.
+            </p>
+            {!data.drift_report ? (
+              <Empty message="Drift report unavailable." icon={<GitBranch size={28} />} />
+            ) : data.drift_report.error ? (
+              <Alert type="error">Drift scan error: {data.drift_report.error}</Alert>
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12, marginBottom: 16 }}>
+                  <Stat value={String(data.drift_report.declared_count)} label="Declared" />
+                  <Stat value={String(data.drift_report.handled_count)} label="Handled" />
+                  <Stat
+                    value={String(data.drift_report.orphaned_count)}
+                    label="Orphaned declarations"
+                    color={data.drift_report.orphaned_count > 0 ? '#fbbf24' : '#34d399'}
+                  />
+                  <Stat
+                    value={String(data.drift_report.undeclared_count)}
+                    label="Undeclared handlers"
+                    color={data.drift_report.undeclared_count > 0 ? '#fbbf24' : '#34d399'}
+                  />
+                </div>
+                <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>
+                  Scanned {fmtDate(data.drift_report.scanned_at)} · cached 5 min
+                </p>
+                {data.drift_report.orphaned.length > 0 && (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                      Orphaned declarations ({data.drift_report.orphaned.length})
+                    </div>
+                    <div className="glass-card" style={{ overflow: 'hidden', padding: 0 }}>
+                      <table className="data-table">
+                        <thead><tr><th>Capability</th><th>Reason</th><th>Severity</th></tr></thead>
+                        <tbody>
+                          {data.drift_report.orphaned.map((e: DriftEntry) => (
+                            <tr key={e.capability}>
+                              <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{e.capability}</td>
+                              <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{e.reason}</td>
+                              <td><span className={`badge badge-${e.severity === 'warning' ? 'yellow' : 'gray'}`}>{e.severity}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {data.drift_report.undeclared.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                      Undeclared handlers ({data.drift_report.undeclared.length})
+                    </div>
+                    <div className="glass-card" style={{ overflow: 'hidden', padding: 0 }}>
+                      <table className="data-table">
+                        <thead><tr><th>Capability</th><th>Reason</th><th>Severity</th></tr></thead>
+                        <tbody>
+                          {data.drift_report.undeclared.map((e: DriftEntry) => (
+                            <tr key={e.capability}>
+                              <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{e.capability}</td>
+                              <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{e.reason}</td>
+                              <td><span className={`badge badge-${e.severity === 'warning' ? 'yellow' : 'gray'}`}>{e.severity}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {(data.drift_report.precondition_gaps ?? []).length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                      Precondition gaps — call-graph drift ({(data.drift_report.precondition_gaps ?? []).length})
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+                      These handlers make outbound integration calls but their contract declares zero enforced preconditions — latent governance gaps.
+                    </div>
+                    <div className="glass-card" style={{ overflow: 'hidden', padding: 0 }}>
+                      <table className="data-table">
+                        <thead><tr><th>Capability</th><th>Integration Calls</th><th>Preconditions</th><th>Severity</th></tr></thead>
+                        <tbody>
+                          {(data.drift_report.precondition_gaps ?? []).map((g: PreconditionGapEntry) => (
+                            <tr key={g.capability}>
+                              <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{g.capability}</td>
+                              <td style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{g.integration_calls.join(', ')}</td>
+                              <td><span className="badge badge-red">{g.precondition_count}</span></td>
+                              <td><span className={`badge badge-${g.severity === 'warning' ? 'yellow' : 'gray'}`}>{g.severity}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {data.drift_report.total_drift === 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#34d399', fontSize: 13 }}>
+                    <ShieldCheck size={16} />
+                    All declared capabilities have broker handlers and all handlers have declared contracts.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

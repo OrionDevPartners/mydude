@@ -265,11 +265,62 @@ def route(
     prompt: str,
     domain: str,
     candidates: List[Tuple[str, str, Dict]],
+    *,
+    session_id: Optional[str] = None,
+    momentum_weight: float = 0.15,
 ) -> BenchmarkRouting:
-    """Classify + select lead in one call, returning an auditable routing record."""
+    """Classify + select lead in one call, returning an auditable routing record.
+
+    Parameters
+    ----------
+    prompt : the task prompt (bounded to _MAX_INSPECT_CHARS internally).
+    domain : operator-declared domain hint (maps to a category nudge).
+    candidates : ``[(provider_key, specialty, benchmark_profile), ...]`` in
+        declared order — built from the swarm's available adapters.
+    session_id : optional conversation session key. When provided, the
+        trajectory router's momentum vector is retrieved and blended into
+        the keyword category scores with ``momentum_weight`` (default 0.15).
+        Momentum bias is additive and never overrides a strong base keyword
+        signal — the final category is still the argmax of the blended scores.
+        Fails-soft: if the trajectory router is unavailable or returns no
+        momentum, routing is unaffected.
+    momentum_weight : fraction of the momentum bias blended into the base
+        keyword scores. Range [0, 1]; capped at 0.3 to prevent momentum from
+        dominating deterministic keyword classification. Default: 0.15.
+    """
     category, signal = classify_category(prompt, domain)
+
+    # ── Trajectory momentum bias ────────────────────────────────────────────
+    # Blend conversational momentum into the keyword scores so multi-turn
+    # sessions steer toward the model that leads in the user's ongoing domain.
+    trajectory_applied = False
+    if session_id is not None:
+        try:
+            from src.swarm.trajectory_router import get_momentum, apply_momentum_bias
+            momentum = get_momentum(session_id)
+            if momentum.dominant_score > 0.0:
+                weight = max(0.0, min(0.3, momentum_weight))
+                keyword_scores: Dict[str, float] = {
+                    c: 0.0 for c in CATEGORIES if c != "general"
+                }
+                keyword_scores[category] = 1.0
+                biased = apply_momentum_bias(keyword_scores, momentum, weight=weight)
+                best_biased = max(biased, key=lambda c: biased[c]) if biased else category
+                if best_biased != category:
+                    signal = (
+                        f"{signal}; trajectory_bias={momentum.dominant_category}"
+                        f"(w={weight:.2f}) -> {best_biased}"
+                    )
+                    category = best_biased
+                trajectory_applied = True
+        except Exception as _tb_exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "benchmark_routing: trajectory bias failed (skipped): %s", _tb_exc
+            )
+
     lead, specialty, lead_score, scores = select_lead(category, candidates)
-    return BenchmarkRouting(
+    result = BenchmarkRouting(
         category=category,
         classification_signal=signal,
         lead_provider=lead,
@@ -277,3 +328,5 @@ def route(
         lead_score=lead_score,
         scores_considered=scores,
     )
+    result.trajectory_bias_applied = trajectory_applied
+    return result

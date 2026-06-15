@@ -212,6 +212,7 @@ class MultiProviderLLM:
         user: str,
         roles_hint: Optional[Dict[str, str]] = None,
         domain: str = "general",
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         await self._resolve_once()
         roles_hint = roles_hint or {}
@@ -220,7 +221,10 @@ class MultiProviderLLM:
         # benchmark_profile. Pure metadata — it only gives the lead a stronger
         # specialization hint and a CAPPED, guarded weighting signal to the
         # governed judge. It never drops non-leads or skips the judge.
-        routing = benchmark_routing.route(user, domain, self._benchmark_candidates())
+        # session_id is forwarded to apply conversational trajectory momentum bias.
+        routing = benchmark_routing.route(
+            user, domain, self._benchmark_candidates(), session_id=session_id
+        )
         replies = await self._fanout(system, user, roles_hint, routing)
         try:
             replies = self.score_replies(replies)
