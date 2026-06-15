@@ -1009,8 +1009,14 @@ async def api_governance(request: Request, _=Depends(require_auth)):
             "created_at": _dt(a.created_at),
         } for a in alerts_q]
         ledger = [{
-            "id": l.id, "agent_role": l.agent_role, "provider": l.provider,
-            "score": l.score, "detail": l.detail or "", "created_at": _dt(l.created_at),
+            "id": l.id,
+            "wave_idx": l.wave_idx,
+            "avg_cs": l.avg_cs,
+            "avg_hr": l.avg_hr,
+            "agent_count": l.agent_count,
+            "consensus_confidence": l.consensus_confidence,
+            "dissent_count": l.dissent_count,
+            "created_at": _dt(l.created_at),
         } for l in ledger_q]
         metrics = []
         for r in metrics_rows:

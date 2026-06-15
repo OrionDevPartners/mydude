@@ -260,14 +260,16 @@ export function Governance() {
           : (
             <div className="glass-card" style={{ overflow: 'hidden' }}>
               <table className="data-table">
-                <thead><tr><th>Role</th><th>Provider</th><th>Score</th><th>Detail</th><th>Time</th></tr></thead>
+                <thead><tr><th>Wave</th><th>Avg CS</th><th>Avg HR</th><th>Agents</th><th>Consensus</th><th>Dissent</th><th>Time</th></tr></thead>
                 <tbody>
                   {data.ledger.map(l => (
                     <tr key={l.id}>
-                      <td style={{ fontSize: 12, fontFamily: 'monospace' }}>{l.agent_role}</td>
-                      <td style={{ fontSize: 12 }}>{l.provider}</td>
-                      <td><span style={{ fontSize: 13, fontWeight: 700, color: scoreColor(l.score) }}>{l.score?.toFixed ? l.score.toFixed(2) : l.score}</span></td>
-                      <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{l.detail}</td>
+                      <td style={{ fontSize: 12, fontFamily: 'monospace' }}>{l.wave_idx}</td>
+                      <td><span style={{ fontSize: 13, fontWeight: 700, color: scoreColor((l.avg_cs ?? 0) / 100) }}>{l.avg_cs?.toFixed ? l.avg_cs.toFixed(2) : l.avg_cs}</span></td>
+                      <td><span style={{ fontSize: 13, fontWeight: 700, color: scoreColor(1 - (l.avg_hr ?? 0)) }}>{l.avg_hr?.toFixed ? l.avg_hr.toFixed(2) : l.avg_hr}</span></td>
+                      <td style={{ fontSize: 12 }}>{l.agent_count}</td>
+                      <td><span style={{ fontSize: 13, fontWeight: 700, color: scoreColor(l.consensus_confidence) }}>{l.consensus_confidence?.toFixed ? l.consensus_confidence.toFixed(2) : l.consensus_confidence}</span></td>
+                      <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{l.dissent_count}</td>
                       <td style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{fmtDate(l.created_at)}</td>
                     </tr>
                   ))}

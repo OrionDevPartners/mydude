@@ -767,7 +767,7 @@ export interface EpistemicTrendData {
   date_to: string
   windows: EpistemicWindowOption[]
 }
-export interface LedgerEntry { id: number; agent_role: string; provider: string; score: number; detail: string; created_at: string }
+export interface LedgerEntry { id: number; wave_idx: number; avg_cs: number; avg_hr: number; agent_count: number; consensus_confidence: number; dissent_count: number; created_at: string }
 export interface MetricRow { provider: string; calls: number; avg_latency: number; success_rate: number; avg_rating: number | null }
 export interface ProvenanceData { records: ProvenanceRecord[]; q: string; page: number; total_pages: number; total: number }
 export interface ProvenanceRecord { id: number; claim_text: string; origin_role: string; origin_provider: string; confidence: number; verified: boolean; created_at: string }
