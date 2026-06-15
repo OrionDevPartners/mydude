@@ -104,6 +104,21 @@ export const resetUserPassword = (id: number, password: string) =>
 export const deleteUser = (id: number) =>
   request<{ ok: boolean }>(`/users/${id}/delete`, { method: 'POST' })
 
+// Self-service account management (any logged-in user, own account)
+export const getMyProfile = () => request<{ user: AppUser }>('/me/profile')
+export const updateMyEmail = (email: string) =>
+  request<{ ok: boolean; user: AppUser }>('/me/email', {
+    method: 'POST',
+    body: formBody({ email }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+export const changeMyPassword = (current_password: string, new_password: string) =>
+  request<{ ok: boolean }>('/me/password', {
+    method: 'POST',
+    body: formBody({ current_password, new_password }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+
 // Dashboard / Tasks
 export const getDashboard = () => request<DashboardData>('/dashboard')
 export const runTask = (prompt: string, domain = 'general', team = 'default') =>

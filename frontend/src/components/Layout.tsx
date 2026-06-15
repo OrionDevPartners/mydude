@@ -121,11 +121,18 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
         paddingTop: 10, paddingBottom: 10, marginTop: 4,
       }}>
         {user?.username && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '6px 10px 10px',
-            fontSize: 12, color: 'var(--text-secondary)',
-          }}>
+          <NavLink
+            to="/profile"
+            onClick={onNavClick}
+            title="My profile"
+            style={({ isActive }) => ({
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '6px 10px 10px',
+              fontSize: 12, color: 'var(--text-secondary)',
+              textDecoration: 'none',
+              opacity: isActive ? 1 : 0.95,
+            })}
+          >
             <div style={{
               width: 24, height: 24, borderRadius: 6, flexShrink: 0,
               background: 'var(--bg-glass-active)',
@@ -147,7 +154,7 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
                 </span>
               )}
             </span>
-          </div>
+          </NavLink>
         )}
         <button
           className="btn btn-ghost btn-sm"

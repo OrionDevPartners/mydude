@@ -30,6 +30,7 @@ from src.web.auth import (
     require_admin,
     require_auth,
     resolve_session,
+    verify_password,
 )
 from src.web.branding import PRODUCT
 from src.web.ratelimit import client_ip
@@ -371,6 +372,102 @@ async def api_delete_user(user_id: int, auth=Depends(require_admin)):
     except Exception:
         db.rollback()
         raise HTTPException(500, "Could not delete user.")
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Self-service account management — a logged-in user manages their own account
+# (no admin privilege required). The dev-bypass identity has no backing User
+# row (uid is None), so it cannot use these.
+# ---------------------------------------------------------------------------
+
+def _require_own_user(db, auth: dict):
+    """Resolve the authenticated request to its own User row, or 4xx.
+
+    Rejects the dev-bypass identity (no real account) and any session whose
+    backing account has vanished/deactivated.
+    """
+    from src.models import User
+    uid = auth.get("uid")
+    if uid is None:
+        raise HTTPException(400, "This action requires a real user account.")
+    user = db.query(User).filter(User.id == uid).first()
+    if user is None or not user.is_active:
+        raise HTTPException(404, "Account not found.")
+    return user
+
+
+@router.get("/me/profile")
+async def api_my_profile(auth=Depends(require_auth)):
+    from src.database import SessionLocal
+    db = SessionLocal()
+    try:
+        user = _require_own_user(db, auth)
+        return {"user": _user_dict(user)}
+    finally:
+        db.close()
+
+
+@router.post("/me/email")
+async def api_update_my_email(email: str = Form(""), auth=Depends(require_auth)):
+    from src.database import SessionLocal
+    from src.models import User
+    from sqlalchemy import func
+
+    email = email.strip()
+    if len(email) > 255:
+        raise HTTPException(400, "Email is too long.")
+
+    db = SessionLocal()
+    try:
+        user = _require_own_user(db, auth)
+        if email:
+            eclash = (
+                db.query(User)
+                .filter(func.lower(User.email) == email.lower(), User.id != user.id)
+                .first()
+            )
+            if eclash:
+                raise HTTPException(409, "That email is already in use.")
+        user.email = email or None
+        db.commit()
+        return {"ok": True, "user": _user_dict(user)}
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(500, "Could not update email.")
+    finally:
+        db.close()
+
+
+@router.post("/me/password")
+async def api_change_my_password(
+    current_password: str = Form(""),
+    new_password: str = Form(""),
+    auth=Depends(require_auth),
+):
+    from src.database import SessionLocal
+
+    if len(new_password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters.")
+    if len(new_password) > MAX_PASSWORD_LEN:
+        raise HTTPException(400, "Password is too long.")
+
+    db = SessionLocal()
+    try:
+        user = _require_own_user(db, auth)
+        if not verify_password(current_password, user.password_hash):
+            raise HTTPException(403, "Current password is incorrect.")
+        user.password_hash = hash_password(new_password)
+        db.commit()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(500, "Could not change password.")
     finally:
         db.close()
 
