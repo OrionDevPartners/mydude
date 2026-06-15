@@ -59,7 +59,11 @@ def _client() -> TestClient:
 
 
 def _auth_cookies() -> dict:
-    return {"session_token": auth._serializer.dumps({"authenticated": True})}
+    # A uid-less ``{"authenticated": True}`` cookie is rejected by the upgraded
+    # ``resolve_session`` (legacy shared-password session). Mint a dev-bypass
+    # cookie instead: it authenticates as admin outside a deployment without a
+    # live DB lookup, which is exactly the surface these /api checks need.
+    return {"session_token": auth.make_dev_session_token()}
 
 
 def _clear_override():

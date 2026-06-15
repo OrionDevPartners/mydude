@@ -157,6 +157,8 @@ def test_parse_task_lifts_structural_routing():
         })
         provider_scores = None
         execution_time_ms = 12
+        actor_user_id = 1
+        actor_username = "tester"
         created_at = None
 
     out = _parse_task(_Task())

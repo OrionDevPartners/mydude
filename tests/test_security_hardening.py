@@ -31,6 +31,7 @@ Runnable two ways:
 """
 import os
 import sys
+import unittest.mock as mock
 from contextlib import contextmanager
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -88,9 +89,60 @@ def _client(raise_server_exceptions: bool = False) -> TestClient:
     return TestClient(real_app, raise_server_exceptions=raise_server_exceptions)
 
 
-def _mint_session_cookie() -> str:
-    """Mint a valid signed session token using the app's own serializer."""
-    return auth._serializer.dumps({"authenticated": True})
+class _FakeUser:
+    """Minimal stand-in for the ORM ``User`` row ``resolve_session`` looks up."""
+
+    def __init__(self, uid=1, username="admin", is_admin=True, is_active=True):
+        self.id = uid
+        self.username = username
+        self.is_admin = is_admin
+        self.is_active = is_active
+
+
+class _FakeQuery:
+    def __init__(self, user):
+        self._user = user
+
+    def filter(self, *a, **k):
+        return self
+
+    def first(self):
+        return self._user
+
+
+class _FakeDB:
+    def __init__(self, user):
+        self._user = user
+
+    def query(self, *a, **k):
+        return _FakeQuery(self._user)
+
+    def close(self):
+        pass
+
+
+@contextmanager
+def _patched_user(user):
+    """Make ``resolve_session``'s per-request DB lookup return ``user``.
+
+    ``resolve_session`` does ``from src.database import SessionLocal`` at call
+    time, so patching the attribute on that module is enough — no live DB
+    needed.
+    """
+    import src.database as database
+
+    with mock.patch.object(database, "SessionLocal", lambda: _FakeDB(user)):
+        yield
+
+
+def _mint_session_cookie(uid=1, username="admin", is_admin=True) -> str:
+    """Mint a valid signed, uid-bound session token using the app's own helper.
+
+    Mirrors a real post-login cookie (``make_session_token``); pair it with
+    ``_patched_user`` so the per-request revalidation in ``resolve_session``
+    resolves the uid to an active account.
+    """
+    return auth.make_session_token(_FakeUser(uid, username, is_admin))
 
 
 def _reset_login_failures():
@@ -135,11 +187,11 @@ def test_login_bad_password_returns_401():
     c = _client()
     r = c.post(
         "/api/login",
-        data={"password": "definitely-not-the-admin-password"},
+        data={"username": "admin", "password": "definitely-not-the-admin-password"},
         headers={"X-Forwarded-For": "203.0.113.11"},
     )
     assert r.status_code == 401, r.status_code
-    assert "Invalid password" in r.text, r.text
+    assert "Invalid username or password" in r.text, r.text
 
 
 def test_login_overlong_password_returns_401_not_500():
@@ -164,7 +216,11 @@ def test_successful_login_resets_failure_counter():
     for i in range(auth.LOGIN_MAX_FAILURES - 1):
         assert c.post("/api/login", data={"password": "nope-%d" % i}, headers=hdr).status_code == 401
     # A correct login clears the counter and sets a session cookie.
-    ok = c.post("/api/login", data={"password": ADMIN_PASSWORD}, headers=hdr)
+    ok = c.post(
+        "/api/login",
+        data={"username": "admin", "password": ADMIN_PASSWORD},
+        headers=hdr,
+    )
     assert ok.status_code == 200, ok.status_code
     assert "session_token" in ok.cookies or "set-cookie" in {k.lower() for k in ok.headers}
     assert not auth._login_failures._events.get(ip), "failure counter not reset on success"
@@ -406,7 +462,7 @@ def test_protected_route_redirects_to_login_when_anonymous():
 def test_minted_session_cookie_authenticates():
     # The in-process minted cookie is accepted by require_auth (proves the
     # technique the rest of the suite relies on), with the dev bypass OFF.
-    with _env(DEV_AUTH_BYPASS=None, REPLIT_DEPLOYMENT=None):
+    with _env(DEV_AUTH_BYPASS=None, REPLIT_DEPLOYMENT=None), _patched_user(_FakeUser()):
         c = _client()
         c.cookies.set("session_token", _mint_session_cookie())
         r = c.get("/api/me")

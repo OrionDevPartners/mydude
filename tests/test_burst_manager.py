@@ -9,12 +9,43 @@ Proves the full lifecycle end-to-end without live cloud calls:
 """
 import asyncio
 import os
+import sys
 import unittest.mock as mock
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-import pytest
+
+class _Approx:
+    """Tiny float-tolerance helper (drop-in for ``pytest.approx`` for ==).
+
+    Keeps this suite runnable standalone (``python tests/test_burst_manager.py``)
+    in environments where pytest is not installed, while remaining fully
+    pytest-compatible.
+    """
+
+    def __init__(self, expected, rel=1e-6, abs=1e-12):
+        self.expected = expected
+        self.rel = rel
+        self.abs = abs
+
+    def __eq__(self, other):
+        try:
+            return abs(other - self.expected) <= max(
+                self.abs, self.rel * abs(self.expected)
+            )
+        except TypeError:
+            return NotImplemented
+
+    def __repr__(self):
+        return "approx(%r)" % (self.expected,)
+
+
+def approx(expected, rel=1e-6, abs=1e-12):
+    return _Approx(expected, rel=rel, abs=abs)
+
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.fleet.burst.interface import (
     BurstBackend,
@@ -114,7 +145,7 @@ def test_saturation_signal_pressure_is_max_of_cb_and_concurrency():
         total_providers=4,
         open_providers=2,
     )
-    assert sig.pressure == pytest.approx(0.8)
+    assert sig.pressure == approx(0.8)
 
 
 def test_saturation_signal_is_saturated_at_default_threshold():
@@ -142,9 +173,9 @@ def test_measure_saturation_uses_injected_llm():
     sig = asyncio.run(measure_saturation(llm))
     assert sig.total_providers == 3
     assert sig.open_providers == 2
-    assert sig.circuit_breaker_open_fraction == pytest.approx(2 / 3)
-    assert sig.active_call_fraction == pytest.approx(0.9)
-    assert sig.pressure == pytest.approx(0.9)
+    assert sig.circuit_breaker_open_fraction == approx(2 / 3)
+    assert sig.active_call_fraction == approx(0.9)
+    assert sig.pressure == approx(0.9)
 
 
 def test_measure_saturation_returns_zero_on_no_llm():
@@ -164,15 +195,15 @@ def test_threshold_helpers_read_from_env():
         "BURST_DRAIN_THRESHOLD": "0.15",
         "BURST_MAX_WORKERS": "8",
     }):
-        assert _get_burst_threshold() == pytest.approx(0.55)
-        assert _get_drain_threshold() == pytest.approx(0.15)
+        assert _get_burst_threshold() == approx(0.55)
+        assert _get_drain_threshold() == approx(0.15)
         assert _get_max_workers() == 8
 
 
 def test_threshold_helpers_fallback_to_defaults():
     with mock.patch.dict(os.environ, {}, clear=True):
-        assert _get_burst_threshold() == pytest.approx(0.70)
-        assert _get_drain_threshold() == pytest.approx(0.30)
+        assert _get_burst_threshold() == approx(0.70)
+        assert _get_drain_threshold() == approx(0.30)
         assert _get_max_workers() == 4
 
 
@@ -181,8 +212,8 @@ def test_threshold_helpers_clamp_to_01():
         "BURST_SATURATION_THRESHOLD": "2.0",
         "BURST_DRAIN_THRESHOLD": "-0.5",
     }):
-        assert _get_burst_threshold() == pytest.approx(1.0)
-        assert _get_drain_threshold() == pytest.approx(0.0)
+        assert _get_burst_threshold() == approx(1.0)
+        assert _get_drain_threshold() == approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -366,3 +397,26 @@ def test_worker_provisioned_false_when_no_backend():
         assert not decision.worker_provisioned, "no backend → worker_provisioned must be False"
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Standalone runner (mirrors the other suites in tests/)
+# ---------------------------------------------------------------------------
+
+
+def _run_all():
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    failed = 0
+    for fn in fns:
+        try:
+            fn()
+            print("ok   %s" % fn.__name__)
+        except Exception as e:
+            failed += 1
+            print("FAIL %s: %s: %s" % (fn.__name__, type(e).__name__, e))
+    print("\n%d/%d passed" % (len(fns) - failed, len(fns)))
+    return failed
+
+
+if __name__ == "__main__":
+    sys.exit(1 if _run_all() else 0)

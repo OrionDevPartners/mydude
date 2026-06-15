@@ -310,7 +310,10 @@ def test_routes_tasks_persists_jurisdiction_into_provider_scores():
     routes_tasks._run_guard._active = 0
 
     try:
-        asyncio.run(routes_tasks.run_task(_FakeRequest(), prompt="persist me", _=None))
+        asyncio.run(routes_tasks.run_task(
+            _FakeRequest(), prompt="persist me",
+            auth={"uid": 1, "username": "tester"},
+        ))
 
         session = TestSession()
         try:
