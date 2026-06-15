@@ -267,6 +267,23 @@ governed inference, TLS always on).
 2. **Create the DNS records** at your registrar and wait for propagation:
    - Apex **A**-record: `MydudeMCP.com` → `azureMcpStaticIp`.
    - **TXT** record: `asuid.MydudeMCP.com` → `azureMcpCustomDomainVerificationId`.
+
+   **Cloudflare DNS (this domain):** Cloudflare defaults new A/AAAA/CNAME records to **Proxied
+   (orange cloud)**, which terminates TLS at Cloudflare's edge and hides the Azure origin — that
+   **breaks** Azure managed-certificate domain-control validation, binding, AND the silent
+   auto-renewal. For the managed-cert flow below, set the apex **A**-record to **DNS-only (grey
+   cloud)** so the domain resolves straight to Azure's static IP. The `asuid` **TXT** record is never
+   proxied, so leave it as-is. Cloudflare supports A-records at the apex natively (no CNAME-flattening
+   needed). Keep the A-record DNS-only permanently unless you switch to the proxied posture below.
+
+   _Optional — keep Cloudflare's proxy/WAF/CDN in front:_ leave the A-record **Proxied**, set
+   Cloudflare **SSL/TLS → Full (strict)**, and bind the Azure managed cert with the A-record
+   temporarily set to DNS-only first (so issuance succeeds), then flip it back to Proxied — or point
+   Cloudflare's origin at the Container App's default `*.azurecontainerapps.io` FQDN, which already
+   serves a trusted cert. Either way Cloudflare preserves the `Host: MydudeMCP.com` header, so the
+   MCP host pin (`azureMcpAllowedHosts=MydudeMCP.com`) and the doctor's `--public-domain` check are
+   unaffected. Note: Azure managed-cert auto-renewal re-validates against the origin, so the proxied
+   posture needs the origin reachable at renewal time — DNS-only is the lower-maintenance choice.
 3. **Phase 2 — bind the domain + mint the certificate + pin the host.** Re-deploy with the domain set
    and the host allow-list pinned to it:
    ```bash
