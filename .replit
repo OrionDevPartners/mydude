@@ -73,3 +73,6 @@ externalPort = 3000
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 120000
+
+[objectStorage]
+defaultBucketID = "replit-objstore-f8ac857a-23d2-46d0-9926-abdf00be51cc"
