@@ -66,7 +66,6 @@ LAYERS: List[dict] = [
 # Real src/ dirs -> layer slug. (dirs absent on disk are skipped.)
 CONTAINER_LAYER: Dict[str, str] = {
     "src/web": "interface",
-    "frontend": "interface",
     "src/swarm": "runtime",
     "src/promptopt": "runtime",
     "src/fleet": "runtime",
@@ -102,6 +101,26 @@ CONTAINER_DESC: Dict[str, str] = {
     "src/web": "FastAPI app, auth, Jinja routes (legacy) and the live /api JSON router.",
     "src/core": "Top-level data core: ORM models, DB engine, app entrypoint.",
     "infra/mydude": "Jurisdiction routing and execution-locus topology.",
+}
+
+# Frontend sub-containers (all on the interface layer). The whole React SPA used
+# to be one container, so every node package read "used in 1 container". Breaking
+# frontend/src into the directories the codebase actually uses makes the node
+# dependency map as granular as the Python one — placements now point at *where*
+# in the UI a package is imported. Each entry's scan dir is the path itself.
+# "frontend/src" is the SPA shell: it is scanned NON-recursively so the top-level
+# files (App.tsx, main.tsx) are attributed to it while its sub-dirs (pages,
+# components, ...) are attributed to their own containers (no double counting).
+# Only sub-containers that exist on disk and contain real source files are
+# created (pillar #1: only real, scanned placements).
+FRONTEND_CONTAINERS: Dict[str, str] = {
+    "frontend/src/pages": "React route pages — the dashboard's individual screens.",
+    "frontend/src/components": "Reusable React UI components shared across pages.",
+    "frontend/src/lib": "Frontend libraries: API client, helpers, shared logic.",
+    "frontend/src/hooks": "Custom React hooks.",
+    "frontend/src/contexts": "React context providers (global SPA state).",
+    "frontend/src/registry": "Component/registry definitions for the SPA.",
+    "frontend/src": "SPA shell: App.tsx + main.tsx entrypoint and root wiring.",
 }
 
 
@@ -320,11 +339,19 @@ _JS_DYNAMIC_RE = re.compile(r"""\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)""")
 _JS_REQUIRE_RE = re.compile(r"""\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)""")
 
 
-def _js_files(container_path: str) -> List[str]:
-    """Return .ts/.tsx/.js/.jsx files under <container>/src, skipping node_modules."""
-    abs_dir = os.path.join(ROOT, container_path, "src")
+def _js_files(abs_dir: str, recurse: bool = True) -> List[str]:
+    """Return .ts/.tsx/.js/.jsx files under abs_dir, skipping node_modules.
+
+    When recurse is False, only files directly inside abs_dir are returned (used
+    for the SPA-shell container so its sub-dirs are not double-counted)."""
     out: List[str] = []
     if not os.path.isdir(abs_dir):
+        return out
+    if not recurse:
+        for fn in sorted(os.listdir(abs_dir)):
+            full = os.path.join(abs_dir, fn)
+            if os.path.isfile(full) and fn.endswith((".ts", ".tsx", ".js", ".jsx")):
+                out.append(full)
         return out
     for dirpath, dirnames, filenames in os.walk(abs_dir):
         dirnames[:] = [d for d in dirnames if d != "node_modules"]
@@ -453,14 +480,13 @@ def seed() -> dict:
             disk = os.path.join(ROOT, cpath if not is_core else "src")
             if not is_core and not os.path.isdir(disk):
                 continue
-            lang = "typescript" if cpath == "frontend" else "python"
             slug = cpath.replace("/", ".")
             cont = Container(
                 layer_id=layer_by_slug[lslug].id,
                 slug=slug,
                 name=cpath.split("/")[-1],
                 fs_path=cpath,
-                language=lang,
+                language="python",
                 description=CONTAINER_DESC.get(cpath),
             )
             db.add(cont)
@@ -468,12 +494,6 @@ def seed() -> dict:
             container_by_path[cpath] = cont
             stats["containers"] += 1
 
-            if lang != "python":
-                node_imports: Set[str] = set()
-                for jf in _js_files(cpath):
-                    node_imports |= _scan_js_imports(jf)
-                container_node_imports[cpath] = node_imports
-                continue
             pyfiles = _py_files(cpath, core_top_level=is_core)
             imports: Set[str] = set()
             for pf in pyfiles:
@@ -487,6 +507,35 @@ def seed() -> dict:
                 imports |= _scan_imports(pf)
             container_imports[cpath] = imports
             container_text[cpath] = _scan_text(pyfiles)
+
+        # 3b. Frontend sub-containers (TypeScript/React) — granular interface map.
+        #     Each sub-dir under frontend/src becomes its own container so node
+        #     package placements point at *where* in the UI they are imported.
+        for cpath, desc in FRONTEND_CONTAINERS.items():
+            abs_dir = os.path.join(ROOT, cpath)
+            # The SPA shell ("frontend/src") scans only its top-level files so its
+            # sub-dirs are attributed to their own containers (no double-counting).
+            recurse = cpath != "frontend/src"
+            jsfiles = _js_files(abs_dir, recurse=recurse)
+            if not jsfiles:
+                continue  # skip empty / absent sub-containers (pillar #1: real only)
+            name = "frontend" if cpath == "frontend/src" else cpath.split("/")[-1]
+            cont = Container(
+                layer_id=layer_by_slug["interface"].id,
+                slug=cpath.replace("/", "."),
+                name=name,
+                fs_path=cpath,
+                language="typescript",
+                description=desc,
+            )
+            db.add(cont)
+            db.flush()
+            container_by_path[cpath] = cont
+            stats["containers"] += 1
+            node_imports: Set[str] = set()
+            for jf in jsfiles:
+                node_imports |= _scan_js_imports(jf)
+            container_node_imports[cpath] = node_imports
         db.flush()
 
         # 4. Packages (python + node)
@@ -581,7 +630,7 @@ def seed() -> dict:
                     subject_kind="package", subject_id=pkg.id,
                     layer_id=cont.layer_id, container_id=cont.id,
                     role="import dependency", criticality="normal",
-                    evidence=f"js-import-scan: {cpath}/src",
+                    evidence=f"js-import-scan: {cpath}",
                 ))
                 stats["placements"] += 1
                 db.add(ComponentDependency(
