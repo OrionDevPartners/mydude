@@ -836,7 +836,7 @@ export interface CapabilityAudit { capability: string; target: string; backend: 
 export interface TestResult { allowed: boolean; reason: string; output: string | null; screenshot?: string | null }
 export interface SubSpend { currencies: { currency: string; monthly_total: number }[]; counted: number; unknown: number }
 export interface SubscriptionsData { subscriptions: Subscription[]; audit: SubAuditEntry[]; catalog: unknown[]; spend: SubSpend }
-export interface Subscription { id: number; name: string; domain: string; login_url: string; account_url: string; login_username: string; has_credential: boolean; status: string; est_cost: string; currency: string; source: string; notes: string; last_checked_at: string | null; created_at: string }
+export interface Subscription { id: number; name: string; domain: string; login_url: string; account_url: string; login_username: string; has_credential: boolean; status: string; est_cost: string; cost_is_estimate: boolean; currency: string; source: string; notes: string; last_checked_at: string | null; created_at: string }
 export interface SubAuditEntry { subscription: string; action: string; status: string; detail: string; created_at: string }
 export interface SubActionResult { kind: string; ok: boolean | null; message: string; screenshot?: string | null; pending?: boolean; sub_id: number }
 export interface DiscoverResult { kind: string; ok: boolean; message: string }

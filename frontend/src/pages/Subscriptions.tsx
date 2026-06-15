@@ -95,7 +95,15 @@ export function Subscriptions() {
                         <span className={`badge ${STATUS_COLOR[sub.status] || 'badge-gray'}`}>{sub.status}</span>
                       </div>
                       <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                        {sub.domain} {sub.est_cost && `· ${sub.est_cost}`} {sub.login_username && `· ${sub.login_username}`} {sub.source && `· ${formatSource(sub.source)}`}
+                        {sub.domain}
+                        {sub.est_cost && (
+                          <> · {sub.cost_is_estimate ? `~${sub.est_cost}` : sub.est_cost}
+                            {sub.cost_is_estimate && (
+                              <span title="Best-effort catalog estimate — confirm against your real bill" style={{ marginLeft: 4, opacity: 0.7 }}>(est.)</span>
+                            )}
+                          </>
+                        )}
+                        {sub.login_username && ` · ${sub.login_username}`} {sub.source && `· ${formatSource(sub.source)}`}
                       </p>
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

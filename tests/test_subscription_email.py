@@ -304,6 +304,101 @@ def test_insert_candidates_merges_source_and_backfills_cost():
         db.close()
 
 
+def test_insert_candidates_cost_provenance_flag():
+    """A real receipt amount overrides a stale catalog estimate even on a
+    confirmed row, and the cost_is_estimate flag tracks provenance throughout."""
+    SessionLocal = _db_or_skip()
+    if SessionLocal is None:
+        print("   (skipped: no DATABASE_URL)")
+        return
+    from src.models import Subscription, SubscriptionAction
+    from src.web.routes_subscriptions import _insert_candidates, _serialize
+
+    domain = "cost-prov-%d.example" % os.getpid()
+    db = SessionLocal()
+    try:
+        for s in db.query(Subscription).filter(Subscription.domain == domain).all():
+            db.query(SubscriptionAction).filter(
+                SubscriptionAction.subscription_id == s.id).delete()
+            db.delete(s)
+        db.commit()
+
+        # 1) History finds it with a catalog-default cost -> flagged as estimate.
+        _insert_candidates([
+            {"name": "CostProv", "domain": domain, "source": "browser_history",
+             "est_cost": "$15.49/mo", "cost_from_receipt": False},
+        ])
+        row = db.query(Subscription).filter(Subscription.domain == domain).one()
+        assert row.est_cost == "$15.49/mo"
+        assert row.cost_is_estimate is True, row.cost_is_estimate
+        # The user confirms it; the cost is still a catalog guess.
+        row.status = "confirmed"
+        db.commit()
+
+        # 2) A later real receipt amount overrides the stale guess on the
+        #    CONFIRMED row, and clears the estimate flag.
+        added, updated = _insert_candidates([
+            {"name": "CostProv", "domain": domain, "source": "email_receipt",
+             "est_cost": "$17.99/mo", "cost_from_receipt": True},
+        ])
+        assert (added, updated) == (0, 1), (added, updated)
+        row = db.query(Subscription).filter(Subscription.domain == domain).one()
+        assert row.est_cost == "$17.99/mo", row.est_cost
+        assert row.cost_is_estimate is False, row.cost_is_estimate
+        assert _serialize(row)["cost_is_estimate"] is False
+
+        # 3) A catalog default must NOT clobber the now-known real amount.
+        added, updated = _insert_candidates([
+            {"name": "CostProv", "domain": domain, "source": "browser_history",
+             "est_cost": "$15.49/mo", "cost_from_receipt": False},
+        ])
+        assert (added, updated) == (0, 0), (added, updated)
+        row = db.query(Subscription).filter(Subscription.domain == domain).one()
+        assert row.est_cost == "$17.99/mo", row.est_cost
+        assert row.cost_is_estimate is False
+    finally:
+        for s in db.query(Subscription).filter(Subscription.domain == domain).all():
+            db.query(SubscriptionAction).filter(
+                SubscriptionAction.subscription_id == s.id).delete()
+            db.delete(s)
+        db.commit()
+        db.close()
+
+
+def test_insert_candidates_new_receipt_row_not_estimate():
+    """A brand-new row created from a real receipt amount is not an estimate."""
+    SessionLocal = _db_or_skip()
+    if SessionLocal is None:
+        print("   (skipped: no DATABASE_URL)")
+        return
+    from src.models import Subscription, SubscriptionAction
+    from src.web.routes_subscriptions import _insert_candidates
+
+    domain = "cost-new-%d.example" % os.getpid()
+    db = SessionLocal()
+    try:
+        for s in db.query(Subscription).filter(Subscription.domain == domain).all():
+            db.query(SubscriptionAction).filter(
+                SubscriptionAction.subscription_id == s.id).delete()
+            db.delete(s)
+        db.commit()
+
+        _insert_candidates([
+            {"name": "CostNew", "domain": domain, "source": "email_receipt",
+             "est_cost": "$9.99/mo", "cost_from_receipt": True},
+        ])
+        row = db.query(Subscription).filter(Subscription.domain == domain).one()
+        assert row.est_cost == "$9.99/mo"
+        assert row.cost_is_estimate is False, row.cost_is_estimate
+    finally:
+        for s in db.query(Subscription).filter(Subscription.domain == domain).all():
+            db.query(SubscriptionAction).filter(
+                SubscriptionAction.subscription_id == s.id).delete()
+            db.delete(s)
+        db.commit()
+        db.close()
+
+
 # -- governance gate ----------------------------------------------------------
 
 def test_policy_blocks_email_when_disabled():

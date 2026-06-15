@@ -2130,6 +2130,8 @@ async def api_add_subscription(
     if not name:
         raise HTTPException(400, "A name is required.")
     entry = match_host(domain.strip()) if domain.strip() else None
+    # A cost the user typed is authoritative; a catalog fallback is an estimate.
+    user_cost = est_cost.strip()
     db = SessionLocal()
     try:
         db.add(Subscription(
@@ -2138,7 +2140,8 @@ async def api_add_subscription(
             login_url=(login_url.strip() or (entry["login_url"] if entry else None)),
             account_url=(account_url.strip() or (entry["account_url"] if entry else None)),
             login_username=(login_username.strip() or None),
-            est_cost=(est_cost.strip() or (entry.get("est_cost") if entry else None)),
+            est_cost=(user_cost or (entry.get("est_cost") if entry else None)),
+            cost_is_estimate=not bool(user_cost),
             notes=(notes.strip() or None),
             status="confirmed",
             source="manual",

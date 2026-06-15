@@ -120,7 +120,7 @@
                     <span class="badge" style="margin-left:4px;">no login stored</span>
                     {% endif %}
                 </h3>
-                <span class="meta">{{ s.est_cost }}{% if s.domain %} · {{ s.domain }}{% endif %}</span>
+                <span class="meta">{% if s.est_cost %}{% if s.cost_is_estimate %}~{{ s.est_cost }} <span title="Best-effort catalog estimate — confirm against your real bill" style="opacity:0.7;">(est.)</span>{% else %}{{ s.est_cost }}{% endif %}{% endif %}{% if s.domain %} · {{ s.domain }}{% endif %}</span>
             </div>
             <div class="card-body">
                 <div class="detail-grid">

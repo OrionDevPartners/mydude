@@ -355,6 +355,10 @@ class Subscription(Base):
     # split out of ``est_cost`` so spend math/sorting/filtering need no
     # re-parsing. cadence is one of monthly | yearly | weekly (or None).
     amount = Column(Float, nullable=True)
+    # True when est_cost is a best-effort default (catalog guess) rather than an
+    # amount parsed from the user's real receipt. Drives the "approximate" marker
+    # in the UI and lets a later real receipt amount override a stale guess.
+    cost_is_estimate = Column(Boolean, default=True)
     currency = Column(String(10), nullable=True)
     cadence = Column(String(20), nullable=True)
     # How this row was detected: browser_history | manual

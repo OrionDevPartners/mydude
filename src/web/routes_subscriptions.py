@@ -53,6 +53,7 @@ def _serialize(sub):
         "status": sub.status,
         "est_cost": sub.est_cost or "",
         "amount": sub.amount,
+        "cost_is_estimate": bool(sub.cost_is_estimate) if sub.est_cost else False,
         "currency": sub.currency or "",
         "cadence": sub.cadence or "",
         "source": sub.source or "",
@@ -208,18 +209,25 @@ def _insert_candidates(candidates):
                     existing.source = merged_source
                     changed = True
                 cand_cost = cand.get("est_cost")
-                # Backfill a missing cost, or upgrade a still-unconfirmed
-                # candidate's estimate with a cost the receipt parser actually
-                # extracted (the user's real amount beats a catalog default).
-                prefer_receipt = (
-                    existing.status == "candidate" and cand.get("cost_from_receipt")
-                )
-                upgrade = (
-                    cand_cost and (not existing.est_cost or prefer_receipt)
+                cand_from_receipt = bool(cand.get("cost_from_receipt"))
+                # A real receipt amount beats a catalog guess: upgrade whenever
+                # the existing cost is still an estimate (or absent), regardless
+                # of confirmed/candidate status, so a stale default is never kept
+                # once the user's actual amount is known. A bare catalog default
+                # only backfills a row that has no cost at all. ``upgrade`` also
+                # drives the structured amount/currency/cadence lockstep below.
+                upgrade = bool(
+                    cand_from_receipt and cand_cost
+                    and (existing.cost_is_estimate or not existing.est_cost)
                     and cand_cost != existing.est_cost
                 )
                 if upgrade:
                     existing.est_cost = cand_cost
+                    existing.cost_is_estimate = False
+                    changed = True
+                elif cand_cost and not existing.est_cost:
+                    existing.est_cost = cand_cost
+                    existing.cost_is_estimate = not cand_from_receipt
                     changed = True
                 # Keep the structured columns in lockstep: overwrite on an
                 # est_cost upgrade, otherwise only backfill what's still missing.
@@ -251,6 +259,7 @@ def _insert_candidates(candidates):
                 amount=cand_amount,
                 currency=cand_currency,
                 cadence=cand_cadence,
+                cost_is_estimate=not cand.get("cost_from_receipt"),
                 status="candidate",
                 source=cand_source,
             ))
@@ -317,7 +326,9 @@ async def add_manual(
 
     # Fill in known URLs from the catalog when the user only gives a domain.
     entry = match_host(domain.strip()) if domain.strip() else None
-    est_cost_val = (est_cost.strip() or (entry.get("est_cost") if entry else None))
+    # A cost the user typed is authoritative; a catalog fallback is an estimate.
+    user_cost = est_cost.strip()
+    est_cost_val = (user_cost or (entry.get("est_cost") if entry else None))
     amount, currency, cadence = _structured_cost({"est_cost": est_cost_val})
     db = SessionLocal()
     try:
@@ -331,6 +342,7 @@ async def add_manual(
             amount=amount,
             currency=currency,
             cadence=cadence,
+            cost_is_estimate=not bool(user_cost),
             notes=(notes.strip() or None),
             status="confirmed",
             source="manual",
