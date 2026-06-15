@@ -23,8 +23,8 @@ export function Badge({ children, color = 'gray' }: { children: ReactNode; color
 }
 
 // ----- Card -----
-export function Card({ children, className, style }: { children: ReactNode; className?: string; style?: React.CSSProperties }) {
-  return <div className={cn('glass-card', className)} style={style}>{children}</div>
+export function Card({ children, className, style, onClick }: { children: ReactNode; className?: string; style?: React.CSSProperties; onClick?: React.MouseEventHandler<HTMLDivElement> }) {
+  return <div className={cn('glass-card', className)} style={style} onClick={onClick}>{children}</div>
 }
 
 // ----- Spinner -----

@@ -1141,3 +1141,31 @@ export const triggerEvolutionTrial = (componentId: number) =>
     `/evolution/components/${componentId}/trial`, { method: 'POST' })
 export const getEvolutionLoopStatus = () =>
   request<{ components: CognitionComponent[] }>('/evolution/loop/status')
+
+export interface EvolutionStallSettings {
+  max_stall_retries: number
+  default_max_stall_retries: number
+  lookback_cycles: number
+}
+export const getEvolutionStallSettings = () =>
+  request<EvolutionStallSettings>('/evolution/settings/stall')
+export const setEvolutionStallSettings = (maxStallRetries: number) =>
+  request<{ ok: boolean; max_stall_retries: number }>(
+    '/evolution/settings/stall',
+    {
+      method: 'POST',
+      body: JSON.stringify({ max_stall_retries: maxStallRetries }),
+      headers: { 'Content-Type': 'application/json' },
+    }
+  )
+export interface StalledBranchCell {
+  branch_cell: string; stall_count: number; deprioritized: boolean
+}
+export interface ComponentStalls {
+  component_id: number
+  stalled_branch_cells: StalledBranchCell[]
+  max_stall_retries: number
+  lookback_cycles: number
+}
+export const getEvolutionComponentStalls = (id: number) =>
+  request<ComponentStalls>(`/evolution/components/${id}/stalls`)

@@ -3,7 +3,9 @@ import {
   listEvolutionComponents, getEvolutionComponent, getEvolutionComponentStatus,
   getEvolutionLoopStatus, startEvolutionLoop, stopEvolutionLoop,
   triggerEvolutionTrial, seedEvolutionThesis,
+  getEvolutionStallSettings, setEvolutionStallSettings, getEvolutionComponentStalls,
   CognitionComponent, ComponentDetail, EvolutionThesis, EvolutionCycleLog,
+  ComponentStalls,
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Badge, Empty, Collapsible } from '@/components/ui'
@@ -12,7 +14,7 @@ import { fmtDate } from '@/lib/utils'
 import {
   FlaskConical, ChevronRight, ChevronLeft, Play, Square, RotateCcw,
   ShieldCheck, CheckCircle, AlertCircle, Clock, Cpu, Activity, GitBranch,
-  Zap, AlertTriangle,
+  Zap, AlertTriangle, SlidersHorizontal, Save,
 } from 'lucide-react'
 
 const STATUS_COLOR: Record<string, string> = {
@@ -161,6 +163,131 @@ function CycleLogRow({ log }: { log: EvolutionCycleLog }) {
       {log.thesis_id && <span style={{ color: 'var(--text-muted)' }}>thesis #{log.thesis_id}</span>}
       {log.detail && <span style={{ color: 'var(--text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.detail}</span>}
       <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', flexShrink: 0 }}>{fmtDate(log.created_at)}</span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Stall-retry tuning + per-branch-cell stall counts
+// ---------------------------------------------------------------------------
+function StallTuningSection({ componentId }: { componentId: number }) {
+  const { data, loading, error, refetch } = useApi<ComponentStalls>(
+    () => getEvolutionComponentStalls(componentId), [componentId])
+  const [value, setValue] = useState<string>('')
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
+  const [lookback, setLookback] = useState<number | null>(null)
+  const [dflt, setDflt] = useState<number | null>(null)
+
+  // Seed the editor from the authoritative settings endpoint (global value).
+  useEffect(() => {
+    let alive = true
+    getEvolutionStallSettings()
+      .then(s => {
+        if (!alive) return
+        setValue(String(s.max_stall_retries))
+        setLookback(s.lookback_cycles)
+        setDflt(s.default_max_stall_retries)
+      })
+      .catch(() => { /* surfaced via the stalls endpoint's max_stall_retries fallback */ })
+    return () => { alive = false }
+  }, [])
+
+  const handleSave = useCallback(async () => {
+    const n = Number(value)
+    if (!Number.isInteger(n) || n < 1) {
+      setNotice({ type: 'error', msg: 'Retry limit must be a whole number ≥ 1.' })
+      return
+    }
+    setSaving(true); setNotice(null)
+    try {
+      const res = await setEvolutionStallSettings(n)
+      setValue(String(res.max_stall_retries))
+      setNotice({ type: 'success', msg: `Stall retry limit saved (${res.max_stall_retries}).` })
+      refetch()
+    } catch (e: unknown) {
+      setNotice({ type: 'error', msg: e instanceof Error ? e.message : 'Failed to save retry limit' })
+    } finally { setSaving(false) }
+  }, [value, refetch])
+
+  const maxRetries = data?.max_stall_retries ?? null
+  const cells = data?.stalled_branch_cells ?? []
+
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
+        <SlidersHorizontal size={14} style={{ opacity: 0.7 }} />
+        <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Stall Retry Tuning</h3>
+      </div>
+      <Card style={{ padding: '12px 14px' }}>
+        <p style={{ fontSize: 12.5, color: 'var(--text-muted)', margin: '0 0 10px', lineHeight: 1.5 }}>
+          How many times a branch cell may stall within the last{' '}
+          <b>{lookback ?? data?.lookback_cycles ?? '—'}</b> cycles before it is hard-deprioritized
+          (instead of merely weighted down). Applies to all components.
+        </p>
+        {notice && <Alert type={notice.type} onClose={() => setNotice(null)}>{notice.msg}</Alert>}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 12.5, color: 'var(--text-secondary)' }} htmlFor="max-stall-retries">
+            Max stall retries
+          </label>
+          <input
+            id="max-stall-retries"
+            type="number"
+            min={1}
+            step={1}
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            disabled={saving}
+            style={{
+              width: 80, padding: '6px 8px', fontSize: 13,
+              background: 'rgba(0,0,0,0.25)', color: 'var(--text-primary, #e5e7eb)',
+              border: '1px solid var(--border)', borderRadius: 6,
+            }}
+          />
+          <button className="btn btn-primary btn-sm" disabled={saving} onClick={handleSave} style={{ gap: 6 }}>
+            {saving ? <Spinner size={13} /> : <Save size={13} />} Save
+          </button>
+          {dflt !== null && (
+            <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>default {dflt}</span>
+          )}
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>
+            Recent stalls by branch cell
+          </div>
+          {loading && !data
+            ? <Spinner size={16} />
+            : error
+            ? <Alert type="error">{error}</Alert>
+            : cells.length === 0
+            ? <p style={{ fontSize: 12.5, color: 'var(--text-muted)', margin: 0 }}>
+                No branch cells have stalled in the lookback window.
+              </p>
+            : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {cells.map(cell => (
+                  <div key={cell.branch_cell} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5,
+                    padding: '6px 0', borderBottom: '1px solid var(--border)',
+                  }}>
+                    <AlertTriangle size={13} color={cell.deprioritized ? '#e74c3c' : '#f39c12'} />
+                    <code style={{ color: 'var(--text-primary, #e5e7eb)' }}>{cell.branch_cell}</code>
+                    <span style={{ color: 'var(--text-muted)' }}>
+                      stalled <b>{cell.stall_count}</b>
+                      {maxRetries !== null ? ` / ${maxRetries}` : ''} time{cell.stall_count === 1 ? '' : 's'}
+                    </span>
+                    {cell.deprioritized && (
+                      <span style={{ marginLeft: 'auto' }}>
+                        <Badge color="red">deprioritized</Badge>
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+        </div>
+      </Card>
     </div>
   )
 }
@@ -372,6 +499,9 @@ function ComponentDetail({ id, onBack }: { id: number; onBack: () => void }) {
           {rejectedTheses.map(t => <ThesisCard key={t.id} thesis={t} />)}
         </div>
       )}
+
+      {/* Stall retry tuning */}
+      <StallTuningSection componentId={id} />
 
       {/* Cycle log */}
       <div>

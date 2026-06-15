@@ -214,6 +214,75 @@ async def trigger_trial(component_id: int, _: bool = Depends(require_auth)):
 
 
 # ---------------------------------------------------------------------------
+# Stall-retry tuning
+# ---------------------------------------------------------------------------
+
+@router.get("/settings/stall")
+async def get_stall_settings(_: bool = Depends(require_auth)):
+    """Current per-branch-cell stall-retry tuning (global across components)."""
+    from src.promptopt.evolution import (
+        _max_stall_retries, MAX_STALL_RETRIES, STALL_LOOKBACK_CYCLES,
+    )
+    return {
+        "max_stall_retries": _max_stall_retries(),
+        "default_max_stall_retries": MAX_STALL_RETRIES,
+        "lookback_cycles": STALL_LOOKBACK_CYCLES,
+    }
+
+
+class StallSettingsRequest(BaseModel):
+    max_stall_retries: int
+
+
+@router.post("/settings/stall")
+async def set_stall_settings(
+    body: StallSettingsRequest,
+    _: bool = Depends(require_auth),
+):
+    """Persist the per-branch-cell stall-retry limit (must be >= 1)."""
+    if body.max_stall_retries < 1:
+        raise HTTPException(
+            status_code=400, detail="max_stall_retries must be >= 1"
+        )
+    from src.web.settings_store import set_setting
+    from src.promptopt.evolution import _max_stall_retries
+    set_setting("evolution.max_stall_retries", str(int(body.max_stall_retries)))
+    return {"ok": True, "max_stall_retries": _max_stall_retries()}
+
+
+@router.get("/components/{component_id}/stalls")
+async def get_component_stalls(component_id: int, _: bool = Depends(require_auth)):
+    """Recent per-branch-cell stall counts for a component.
+
+    Lets operators see which branch cells have stalled within the lookback
+    window and whether each has hit the retry limit (and is hard-deprioritized).
+    """
+    from src.promptopt import evolution_store as estore
+    from src.promptopt.evolution import _max_stall_retries, STALL_LOOKBACK_CYCLES
+    _get_component_or_404(component_id)
+    counts = estore.get_recent_stalled_branch_cells(
+        component_id, STALL_LOOKBACK_CYCLES
+    )
+    max_retries = _max_stall_retries()
+    cells = [
+        {
+            "branch_cell": cell,
+            "stall_count": n,
+            "deprioritized": n >= max_retries,
+        }
+        for cell, n in sorted(
+            counts.items(), key=lambda kv: kv[1], reverse=True
+        )
+    ]
+    return {
+        "component_id": component_id,
+        "stalled_branch_cells": cells,
+        "max_stall_retries": max_retries,
+        "lookback_cycles": STALL_LOOKBACK_CYCLES,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Global loop status
 # ---------------------------------------------------------------------------
 

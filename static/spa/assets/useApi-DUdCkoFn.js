@@ -1,9 +1,0 @@
-<<<<<<< HEAD:static/spa/assets/useApi-DUdCkoFn.js
-import{r as e}from"./rolldown-runtime-QTnfLwEv.js";import{n as t}from"./jsx-runtime-CIxEorsV.js";import{K as n}from"./index-vFNB8BsE.js";var r=e(t(),1);function i(e,t=[],i=!0){let[a,o]=(0,r.useState)({data:null,loading:i,error:null}),s=(0,r.useCallback)(async()=>{o(e=>({...e,loading:!0,error:null}));try{o({data:await e(),loading:!1,error:null})}catch(e){o({data:null,loading:!1,error:e instanceof n?e.message:`An error occurred`})}},t);return(0,r.useEffect)(()=>{i&&s()},[s,i]),{...a,refetch:s}}export{i as t};
-=======
-<<<<<<<< HEAD:static/spa/assets/useApi-26qYDCRE.js
-import{r as e}from"./rolldown-runtime-QTnfLwEv.js";import{n as t}from"./jsx-runtime-CIxEorsV.js";import{K as n}from"./index-B9nH6PG4.js";var r=e(t(),1);function i(e,t=[],i=!0){let[a,o]=(0,r.useState)({data:null,loading:i,error:null}),s=(0,r.useCallback)(async()=>{o(e=>({...e,loading:!0,error:null}));try{o({data:await e(),loading:!1,error:null})}catch(e){o({data:null,loading:!1,error:e instanceof n?e.message:`An error occurred`})}},t);return(0,r.useEffect)(()=>{i&&s()},[s,i]),{...a,refetch:s}}export{i as t};
-========
-import{r as e}from"./rolldown-runtime-QTnfLwEv.js";import{n as t}from"./jsx-runtime-CIxEorsV.js";import{K as n}from"./index-D3IvCsMQ.js";var r=e(t(),1);function i(e,t=[],i=!0){let[a,o]=(0,r.useState)({data:null,loading:i,error:null}),s=(0,r.useCallback)(async()=>{o(e=>({...e,loading:!0,error:null}));try{o({data:await e(),loading:!1,error:null})}catch(e){o({data:null,loading:!1,error:e instanceof n?e.message:`An error occurred`})}},t);return(0,r.useEffect)(()=>{i&&s()},[s,i]),{...a,refetch:s}}export{i as t};
->>>>>>>> 0a224fa (Update application assets after rebasing and rebuilding the user interface):static/spa/assets/useApi-C-aTk2IB.js
->>>>>>> 23cbf7f (Update application assets after rebasing and rebuilding the user interface):static/spa/assets/useApi-26qYDCRE.js
