@@ -19,7 +19,7 @@ from src.capabilities.base import CapabilityAdapter, CapabilitySpec
 # ---------------------------------------------------------------------------
 from src.capabilities.adapters.llm import LLMCapabilityAdapter
 from src.capabilities.adapters.browser import BrowserCapabilityAdapter
-from src.capabilities.adapters.database import PostgreSQLAdapter
+from src.capabilities.adapters.database import PostgreSQLAdapter, SQLiteAdapter
 from src.capabilities.adapters.vector_search import (
     EmbeddingVectorAdapter,
     TFIDFVectorAdapter,
@@ -67,6 +67,7 @@ CAPABILITY_REGISTRY: Dict[Tuple[str, str], Type[CapabilityAdapter]] = {
 
     # Database
     ("database", "postgresql"):      PostgreSQLAdapter,
+    ("database", "sqlite"):          SQLiteAdapter,
 
     # Vector search
     ("vector_search", "embedding"):  EmbeddingVectorAdapter,

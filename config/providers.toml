@@ -398,9 +398,12 @@ notes = "Azure Playwright Workspaces cloud Chromium over WebSocket (Bearer acces
 # DATABASE capability — relational database backends.
 # =============================================================================
 [database]
-# Backends in cost order. `postgresql` is the only real relational backend
-# today; adding MySQL/SQLite means one config block + one adapter class.
-enabled = ["postgresql"]
+# Backends in cost order, cheapest tried first with automatic failover. Two
+# real relational backends prove the zero-code-change swap guarantee: swap the
+# active database by reordering this list / costs — no call-site changes. When
+# DATABASE_URL is present PostgreSQL (cost 0) leads; otherwise the resolver
+# fails over to the self-contained SQLite backend (cost 5, always available).
+enabled = ["postgresql", "sqlite"]
 required = []
 
 [databasebackends.postgresql]
@@ -410,6 +413,17 @@ label = "PostgreSQL (Replit built-in)"
 secrets = []
 exec_locus = "local"
 notes = "Replit managed PostgreSQL. DATABASE_URL is injected by the platform; no manual secret needed."
+
+[databasebackends.sqlite]
+adapter = "sqlite"
+cost = 5
+label = "SQLite (self-contained file DB)"
+secrets = []
+exec_locus = "local"
+# Optional: pin the database file path here, else SQLITE_DB_PATH env, else the
+# adapter default under /tmp. Use ":memory:" for an ephemeral in-process DB.
+# path = "/tmp/mydude_sqlite.db"
+notes = "Stdlib sqlite3 file/in-memory database. No server, no secret; always available. Acts as the durable local fallback when PostgreSQL is unreachable."
 
 # =============================================================================
 # VECTOR SEARCH capability — dense embedding / lexical search backends.

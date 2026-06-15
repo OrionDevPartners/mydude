@@ -191,6 +191,124 @@ class TestDatabaseAdapter(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 4b. SQLiteAdapter — second real database backend (proves swappability)
+# ---------------------------------------------------------------------------
+
+class TestSQLiteAdapter(unittest.TestCase):
+
+    def _adapter(self, path=":memory:"):
+        from src.capabilities.adapters.database import SQLiteAdapter
+        spec = _spec(adapter="sqlite", category="database", secrets=[])
+        spec.extra = {"path": path}
+        return SQLiteAdapter(spec)
+
+    def test_keyless_always_secrets_present(self):
+        """SQLite needs no secret, so secrets_present() is always True."""
+        self.assertTrue(self._adapter().secrets_present())
+
+    def test_probe_passes_in_memory(self):
+        """A :memory: SQLite DB is genuinely openable, so the probe passes."""
+        self.assertTrue(self._adapter(":memory:")._probe())
+
+    def test_is_available_in_memory(self):
+        self.assertTrue(self._adapter(":memory:").is_available())
+
+    def test_health_probe_ok_reports_location(self):
+        h = self._adapter(":memory:").health_probe()
+        self.assertTrue(h["ok"])
+        self.assertIn(":memory:", h["detail"])
+        self.assertEqual(h["exec_locus"], "local")
+
+    def test_db_path_config_precedence(self):
+        """The config `path` key wins over the SQLITE_DB_PATH env var."""
+        with patch.dict(os.environ, {"SQLITE_DB_PATH": "/tmp/env_path.db"}):
+            self.assertEqual(self._adapter("/tmp/cfg_path.db").db_path, "/tmp/cfg_path.db")
+
+    def test_db_path_env_fallback(self):
+        """With no config path, SQLITE_DB_PATH env is used."""
+        from src.capabilities.adapters.database import SQLiteAdapter
+        spec = _spec(adapter="sqlite", category="database", secrets=[])
+        spec.extra = {}
+        with patch.dict(os.environ, {"SQLITE_DB_PATH": "/tmp/env_path.db"}):
+            self.assertEqual(SQLiteAdapter(spec).db_path, "/tmp/env_path.db")
+
+    def test_execute_roundtrip_is_operative(self):
+        """The adapter is a real, operative backend: create/insert/select works."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "sub", "round.db")
+            adapter = self._adapter(path)
+            adapter.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            adapter.execute("INSERT INTO t (v) VALUES (?)", ["hello"])
+            rows = adapter.execute("SELECT v FROM t")
+            self.assertEqual(rows, [("hello",)])
+            # The file was actually created on disk (durable, not a stub).
+            self.assertTrue(os.path.exists(path))
+
+
+# ---------------------------------------------------------------------------
+# 4c. Database category swap + failover (real registered adapters)
+# ---------------------------------------------------------------------------
+
+class TestDatabaseSwapAndFailover(unittest.TestCase):
+    """Prove the database category has two real registered adapters and that a
+    config-only swap / cost-ordered failover selects between them with zero
+    call-site change."""
+
+    def setUp(self):
+        from src.capabilities import resolver as res_module
+        res_module._resolver = None
+
+    def tearDown(self):
+        from src.capabilities import resolver as res_module
+        res_module._resolver = None
+
+    def test_two_adapters_registered_for_database(self):
+        """CAPABILITY_REGISTRY must hold >=2 adapters for the database category."""
+        from src.capabilities.registry import registered_adapters_for
+        adapters = registered_adapters_for("database")
+        self.assertIn("postgresql", adapters)
+        self.assertIn("sqlite", adapters)
+        self.assertGreaterEqual(len(adapters), 2)
+
+    def test_both_enabled_in_config(self):
+        """Both backends are enabled in config/providers.toml."""
+        from src.capabilities.config import category_enabled_keys
+        enabled = category_enabled_keys("database")
+        self.assertIn("postgresql", enabled)
+        self.assertIn("sqlite", enabled)
+
+    def test_swap_self_test_sqlite_available(self):
+        """The swap self-test proves a config-only swap to SQLite is live."""
+        from src.capabilities.resolver import get_resolver
+        result = get_resolver().swap_self_test("database", "sqlite")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["resolved_key"], "sqlite")
+
+    def test_failover_picks_cheapest_available_postgres_when_present(self):
+        """When DATABASE_URL is present, the cheaper PostgreSQL (cost 0) wins."""
+        from src.capabilities.resolver import get_resolver
+        from src.capabilities.adapters.database import PostgreSQLAdapter
+        with patch.dict(os.environ, {"DATABASE_URL": "postgresql://localhost/x"}), \
+             patch.object(PostgreSQLAdapter, "_probe", return_value=True):
+            resolver = get_resolver()
+            adapter = resolver.resolve("database")
+            self.assertEqual(adapter.key, "postgresql")
+
+    def test_failover_to_sqlite_when_postgres_unavailable(self):
+        """With PostgreSQL unavailable, the resolver fails over to SQLite —
+        a real second backend, selected by config/cost with no code change."""
+        from src.capabilities.resolver import get_resolver
+        from src.capabilities.adapters.database import PostgreSQLAdapter
+        with patch.object(PostgreSQLAdapter, "_probe", return_value=False), \
+             patch.object(PostgreSQLAdapter, "secrets_present", return_value=False):
+            resolver = get_resolver()
+            adapter = resolver.resolve("database")
+            self.assertEqual(adapter.key, "sqlite")
+            self.assertTrue(adapter.is_available())
+
+
+# ---------------------------------------------------------------------------
 # 5. CapabilityResolver — selection, failover ordering, CapabilityNotAvailable
 # ---------------------------------------------------------------------------
 
