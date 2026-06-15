@@ -1,0 +1,333 @@
+# DevGov Provider-Agnostic Sidecar Architecture
+
+**Project:** DevGov Cognitive Platform  
+**Source Repo:** OrionDevPartners/DevGov  
+**Methodology:** Hook Foundry Agnostify Taxonomy  
+**Date:** June 12, 2026
+
+---
+
+## 1. Executive Summary
+
+This document defines the complete provider-agnostic sidecar architecture for the DevGov cognitive platform. The architecture extracts all provider dependencies from the GEPA (Graph Evolution via Parallel Agents) cognitive spec — including LangGraph orchestration, DSPy signature optimization, Neo4j knowledge plane, BioNeMo NIMs, and cross-domain analogy transfer — into a decoupled sidecar layer governed by a two-tier environment variable system.
+
+The core principle is absolute separation of concerns: application code never references a specific provider. Instead, it resolves capabilities through a typed registry, and the active provider is determined entirely by environment configuration. Swapping a provider — from Manus Forge to Azure OpenAI, from MySQL to PostgreSQL, from Neo4j to CosmosDB — requires changing exactly one `.env` file. Zero code changes.
+
+---
+
+## 2. Sidecar Folder Structure
+
+The sidecar lives at `devgov-portal/sidecar/` as a self-contained module with the following structure:
+
+```text
+devgov-portal/sidecar/
+├── index.ts                    # Barrel export — single import surface for the app
+├── registry.ts                 # Master provider registry (category → adapter map)
+├── resolver.ts                 # Runtime resolver (reads env_1, instantiates adapters)
+├── types.ts                    # All provider interfaces (contracts)
+├── env-handshake.ts            # Validates env_2 secrets against env_1 selections
+└── adapters/
+    ├── llm/
+    │   ├── manus_forge.ts      # Manus Forge API adapter
+    │   ├── azure_openai.ts     # Azure OpenAI Service adapter
+    │   ├── bedrock_claude.ts   # AWS Bedrock (Claude) adapter
+    │   ├── google_vertex.ts    # Google Vertex AI adapter
+    │   └── ollama_local.ts     # Local Ollama adapter (dev)
+    ├── database/
+    │   ├── tidb_mysql.ts       # TiDB/MySQL via Drizzle
+    │   ├── azure_postgresql.ts # Azure PostgreSQL via Drizzle
+    │   ├── neon_postgres.ts    # Neon Serverless Postgres
+    │   └── sqlite_local.ts     # SQLite for local dev
+    ├── graph-store/
+    │   ├── drizzle_tables.ts   # Current relational fallback
+    │   └── neo4j_native.ts     # Neo4j graph-native store
+    ├── knowledge-graph/
+    │   ├── neo4j.ts            # Neo4j AuraDB
+    │   ├── cosmosdb_gremlin.ts # Azure CosmosDB Gremlin API
+    │   └── in_memory.ts        # In-memory graph (testing)
+    ├── vector-search/
+    │   ├── qdrant.ts           # Qdrant Cloud
+    │   ├── pinecone.ts         # Pinecone Serverless
+    │   └── pgvector.ts         # PostgreSQL pgvector extension
+    ├── orchestrator/
+    │   ├── langgraph.ts        # LangGraph JS/TS
+    │   ├── custom_typescript.ts# Legacy custom classes
+    │   └── temporal.ts         # Temporal.io
+    ├── signature-optimizer/
+    │   ├── dspy.ts             # DSPy framework
+    │   └── custom_llm.ts       # Custom LLM prompt chaining
+    ├── molecular-nims/
+    │   ├── bionemo_nvcf.ts     # NVIDIA Cloud Functions
+    │   ├── bionemo_local.ts    # Local NIM containers
+    │   └── mock_nims.ts        # Mock responses (testing)
+    ├── realtime/
+    │   ├── azure_web_pubsub.ts # Azure Web PubSub
+    │   └── socket_io.ts        # Socket.IO fallback
+    ├── secrets-vault/
+    │   ├── azure_key_vault.ts  # Azure Key Vault
+    │   ├── aws_secrets_mgr.ts  # AWS Secrets Manager
+    │   └── dotenv_local.ts     # Local .env.secrets (dev)
+    └── object-storage/
+        ├── s3_compatible.ts    # S3-compatible (Manus/AWS)
+        ├── azure_blob.ts       # Azure Blob Storage
+        └── local_fs.ts         # Local filesystem (dev)
+```
+
+Each file in `adapters/` exports a default class that implements the corresponding interface from `types.ts`. The resolver reads `env_1` to determine which adapter file to instantiate at runtime.
+
+---
+
+## 3. Provider Interfaces (types.ts)
+
+Every adapter must implement the interface for its category. The application code imports only these types — never a concrete adapter.
+
+```typescript
+// sidecar/types.ts
+
+// ─── LLM Provider ────────────────────────────────────────────────────────────
+/** Contract for Large Language Model providers. */
+export interface ILLMProvider {
+  /** Standard chat completion with messages array. */
+  chatCompletion(messages: LLMMessage[], options?: LLMOptions): Promise<LLMResponse>;
+  /** Structured output adhering to a JSON schema. */
+  structuredOutput<T>(messages: LLMMessage[], schema: JsonSchema, options?: LLMOptions): Promise<T>;
+  /** Chat completion with tool/function calling. */
+  toolUse(messages: LLMMessage[], tools: ToolDef[], options?: LLMOptions): Promise<LLMResponse>;
+  /** Streaming chat completion. */
+  streamCompletion(messages: LLMMessage[], options?: LLMOptions): AsyncIterable<LLMChunk>;
+}
+
+// ─── Database Provider ───────────────────────────────────────────────────────
+/** Contract for relational database providers (Drizzle-compatible). */
+export interface IDatabaseProvider {
+  /** Returns the Drizzle database instance for ORM operations. */
+  getConnection(): Promise<any>;
+  /** Execute raw SQL query. */
+  query<T>(sql: string, params?: any[]): Promise<T[]>;
+  /** Execute callback within a transaction. */
+  transaction<T>(callback: (tx: any) => Promise<T>): Promise<T>;
+  /** Run pending migrations. */
+  migrate(): Promise<void>;
+  /** Health check. */
+  healthCheck(): Promise<boolean>;
+}
+
+// ─── Graph Store Provider ────────────────────────────────────────────────────
+/** Contract for cognitive graph state persistence. */
+export interface IGraphStoreProvider {
+  /** Store a new graph version. Returns version hash. */
+  storeVersion(domain: string, definition: any, metadata?: any): Promise<string>;
+  /** Retrieve a specific version by hash. */
+  getVersion(versionHash: string): Promise<any | null>;
+  /** Get latest version for a domain. */
+  getLatest(domain: string): Promise<any | null>;
+  /** Query version history for a domain. */
+  queryHistory(domain: string, limit?: number): Promise<any[]>;
+  /** Compute diff between two versions. */
+  diff(versionA: string, versionB: string): Promise<any>;
+}
+
+// ─── Knowledge Graph Provider ────────────────────────────────────────────────
+/** Contract for knowledge graph operations (Neo4j/Gremlin). */
+export interface IKnowledgeGraphProvider {
+  /** Create a labeled node with properties. */
+  createNode(label: string, properties: Record<string, any>): Promise<string>;
+  /** Create a typed edge between nodes. */
+  createEdge(from: string, to: string, type: string, properties?: Record<string, any>): Promise<string>;
+  /** Traverse from a node to a given depth. */
+  traverse(startNodeId: string, depth: number): Promise<any>;
+  /** Execute a native query (Cypher/Gremlin). */
+  query<T>(queryStr: string, params?: Record<string, any>): Promise<T[]>;
+  /** Generate and store an embedding for a node. */
+  embed(nodeId: string, text: string): Promise<void>;
+  /** Check if provider is configured and available. */
+  isAvailable(): boolean;
+}
+
+// ─── Vector Search Provider ──────────────────────────────────────────────────
+/** Contract for vector embedding and similarity search. */
+export interface IVectorSearchProvider {
+  /** Generate embedding vector from text. */
+  embed(text: string): Promise<number[]>;
+  /** Search for similar vectors. */
+  search(vector: number[], topK: number, filter?: Record<string, any>): Promise<VectorResult[]>;
+  /** Upsert a vector with metadata. */
+  upsert(id: string, vector: number[], metadata?: Record<string, any>): Promise<void>;
+  /** Delete a vector by ID. */
+  delete(id: string): Promise<void>;
+}
+
+// ─── Orchestrator Provider ───────────────────────────────────────────────────
+/** Contract for cognitive graph orchestration (LangGraph/Temporal). */
+export interface IOrchestratorProvider {
+  /** Define and compile a graph from a definition. */
+  defineGraph(definition: any): Promise<string>;
+  /** Execute a compiled graph with input state. */
+  execute(graphId: string, input: any): Promise<any>;
+  /** Checkpoint current execution state. */
+  checkpoint(executionId: string, state: any): Promise<string>;
+  /** Resume execution from a checkpoint. */
+  resume(executionId: string, checkpointId: string): Promise<any>;
+}
+
+// ─── Signature Optimizer Provider ────────────────────────────────────────────
+/** Contract for I/O signature optimization (DSPy). */
+export interface ISignatureOptimizerProvider {
+  /** Optimize a signature given execution traces. */
+  optimizeSignature(
+    currentSig: { inputs: string[]; outputs: string[]; description: string },
+    traces: Array<{ input: any; output: any; score: number }>
+  ): Promise<{ optimizedSignature: any; reasoning: string }>;
+  /** Compile a module with optimized prompts. */
+  compile(moduleDef: any, trainSet: any[]): Promise<any>;
+}
+
+// ─── Realtime Provider ───────────────────────────────────────────────────────
+/** Contract for real-time pub/sub communication. */
+export interface IRealtimeProvider {
+  /** Publish message to a channel. */
+  publish(channel: string, message: any): Promise<void>;
+  /** Subscribe to a channel. */
+  subscribe(channel: string, handler: (msg: any) => void): Promise<void>;
+  /** Get presence list for a channel. */
+  presence(channel: string): Promise<string[]>;
+}
+
+// ─── Secrets Vault Provider ──────────────────────────────────────────────────
+/** Contract for secrets management. */
+export interface ISecretsVaultProvider {
+  /** Get a secret value by name. */
+  get(name: string): Promise<string>;
+  /** Set or update a secret. */
+  set(name: string, value: string): Promise<void>;
+  /** Delete a secret. */
+  delete(name: string): Promise<void>;
+  /** List all secret names (no values). */
+  list(): Promise<string[]>;
+  /** Rotate a secret. */
+  rotate(name: string): Promise<string>;
+}
+
+// ─── Object Storage Provider ─────────────────────────────────────────────────
+/** Contract for object/file storage. */
+export interface IObjectStorageProvider {
+  /** Upload bytes to storage. Returns { key, url }. */
+  put(key: string, data: Buffer | Uint8Array | string, contentType?: string): Promise<{ key: string; url: string }>;
+  /** Get a presigned/proxy URL for an object. */
+  get(key: string, expiresIn?: number): Promise<{ key: string; url: string }>;
+  /** Delete an object. */
+  delete(key: string): Promise<void>;
+  /** Generate a presigned URL for direct upload/download. */
+  presign(key: string, expiresIn: number, operation: 'get' | 'put'): Promise<string>;
+}
+
+// ─── Molecular NIMs Provider ─────────────────────────────────────────────────
+/** Contract for molecular biology inference (BioNeMo). */
+export interface IMolecularNIMsProvider {
+  /** Predict 3D structure from amino acid sequence. */
+  predictStructure(sequence: string): Promise<string>;
+  /** Simulate ligand-receptor docking. */
+  dock(receptor: string, ligand: string): Promise<any>;
+  /** Calculate molecular similarity score. */
+  similarity(moleculeA: string, moleculeB: string): Promise<number>;
+}
+
+// ─── Supporting Types ────────────────────────────────────────────────────────
+export interface LLMMessage { role: string; content: string | any[]; }
+export interface LLMOptions { model?: string; temperature?: number; maxTokens?: number; responseFormat?: any; }
+export interface LLMResponse { content: string; toolCalls?: any[]; usage?: { promptTokens: number; completionTokens: number; }; }
+export interface LLMChunk { delta: string; done: boolean; }
+export interface ToolDef { type: 'function'; function: { name: string; description?: string; parameters?: any; }; }
+export interface JsonSchema { name: string; schema: Record<string, unknown>; strict?: boolean; }
+export interface VectorResult { id: string; score: number; metadata?: Record<string, any>; }
+```
+
+---
+
+## 4. ENV_1: Provider Selection (.env.providers)
+
+This file maps each architectural **category** to its active **adapter**. It contains no secrets. It can be committed to version control as a template.
+
+```env
+# ==============================================================================
+# TIER 1: PROVIDER SELECTION (.env.providers)
+# ==============================================================================
+# Maps architectural capabilities to specific adapter implementations.
+# DO NOT place secrets or credentials here. Use .env.secrets for that.
+# Changing a value here swaps the provider — zero code changes required.
+# ==============================================================================
+
+# ─── LLM / Foundation Models ─────────────────────────────────────────────────
+# Adapters: manus_forge | azure_openai | bedrock_claude | google_vertex | ollama_local
+PROVIDER_LLM=manus_forge
+
+# ─── Relational Database ─────────────────────────────────────────────────────
+# Adapters: tidb_mysql | azure_postgresql | neon_postgres | sqlite_local
+PROVIDER_DATABASE=tidb_mysql
+
+# ─── Graph Store (Cognitive State Persistence) ────────────────────────────────
+# Adapters: drizzle_tables | neo4j_native
+PROVIDER_GRAPH_STORE=drizzle_tables
+
+# ─── Knowledge Graph (Knowledge Plane) ───────────────────────────────────────
+# Adapters: neo4j | cosmosdb_gremlin | in_memory | none
+PROVIDER_KNOWLEDGE_GRAPH=none
+
+# ─── Vector Search (Embeddings & Similarity) ─────────────────────────────────
+# Adapters: qdrant | pinecone | pgvector | none
+PROVIDER_VECTOR_SEARCH=none
+
+# ─── Orchestrator (Graph Execution Engine) ────────────────────────────────────
+# Adapters: langgraph | custom_typescript | temporal
+PROVIDER_ORCHESTRATOR=custom_typescript
+
+# ─── Signature Optimizer (I/O Contract Evolution) ─────────────────────────────
+# Adapters: dspy | custom_llm
+PROVIDER_SIGNATURE_OPTIMIZER=custom_llm
+
+# ─── Molecular NIMs (BioNeMo) ────────────────────────────────────────────────
+# Adapters: bionemo_nvcf | bionemo_local | mock_nims | none
+PROVIDER_MOLECULAR_NIMS=none
+
+# ─── Real-time Communication ─────────────────────────────────────────────────
+# Adapters: azure_web_pubsub | socket_io | none
+PROVIDER_REALTIME=none
+
+# ─── Secrets Vault ───────────────────────────────────────────────────────────
+# Adapters: azure_key_vault | aws_secrets_mgr | dotenv_local
+PROVIDER_SECRETS_VAULT=dotenv_local
+
+# ─── Object Storage ──────────────────────────────────────────────────────────
+# Adapters: s3_compatible | azure_blob | local_fs
+PROVIDER_OBJECT_STORAGE=s3_compatible
+
+# ─── Container Compute ────────────────────────────────────────────────────────
+# Adapters: azure_container_apps | aws_ecs | local_docker
+PROVIDER_CONTAINER_COMPUTE=azure_container_apps
+```
+
+---
+
+## 5. ENV_2: Secrets and Credentials (.env.secrets)
+
+This file contains all credentials grouped by provider category. It is **never committed** to version control. In production, these values are injected from Azure Key Vault.
+
+```env
+# ==============================================================================
+# TIER 2: SECRETS AND CREDENTIALS (.env.secrets)
+# ==============================================================================
+# WARNING: DO NOT COMMIT. Copy .env.secrets.example → .env.secrets and fill in.
+# Only secrets for your SELECTED providers (in .env.providers) are required.
+# ==============================================================================
+
+# ─── LLM SECRETS ─────────────────────────────────────────────────────────────
+# Required if PROVIDER_LLM=manus_forge
+BUILT_IN_FORGE_API_URL="https://forge.manus.im"
+BUILT_IN_FORGE_API_KEY="sk-forge-..."
+FORGE_MODEL="gemini-2.5-flash"
+
+# Required if PROVIDER_LLM=azure_openai
+AZURE_OPENAI_ENDPOINT="https://devgov-openai.openai.azure.com"
+AZURE_OPENAI_API_KEY="..."
+AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4o"
+AZURE_OPENAI_API_VERSION="2024-08-01-preview"
