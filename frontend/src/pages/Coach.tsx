@@ -34,6 +34,36 @@ function valenceColor(v: number | null | undefined): string {
   return '#fbbf24'
 }
 
+interface EmotionScore { name: string; score: number }
+
+function readEmotions(metrics: Record<string, unknown> | null | undefined): EmotionScore[] {
+  const raw = metrics?.emotions
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map(e => {
+      const obj = e as Record<string, unknown>
+      const name = typeof obj?.name === 'string' ? obj.name : null
+      const score = typeof obj?.score === 'number' ? obj.score : Number(obj?.score)
+      return name !== null && Number.isFinite(score) ? { name, score } : null
+    })
+    .filter((e): e is EmotionScore => e !== null)
+}
+
+// A signal is voice/prosody when it came from an audio capture: its source ends
+// in "_voice" (e.g. hume_voice) or the provider model is "prosody".
+function isVoiceSignal(s: MoodSignal): boolean {
+  if (s.source && s.source.toLowerCase().includes('voice')) return true
+  const model = s.metrics?.model
+  return typeof model === 'string' && model.toLowerCase() === 'prosody'
+}
+
+function signalModality(s: MoodSignal): { label: string; badge: string } {
+  if (isVoiceSignal(s)) return { label: 'Voice · prosody', badge: 'badge-purple' }
+  if (s.signal_type === 'emotion') return { label: 'Typed text · emotion', badge: 'badge-gray' }
+  if (s.signal_type === 'sentiment') return { label: 'Typed text · sentiment', badge: 'badge-gray' }
+  return { label: s.signal_type || '—', badge: 'badge-gray' }
+}
+
 export function Coach() {
   const [tab, setTab] = useState('Overview')
   const { data, loading, error, refetch } = useApi(getCoach, [])
@@ -226,6 +256,7 @@ function Signals({ data, working, action, setMsg, setErr, refetch }: {
 }) {
   const [type, setType] = useState('')
   const [showCapture, setShowCapture] = useState(false)
+  const [selected, setSelected] = useState<MoodSignal | null>(null)
   const { data: sigData, loading, error, refetch: refetchSignals } = useApi(
     () => getCoachSignals({ signal_type: type || undefined, limit: 200 }), [type])
 
@@ -262,23 +293,27 @@ function Signals({ data, working, action, setMsg, setErr, refetch }: {
         : (
           <div className="glass-card" style={{ overflowX: 'auto' }}>
             <table className="data-table">
-              <thead><tr><th>When</th><th>Type</th><th>Source</th><th>Label</th><th>Valence</th><th>Score</th><th>Summary</th><th></th></tr></thead>
+              <thead><tr><th>When</th><th>Modality</th><th>Source</th><th>Label</th><th>Valence</th><th>Score</th><th>Summary</th><th></th></tr></thead>
               <tbody>
-                {sigData.signals.map(s => (
-                  <tr key={s.id}>
+                {sigData.signals.map(s => {
+                  const mod = signalModality(s)
+                  const voice = isVoiceSignal(s)
+                  return (
+                  <tr key={s.id} onClick={() => setSelected(s)} style={{ cursor: 'pointer' }}>
                     <td style={{ fontSize: 11, whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>{fmtDate(s.observed_at)}</td>
-                    <td><span className="badge badge-gray">{s.signal_type}</span></td>
+                    <td><span className={`badge ${mod.badge}`}>{mod.label}</span></td>
                     <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{s.source}</td>
                     <td style={{ fontSize: 12 }}>{s.label || '—'}</td>
-                    <td style={{ fontSize: 12, fontFamily: 'monospace', color: valenceColor(s.valence) }}>{s.valence === null ? '—' : s.valence.toFixed(2)}</td>
+                    <td style={{ fontSize: 12, fontFamily: 'monospace', color: valenceColor(s.valence) }} title={voice && s.valence === null ? 'Prosody emits no sentiment scale' : undefined}>{s.valence === null ? '—' : s.valence.toFixed(2)}</td>
                     <td style={{ fontSize: 12, fontFamily: 'monospace' }}>{s.score === null ? '—' : s.score.toFixed(2)}</td>
                     <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 240 }}>{s.summary || '—'}{s.private && <span className="badge badge-gray" style={{ marginLeft: 6 }}>private</span>}</td>
                     <td><button className="btn btn-ghost btn-sm" disabled={working}
-                      onClick={() => action(async () => { await purgeCoach('PURGE', String(s.id)); reload() }, 'Signal purged')}>
+                      onClick={e => { e.stopPropagation(); action(async () => { await purgeCoach('PURGE', String(s.id)); reload() }, 'Signal purged') }}>
                       <Trash2 size={12} />
                     </button></td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -286,6 +321,96 @@ function Signals({ data, working, action, setMsg, setErr, refetch }: {
 
       <CaptureModal open={showCapture} projects={data} onClose={() => setShowCapture(false)}
         onSaved={() => { setShowCapture(false); setMsg('Signal captured'); reload() }} onError={setErr} />
+      <SignalDetailModal signal={selected} onClose={() => setSelected(null)} />
+    </div>
+  )
+}
+
+function SignalDetailModal({ signal, onClose }: { signal: MoodSignal | null; onClose: () => void }) {
+  if (!signal) return null
+  const s = signal
+  const mod = signalModality(s)
+  const voice = isVoiceSignal(s)
+  const emotions = readEmotions(s.metrics)
+  const maxScore = emotions.length ? Math.max(...emotions.map(e => e.score)) : 1
+  const m = s.metrics || {}
+  const provider = typeof m.provider === 'string' ? m.provider : null
+  const model = typeof m.model === 'string' ? m.model : null
+  const tokens = typeof m.tokens_analyzed === 'number' ? m.tokens_analyzed : null
+
+  return (
+    <Modal open={!!signal} onClose={onClose} title="Signal detail">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span className={`badge ${mod.badge}`}>{mod.label}</span>
+          {s.private && <span className="badge badge-gray">private</span>}
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto' }}>{fmtDate(s.observed_at)}</span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 }}>
+          <DetailStat label="Dominant" value={s.label || '—'} />
+          <DetailStat label="Score" value={s.score === null ? '—' : s.score.toFixed(2)} mono />
+          <DetailStat
+            label="Valence"
+            value={s.valence === null ? '—' : s.valence.toFixed(2)}
+            mono
+            color={valenceColor(s.valence)}
+            hint={voice && s.valence === null ? 'Not reported — prosody emits no sentiment scale' : undefined}
+          />
+          {(provider || model) && <DetailStat label="Provider" value={[provider, model].filter(Boolean).join(' · ') || '—'} />}
+        </div>
+
+        {voice && s.valence === null && (
+          <Alert type="info">
+            This is a voice signal. Vocal prosody does not emit a sentiment scale, so no valence is reported — only the ranked vocal emotions below.
+          </Alert>
+        )}
+
+        {emotions.length > 0 ? (
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>
+              {voice ? 'Top vocal emotions (prosody)' : 'Top emotions'}
+              {tokens !== null && <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8 }}>· {tokens} segment{tokens === 1 ? '' : 's'} analysed</span>}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {emotions.map(e => (
+                <div key={e.name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ width: 110, fontSize: 12, textTransform: 'capitalize', flexShrink: 0 }}>{e.name}</div>
+                  <div style={{ flex: 1, height: 8, background: 'rgba(148,163,184,0.12)', borderRadius: 4, overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.max(2, (e.score / maxScore) * 100)}%`, height: '100%', background: 'var(--accent)', borderRadius: 4 }} />
+                  </div>
+                  <div style={{ width: 48, fontSize: 12, fontFamily: 'monospace', textAlign: 'right', color: 'var(--text-muted)' }}>{e.score.toFixed(3)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <Empty message="No per-emotion breakdown for this signal." icon={<Heart size={28} />} />
+        )}
+
+        {s.summary && (
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Summary</div>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>{s.summary}</div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function DetailStat({ label, value, mono, color, hint }: {
+  label: string; value: string; mono?: boolean; color?: string; hint?: string
+}) {
+  return (
+    <div className="glass-card" style={{ padding: '10px 12px' }}>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 600, fontFamily: mono ? 'monospace' : undefined, color: color || undefined }}>{value}</div>
+      {hint && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3, lineHeight: 1.3 }}>{hint}</div>}
     </div>
   )
 }
