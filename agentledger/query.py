@@ -6,7 +6,7 @@ For agents working on this project. Import the helpers, or use the CLI:
   python -m agentledger.query layers
   python -m agentledger.query containers [layer_slug]
   python -m agentledger.query providers [kind]
-  python -m agentledger.query packages [python|node]
+  python -m agentledger.query packages [python|node] [--unused]   # --unused: declared but never imported from source
   python -m agentledger.query capability <slug>        # who fulfils it (primary + fallbacks)
   python -m agentledger.query where <provider|package> <name>   # placements
   python -m agentledger.query container <slug>          # full detail of one container
@@ -137,17 +137,60 @@ def _print_providers(kind: Optional[str]):
         db.close()
 
 
-def _print_packages(ecosystem: Optional[str]):
+def _package_usage(db, package_id: int) -> tuple:
+    """Return (real_uses, config_uses): placements that are real source imports
+    vs. config/build-only references (vite.config.ts, eslint.config.js, *.css)."""
+    real = db.query(func.count(Placement.id)).filter(
+        Placement.subject_kind == "package",
+        Placement.subject_id == package_id,
+        Placement.role != "config dependency",
+    ).scalar()
+    config = db.query(func.count(Placement.id)).filter(
+        Placement.subject_kind == "package",
+        Placement.subject_id == package_id,
+        Placement.role == "config dependency",
+    ).scalar()
+    return real, config
+
+
+def _unused_classification(pkg: Package, config_uses: int) -> str:
+    """Human-readable verdict for a package with zero real source imports."""
+    if config_uses > 0:
+        return "config-only (build/tooling — keep)"
+    if pkg.is_dev:
+        return "no import found (dev/CLI/types — likely implicit)"
+    return "DECLARED BUT UNUSED — review for removal"
+
+
+def _print_packages(ecosystem: Optional[str], unused_only: bool = False):
     db = SessionLocal()
     try:
         q = db.query(Package)
         if ecosystem:
             q = q.filter(Package.ecosystem == ecosystem)
-        for p in q.order_by(Package.ecosystem, Package.name).all():
-            placed = db.query(func.count(Placement.id))\
-                .filter(Placement.subject_kind == "package", Placement.subject_id == p.id).scalar()
+        rows = q.order_by(Package.ecosystem, Package.name).all()
+        if unused_only:
+            shown = 0
+            scope = ecosystem or "all ecosystems"
+            print(f"Declared packages with zero real source imports ({scope}):")
+            for p in rows:
+                real, config = _package_usage(db, p.id)
+                if real > 0:
+                    continue
+                shown += 1
+                dev = " (dev)" if p.is_dev else ""
+                verdict = _unused_classification(p, config)
+                print(f"  {p.name:30} [{p.ecosystem:6}] {p.version_spec or '':12} "
+                      f"{verdict}{dev}")
+            if shown == 0:
+                print("  (none — every declared package is imported from source)")
+            return
+        for p in rows:
+            real, config = _package_usage(db, p.id)
             dev = " (dev)" if p.is_dev else ""
-            print(f"{p.name:28} [{p.ecosystem:6}] {p.version_spec or '':12} used in {placed} containers{dev}")
+            cfgstr = f" (+{config} config-only)" if config else ""
+            print(f"{p.name:28} [{p.ecosystem:6}] {p.version_spec or '':12} "
+                  f"used in {real} containers{cfgstr}{dev}")
     finally:
         db.close()
 
@@ -273,7 +316,9 @@ def main(argv: List[str]) -> None:
     elif cmd == "providers":
         _print_providers(rest[0] if rest else None)
     elif cmd == "packages":
-        _print_packages(rest[0] if rest else None)
+        unused_only = "--unused" in rest
+        positional = [a for a in rest if not a.startswith("-")]
+        _print_packages(positional[0] if positional else None, unused_only=unused_only)
     elif cmd == "capability":
         _print_capability(rest[0]) if rest else print("usage: capability <slug>")
     elif cmd == "where":

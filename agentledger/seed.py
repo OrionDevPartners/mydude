@@ -337,6 +337,10 @@ _JS_FROM_RE = re.compile(r"""\bfrom\s*['"]([^'"]+)['"]""")
 _JS_SIDEEFFECT_RE = re.compile(r"""\bimport\s*['"]([^'"]+)['"]""")
 _JS_DYNAMIC_RE = re.compile(r"""\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)""")
 _JS_REQUIRE_RE = re.compile(r"""\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)""")
+# CSS @import — e.g. `@import "tailwindcss";` or `@import url("pkg/x.css");`
+_CSS_IMPORT_RE = re.compile(r"""@import\s+(?:url\(\s*)?['"]([^'"]+)['"]""")
+# Root-level build/config files (vite.config.ts, eslint.config.js, etc.)
+_CONFIG_FILE_RE = re.compile(r"\.config\.(ts|tsx|js|jsx|mjs|cjs)$")
 
 
 def _js_files(abs_dir: str, recurse: bool = True) -> List[str]:
@@ -359,6 +363,51 @@ def _js_files(abs_dir: str, recurse: bool = True) -> List[str]:
             if fn.endswith((".ts", ".tsx", ".js", ".jsx")):
                 out.append(os.path.join(dirpath, fn))
     return out
+
+
+def _js_config_files(container_path: str) -> List[str]:
+    """Config/build files OUTSIDE the src import scan: root-level *.config.{ts,js,...}
+    plus any .css files (for @import) anywhere under the container.
+
+    These resolve the "declared but unused" vs "used in config only" distinction:
+    a package imported only here (e.g. tailwindcss via index.css, vite plugins via
+    vite.config.ts) is genuinely wired in, just not from application source."""
+    abs_root = os.path.join(ROOT, container_path)
+    out: List[str] = []
+    if not os.path.isdir(abs_root):
+        return out
+    for fn in sorted(os.listdir(abs_root)):
+        full = os.path.join(abs_root, fn)
+        if os.path.isfile(full) and _CONFIG_FILE_RE.search(fn):
+            out.append(full)
+    for dirpath, dirnames, filenames in os.walk(abs_root):
+        dirnames[:] = [d for d in dirnames if d != "node_modules"]
+        for fn in filenames:
+            if fn.endswith(".css"):
+                out.append(os.path.join(dirpath, fn))
+    return out
+
+
+def _scan_css_imports(css_path: str) -> Set[str]:
+    """Return the set of npm package names referenced by `@import` in a CSS file."""
+    try:
+        src = open(css_path, "r", encoding="utf-8", errors="ignore").read()
+    except Exception:
+        return set()
+    pkgs: Set[str] = set()
+    for m in _CSS_IMPORT_RE.finditer(src):
+        name = _pkg_from_specifier(m.group(1))
+        if name:
+            pkgs.add(name)
+    return pkgs
+
+
+def _scan_config_imports(config_path: str) -> Set[str]:
+    """Return npm package names imported by a config file (.css via @import,
+    otherwise JS/TS import/require specifiers)."""
+    if config_path.endswith(".css"):
+        return _scan_css_imports(config_path)
+    return _scan_js_imports(config_path)
 
 
 def _pkg_from_specifier(spec: str) -> Optional[str]:
@@ -474,6 +523,7 @@ def seed() -> dict:
         container_by_path: Dict[str, Container] = {}
         container_imports: Dict[str, Set[str]] = {}
         container_node_imports: Dict[str, Set[str]] = {}
+        container_config_imports: Dict[str, Set[str]] = {}
         container_text: Dict[str, str] = {}
         for cpath, lslug in CONTAINER_LAYER.items():
             is_core = cpath == "src/core"
@@ -536,6 +586,14 @@ def seed() -> dict:
             for jf in jsfiles:
                 node_imports |= _scan_js_imports(jf)
             container_node_imports[cpath] = node_imports
+            # Config/build-only deps (vite.config.ts, eslint.config.js at the
+            # frontend root + *.css @import) are attributed to the SPA shell so
+            # the ledger can tell "wired in via config" apart from "never used".
+            if cpath == "frontend/src":
+                config_imports: Set[str] = set()
+                for cf in _js_config_files("frontend"):
+                    config_imports |= _scan_config_imports(cf)
+                container_config_imports[cpath] = config_imports
         db.flush()
 
         # 4. Packages (python + node)
@@ -636,6 +694,30 @@ def seed() -> dict:
                 db.add(ComponentDependency(
                     from_kind="container", from_id=cont.id,
                     to_kind="package", to_id=pkg.id, relation="imports",
+                ))
+                stats["deps"] += 1
+
+        # 6c. Config-only placements: node packages wired in via build/config files
+        #     (vite.config.ts, eslint.config.js, *.css @import) but NOT imported from
+        #     application source. Recorded with a distinct role so the ledger can tell
+        #     "used in config only" apart from "declared but never used at all".
+        for cpath, cfg_pkgs in container_config_imports.items():
+            cont = container_by_path[cpath]
+            src_pkgs = container_node_imports.get(cpath, set())
+            for name in sorted(cfg_pkgs - src_pkgs):
+                pkg = name_to_node_pkg.get(name)
+                if not pkg:
+                    continue
+                db.add(Placement(
+                    subject_kind="package", subject_id=pkg.id,
+                    layer_id=cont.layer_id, container_id=cont.id,
+                    role="config dependency", criticality="low",
+                    evidence=f"config-scan: {cpath}",
+                ))
+                stats["placements"] += 1
+                db.add(ComponentDependency(
+                    from_kind="container", from_id=cont.id,
+                    to_kind="package", to_id=pkg.id, relation="configures",
                 ))
                 stats["deps"] += 1
 
