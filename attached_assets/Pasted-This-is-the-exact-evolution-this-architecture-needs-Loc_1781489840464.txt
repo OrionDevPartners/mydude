@@ -1,0 +1,69 @@
+This is the exact evolution this architecture needs. Locking the OS to Apple Silicon is great for local privacy, but to achieve a true "power burst" capability where hundreds of inferences can scale to thousands, the architecture must be hardware-agnostic and capable of seamlessly bridging local compute with ephemeral cloud resources.
+We are dropping the Apple-specific constraints, replacing them with dynamic hardware-detection inference engines, and injecting a **Cloud Burst Substrate** capable of hijacking AWS, GCP, Azure, or serverless GPUs the millisecond your local hardware maxes out.
+Here is the finalized, hardware-agnostic master manifest with the integrated Power Burst layer.
+### Phase 1: Cross-Platform Host Infrastructure (System CLI)
+*This is the raw metal layer. These dependencies are standard across macOS, Linux (Ubuntu/Debian), and Windows (WSL2), ensuring the OS can boot on a laptop or a massive bare-metal server cluster.*
+ * **Python 3.12** (The core runtime)
+ * **Node.js** (Required for edge daemons and AST extensions)
+ * **CMake** (C++ build compiler for tree-sitter and vector math)
+ * **Rust** (Required to compile the bleeding-edge Python wrappers like LanceDB and Pydantic)
+ * **GCC / Clang** (System C/C++ compilers)
+ * **Overmind / Tmux / Systemd** (Environment-agnostic process managers for daemons)
+ * **Docker Engine & Docker Compose** (The universal containerization runtime)
+### Phase 2: The Deep State & Comm Bus Substrate (Docker)
+*These heavy memory engines remain strictly containerized. Because they run in Docker, they are inherently infrastructure-agnostic and can run locally or be deployed to a managed Kubernetes cluster during a massive cloud burst.*
+ * ankane/pgvector:latest *(Wired to: Episodic memory & Comm Bus ledger)*
+ * valkey/valkey:latest *(Wired to: Rate-limiting & Comm Bus Auto-Pings)*
+ * qdrant/qdrant:latest *(Wired to: Semantic tripwires and codebase embeddings)*
+ * memgraph/memgraph:latest *(Wired to: Real-time, deterministic AST dependency routing)*
+ * arizeai/phoenix:latest *(Wired to: OpenTelemetry observability and local trace UI)*
+ * turingdb/turingdb:latest *(Wired to: Git-like graph versioning for candidate testing)*
+### Phase 3: The Universal Python Ecosystem (Pip)
+*Run this strictly inside your ~/.venv/bonado_brain environment. The dependency tree is now stripped of local-only constraints and upgraded for distributed cloud execution.*
+**1. The API & Unbreakable Routing Layer**
+ * fastapi | uvicorn[standard] | httpx
+ * instructor | tenacity | pydantic | pydantic-settings
+ * websockets | python-multipart | fastapi-cors | aiofiles
+**2. Database Drivers & Zero-Copy Context**
+ * psycopg[pool] | valkey | redis | fastapi-limiter
+ * neo4j | qdrant-client | sqlalchemy | sqlmodel
+ * alembic | asyncpg | lancedb
+**3. Graph, Semantic Vectors & Math**
+ * numpy | scipy | scikit-learn | sentence-transformers | faiss-cpu
+**4. AST Extraction & Codebase Mapping**
+ * tree-sitter | tree-sitter-python | tree-sitter-javascript | tree-sitter-c
+ * tiktoken | pygments
+**5. State Orchestration**
+ * langgraph | langchain-core | langgraph-checkpoint-postgres
+**6. Hardware-Agnostic Inference Adapters**
+*(Replaces Apple-only mlx-lm. These automatically detect and utilize CUDA, ROCm, or Metal depending on the host hardware).*
+ * vllm *(The industry standard for high-throughput GPU serving on Linux/Cloud)*
+ * llama-cpp-python *(For CPU/Metal fallback and highly quantized local execution)*
+ * transformers | onnxruntime | safetensors
+**7. Governance & Substrate Security**
+ * nemoguardrails | presidio-analyzer | presidio-anonymizer | pip-audit
+ * pyjwt | passlib[bcrypt] | python-jose[cryptography]
+ * bleach | python-dotenv | cryptography
+**8. Observability & Cockpit UI**
+ * opentelemetry-sdk | opentelemetry-api | opentelemetry-exporter-otlp | opentelemetry-instrumentation-fastapi
+ * arize-phoenix-otel | loguru | prometheus-client | openinference-semantic-conventions
+ * structlog | psutil | icecream | rich
+**9. Distributed Workers & Extreme Compression**
+ * celery | flower | kombu | watchdog
+ * turboquant | openzl
+ * e2b-code-interpreter
+**10. THE POWER BURST LAYER (Cloud & Distributed Compute)**
+*(New Additions: Wires your local OS to ephemeral cloud infrastructure).*
+ * skypilot *(Agnostic cloud broker: seamlessly provisions AWS EC2, GCP, or Azure VMs instantly when local queues overflow)*
+ * ray *(Distributed computing framework: scales your Python workers from 1 local machine to 100 cloud nodes automatically)*
+ * litellm *(Enterprise LLM gateway: routes inference requests dynamically between your local models and commercial cloud APIs based on load)*
+ * modal-client *(Serverless GPU execution: allows you to instantly "burst" heavy AST/vector compilation functions to serverless cloud GPUs for milliseconds at a time)*
+ * boto3 / google-cloud-storage *(Cloud object storage for syncing SQLite/DuckDB states)*
+### Phase 4: How the Power Burst Operates
+By adding SkyPilot, Ray, and LiteLLM, you are creating an "Overflow Topology." Your OS acts locally until physics prevents it from doing so.
+ 1. **The Overload:** The Comm Bus detects that 500 overlapping inferences are queued, but your local hardware (Mac or PC) only has the RAM to process 50 concurrently.
+ 2. **The Compute Burst (SkyPilot & Modal):** Your custom adapter triggers modal-client to offload the heavy Vector/AST extraction functions to serverless GPUs. Simultaneously, SkyPilot automatically bids on cheap Spot Instances across AWS/GCP, spinning up temporary Linux VMs loaded with vLLM.
+ 3. **The Worker Burst (Ray):** The Ray cluster auto-scales, seeing the new cloud VMs, and begins distributing the queued Celery background tasks across the globe.
+ 4. **The Inference Burst (LiteLLM):** Instead of failing, the custom weighted adapter uses LiteLLM to dynamically route the excess inference requests to hosted cloud models (Anthropic, OpenAI, or your own hosted vLLM instances), executing 450 inferences in the cloud while handling 50 locally.
+ 5. **The Collapse:** Once the Comm Bus queue drains and consensus is achieved, SkyPilot tears down the cloud VMs. The system shrinks back down to its local footprint, ensuring you only pay for the exact seconds of the power burst.
+To ensure this power burst functions without data corruption, how do you want to handle the **Database State Synchronization**—should the ephemeral cloud workers tunnel back via VPN/Tailscale to read your local PostgreSQL/Memgraph instances, or do you want to implement a cloud-replica database that syncs upon burst initiation?

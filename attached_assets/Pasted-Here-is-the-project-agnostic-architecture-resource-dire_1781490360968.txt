@@ -1,0 +1,207 @@
+Here is the project-agnostic architecture, resource directory, and wiring plan to transition the **Domain-Aware Multi-Model Weighted Debate Consensus & Extraction System** from proprietary cloud vendors to a fully self-hosted, open-source stack using public GitHub repositories.
+## I. Architecture Stack Tree (Proprietary vs. Open-Source Map)
+This table maps the conceptual layers of the architecture from proprietary services to their downloadable, open-source equivalents.
+| Architectural Layer | Agnostic Patent Language | Proprietary Provider Example | Open-Source / GitHub Replacement |
+|---|---|---|---|
+| **Inference Engine** | "A plurality of heterogeneous language models hosted on local execution environments" | OpenAI API, Anthropic API | **Ollama** or **vLLM** |
+| **Model Weight / Intelligence** | "First and second foundational neural networks initialized with domain-specific weights" | GPT-4o, Claude 3.5 Sonnet | **DeepSeek-R1**, **Llama-3.3-70B**, **Qwen-2.5-72B** |
+| **Dynamic Orchestration** | "A multi-agent consensus arbitration protocol layer" | LangChain Enterprise, Custom proprietary orchestration | **LangGraph**, **Microsoft AutoGen**, or **CrewAI** |
+| **Expertise Matrix Router** | "A semantic routing module configured to calculate vector distance across an expertise matrix" | AWS Bedrock Routing, Custom Cloud Gateways | **Semantic Router** (Aurelio Labs) |
+| **Contextual Storage** | "A high-density vector storage and retrieval mechanism" | Pinecone, Custom vector indexes | **Qdrant** or **Pgvector** (PostgreSQL) |
+| **Compute Execution** | "An elastic, serverless compute environment" | AWS Lambda, Google Cloud Functions | **OpenFaaS** or **Knative** |
+| **Comparison Interaction** | "A stateful visual interface for branching and token delta tracking" | Custom React/Next.js closed application | **Streamlit** or **Gradio** (or Next.js + Shadcn/ui) |
+## II. Open-Source Resource Directory (Downloadable Repositories)
+### 1. Inference & Local Model Serving
+ * **vLLM Engine**
+   * *Repository:* github.com/vllm-project/vllm
+   * *Purpose:* High-throughput, low-latency LLM serving engine that implements PagedAttention. Replaces OpenAI/Anthropic endpoint architecture.
+ * **Ollama (Desktop & Edge Execution)**
+   * *Repository:* github.com/ollama/ollama
+   * *Purpose:* Simplified local engine for running, managing, and packing weights (Llama, DeepSeek, Qwen) into single-line executable endpoints.
+### 2. Foundational Open Weights (Models)
+ * **DeepSeek-R1 (Reasoning & Debate Base)**
+   * *Repository/HuggingFace:* github.com/deepseek-ai/DeepSeek-R1
+   * *Purpose:* Serves as the primary analytical model for the multi-agent debate and validation loop.
+ * **Llama 3.3 (General Knowledge & Layout Synthesis)**
+   * *Repository:* github.com/meta-llama/llama3
+   * *Purpose:* Secondary model used to challenge the reasoning model or process structured extraction schemas.
+### 3. Agentic Orchestration & Debate Control
+ * **LangGraph (Stateful Agent Workflows)**
+   * *Repository:* github.com/langchain-ai/langgraph
+   * *Purpose:* Builds cyclic, multi-agent architectures with strict state management. Ideal for executing the multi-turn debate protocol.
+ * **Microsoft AutoGen**
+   * *Repository:* github.com/microsoft/autogen
+   * *Purpose:* Alternative event-driven multi-agent conversation framework capable of running autonomous multi-agent code execution safely.
+### 4. Semantic Routing & Vector Memory
+ * **Semantic Router**
+   * *Repository:* github.com/aurelio-labs/semantic-router
+   * *Purpose:* Executes sub-millisecond decision-making to route incoming tasks to specific local models based on domain classification matrices without running heavy LLM operations.
+ * **Qdrant Vector Database**
+   * *Repository:* github.com/qdrant/qdrant
+   * *Purpose:* Production-grade vector similarity search engine running locally via Docker, managing project embeddings and prior art text chunks.
+## III. Comprehensive Wiring & Integration Plan
+The diagram below outlines the logical wiring paths and component interactions within this local system.
+```
+[ Incoming Project Code/Docs ]
+              │
+              ▼
+    ┌───────────────────┐
+    │  Semantic Router  │ ───► Determines Domain/Expertise Requirements
+    └───────────────────┘
+              │
+              ▼
+    ┌───────────────────┐
+    │  LangGraph State  │ ───► Initialized to Track Debate History & Evidentiary Claims
+    └───────────────────┘
+              │
+      ┌───────┴───────┐
+      ▼               ▼
+┌───────────┐   ┌───────────┐
+│ Agent A   │   │ Agent B   │
+│ (vLLM:    │   │ (Ollama:  │ ───► Multi-Turn Adversarial Verification Protocol
+│ DeepSeek) │   │ Llama-3)  │
+└───────────┘   └───────────┘
+      │               │
+      └───────┬───────┘
+              ▼
+    ┌───────────────────┐
+    │ Consensus Engine  │ ───► Evaluates Outputs via Weighted Matrix Scoring
+    └───────────────────┘
+              │
+              ▼
+    ┌───────────────────┐
+    │ Qdrant Vector DB  │ ───► Checks for Prior Art & Local Code Base Alignment
+    └───────────────────┘
+              │
+              ▼
+    ┌───────────────────┐
+    │ Gradio / UI Layer │ ───► Renders Final Technical Specifications & File Mappings
+    └───────────────────┘
+
+```
+### 1. Data Ingestion & Tokenization Pipeline
+ * Raw project directories (codebase, architecture docs) are parsed locally using Python's libmagic and file-handling packages.
+ * Text chunks are tokenized and processed through a local embedding server (such as infinity or Hugging Face's text-embeddings-inference) and saved to a local **Qdrant** Docker container.
+### 2. Routing Configuration
+ * The **Semantic Router** serves as the initial traffic gatekeeper.
+ * It evaluates incoming technical challenges against an explicit schema (e.g., separating system architectural data from algorithmic logic) and assigns tasks to the optimal local model configuration.
+### 3. Multi-Agent Debate Loop Wiring
+ * **LangGraph** acts as the central state coordinator. It defines a graph topology containing at least three nodes: Proposer Agent, Opponent Agent, and Arbiter Agent.
+ * The Proposer Agent interfaces with the local **vLLM** instance running DeepSeek-R1 to generate patent-grade technical descriptions.
+ * The Opponent Agent interfaces with an independent model configuration (e.g., Llama-3.3-70B) to stress-test the Proposer's assumptions, identifying non-novel architecture or vague descriptions.
+ * The Arbiter Agent compiles the interaction, tracks changes over multi-turn interactions, and computes the consensus confidence score.
+### 4. Local API Bridge
+ * All communication between agents, databases, and UI elements runs locally over standard HTTP REST/gRPC interfaces.
+ * The system uses the unified OpenAI-compatible API format exposed natively by vLLM and Ollama, allowing model providers to be swapped out by modifying a single base_url configuration value in the orchestrator.
+## IV. Step-by-Step Local Deployment & Execution Workflow
+To instantiate this entire stack on local hardware, follow these sequential engineering steps:
+### Step 1: Initialize Infrastructure via Docker Compose
+Create a localized environment containing your data stores, embedding models, and UI routers using a unified Docker configuration.
+```yaml
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+
+  vllm-engine:
+    image: vllm/vllm-openai:latest
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  local-ui:
+    build: ./ui_directory
+    ports:
+      - "7860:7860"
+    environment:
+      - OPENAI_API_BASE=http://vllm-engine:8000/v1
+      - QDRANT_HOST=http://qdrant:6333
+
+```
+### Step 2: Establish the Unified Model Abstraction
+Configure the orchestration code using Python to treat all self-hosted models interchangeably using standard asynchronous client setups.
+```python
+import os
+from openai import AsyncOpenAI
+
+# Initialize unified endpoints referencing the local Docker container orchestration network
+local_inference_client = AsyncOpenAI(
+    base_url=os.getenv("OPENAI_API_BASE", "http://localhost:8000/v1"),
+    api_key="local-token-not-required"
+)
+
+async def generate_debate_turn(prompt: str, target_model: str):
+    response = await local_inference_client.chat.completions.create(
+        model=target_model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2
+    )
+    return response.choices[0].message.content
+
+```
+### Step 3: Implement the Stateful Gated Flow
+Create the validation logic within your Python orchestration framework using **LangGraph**. This loop tracks the state history across the multi-agent nodes, ensuring that the system documents and verifies code-level proof before exporting any final data.
+```python
+from typing import Dict, TypedDict, List
+from langgraph.graph import StateGraph, END
+
+# Define state parameters to track and pass along the pipeline
+class ExtractionState(TypedDict):
+    codebase_chunks: List[str]
+    proposed_claims: List[str]
+    critique_history: List[str]
+    consensus_score: float
+    is_verified: bool
+
+def extraction_node(state: ExtractionState) -> Dict:
+    # Logic interacting with DeepSeek via vLLM to map initial architecture
+    return {"proposed_claims": ["Claim 1: Multi-Model Consensus System"]}
+
+def critique_node(state: ExtractionState) -> Dict:
+    # Logic interacting with Llama-3 via Ollama to evaluate novelty gaps
+    return {"critique_history": ["Critique: Claim 1 lacks explicit code references"]}
+
+def evaluation_gate(state: ExtractionState) -> str:
+    if state["consensus_score"] >= 0.85 and state["is_verified"]:
+        return "approved"
+    return "reiterate"
+
+# Build the execution network
+workflow = StateGraph(ExtractionState)
+workflow.add_node("extract", extraction_node)
+workflow.add_node("critique", critique_node)
+
+workflow.set_entry_point("extract")
+workflow.add_edge("extract", "critique")
+workflow.add_conditional_edges(
+    "critique",
+    evaluation_gate,
+    {
+        "approved": END,
+        "reiterate": "extract"
+    }
+)
+
+compiled_pipeline = workflow.compile()
+
+```
+### Step 4: Run Content Auditing and File Assembly
+ * The evaluated state is processed by an automated assembly script.
+ * The script reads successful claims, extracts matching lines of code from the local vector database, and formats the structural output into compliant Markdown or standard text records ready for human legal review.

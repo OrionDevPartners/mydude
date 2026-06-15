@@ -1,0 +1,72 @@
+This is the ultimate cypherpunk pivot. Transitioning from proprietary SaaS APIs and token-gated networks to a **100% Free and Open-Source Software (FOSS), fully self-hosted architecture** removes all counterparty risk, API costs, and centralized kill switches. You become a fully sovereign digital entity.
+To achieve this, we must strip out Dataminr, Arkham, Claude/OpenAI, Lit Protocol, and Forta, replacing them with raw, locally hosted GitHub repositories.
+Here is the complete open-source provider swap, followed by the comprehensive wiring and execution plan.
+## I. The FOSS Component Swap Dictionary
+### 1. Alpha News & Sentiment Data
+ * **Removed:** Tree News, Benzinga Pro, X API (Paid/Proprietary).
+ * **Open-Source Swap:**
+   * ujjwalredd/Crypto-News-Scraper: A powerful Scrapy-based web scraper that pulls real-time articles from 30+ crypto news sites.
+   * pAulseperformance/cryptopanic_scraper: A headless asynchronous scraper for the CryptoPanic news aggregator.
+ * **Sentiment Oracle Swap:** Instead of paying for LunarCrush, download huggingface/transformers and run the ProsusAI/finbert model locally to classify your scraped news sentiment in milliseconds without rate limits.
+### 2. Global Entity & Whale Tracking
+ * **Removed:** Arkham Intelligence API (Proprietary).
+ * **Open-Source Swap:** * python-telegramBot/crypto-liquidity-ai-trading-bot: A modular, signal-driven trading framework on GitHub that detects hidden liquidity walls, stop-loss sweeps, and order book gaps on major exchanges in real-time.
+   * DefiLlama/defillama-server: Host your own instance of DeFiLlama's backend to track cross-chain liquidity and TVL shifts globally.
+### 3. The Brain: LLMs & Orchestration
+ * **Removed:** OpenAI, Anthropic/Claude, x402 paid networks.
+ * **Open-Source Swap:** * ollama/ollama: Run your models locally. Download open weights like DeepSeek-R1 or Llama-3-8B-Instruct for zero-latency, free, uncensored inference.
+   * BerriAI/litellm: An open-source proxy to route internal agent requests to your local Ollama models and strictly track/limit compute budgets without using paid APIs.
+### 4. Key Management & Runtime Security
+ * **Removed:** Lit Protocol (Requires decentralized nodes), Forta Network (Requires tokens).
+ * **Open-Source Swap:** * **Keys:** hashicorp/vault: Run a local HashiCorp Vault server. Use its Transit Secrets Engine to sign Ethereum/Polygon transactions inside your server's memory. The agent sends a payload; Vault signs it. The raw private key never touches your scripts.
+   * **Security:** OpenZeppelin/openzeppelin-contracts: Deploy your own Pausable smart contract. Build a local Python watchdog using ethereum/web3.py that continuously scans the blockchain. If the watchdog detects an anomaly or 10% drawdown, it signs an emergency _pause() transaction to lock the OpenZeppelin contract.
+## II. The Self-Hosted GitHub Tree Structure
+This is the exact dependency tree and code shape you will clone onto your bare-metal server.
+```text
+[HOST SERVER: BARE METAL LINUX]
+│
+├── 1. [SENSORS: INGESTION NODE]
+│   ├── ujjwalredd/Crypto-News-Scraper       (RSS/News Spider)
+│   ├── pAulseperformance/cryptopanic_scraper(Aggregator Firehose)
+│   ├── python-telegrambot/crypto-liquidity  (On-chain Whale/Orderbook sweeps)
+│   └── enviodev/hyperindex                  (Polygon Smart Contract state indexer)
+│
+├── 2. [MEMORY & SIMULATION NODE]
+│   ├── yantrikdb/yantrikdb                  (Memory context, conflict detection)
+│   ├── huggingface/transformers (finbert)   (Local Sentiment Scoring worker)
+│   └── custom_bayesian_worker.py            (Pre-computes scenarios in background)
+│
+├── 3. [ORCHESTRATION & LLM NODE]
+│   ├── temporalio/temporal                  (Durable OS: ensures agent doesn't crash mid-trade)
+│   ├── elizaos/eliza OR 0xplaygrounds/rig   (Agent runtime loop)
+│   └── ollama/ollama [DeepSeek/Llama3]      (Local LLM Inference engine)
+│
+├── 4. [GOVERNANCE SANDBOX NODE]
+│   ├── custom_rust_risk_engine/             (Hard-coded 5% max size, contract whitelists)
+│   └── hashicorp/vault                      (HSM: holds keys, signs only if Rust engine approves)
+│
+└── 5. [EXECUTION LAYER]
+    ├── nijaru/go-clob-client                (WebSockets connection to Polymarket)
+    ├── flashbots/simple-blind-arbitrage     (Private MEV router to prevent front-running)
+    └── ethereum/web3.py [Watchdog Script]   (Monitors OpenZeppelin Smart Contract to trigger kill-switch)
+
+```
+## III. The FOSS Wiring & Networking Plan
+To make this secure and performant on a single machine (or a local cluster), you must wire these GitHub repos together using isolated Docker networks and internal APIs.
+### Step 1: The Ingestion & Memory Wiring (Data Pipeline)
+ 1. **Run the Scrapers:** Deploy the CryptoNews and CryptoPanic scrapers inside a Docker container. Configure them to push raw text payloads to an internal Redis queue (redis/redis).
+ 2. **Sentiment Tagging:** A Python worker pulls from Redis, runs the text through FinBERT (hosted locally via HuggingFace), and outputs a JSON with a sentiment score.
+ 3. **Memory Storage:** The JSON is pushed directly to your local YantrikDB API. YantrikDB compresses the news, maps it to Polymarket entities, and fires an internal webhook if it detects a conflicting news narrative.
+### Step 2: The Agentic Loop (Temporal + Eliza + Ollama)
+ 1. **Durable Execution:** Run the Temporal.io server. It watches the YantrikDB webhooks. When a webhook fires (e.g., "Breaking News Confirmed"), Temporal triggers the ElizaOS agent workflow.
+ 2. **Local AI Call:** ElizaOS constructs a prompt with YantrikDB's compressed context and queries your local Ollama container running Llama-3-8B over localhost:11434.
+ 3. **Output:** Ollama outputs a structured JSON intent (e.g., "BUY 500 YES SHARES").
+### Step 3: The Risk Firewall & Vault (Security Pipeline)
+ 1. **Internal API:** ElizaOS is **network-isolated**. It cannot reach the internet. It can only POST its JSON intent to your local Rust Risk Engine (localhost:8080).
+ 2. **Mathematical Clearance:** The Rust Risk Engine queries your local Envio indexer to check the wallet's current balance. If the $500 trade is under the 5% limit, Rust approves it.
+ 3. **Vault Signing:** The Rust engine formulates the EVM transaction and sends it to HashiCorp Vault via its internal Transit API. Vault signs the transaction with the private key (which is encrypted at rest) and returns the signed hex code to Rust.
+### Step 4: The Dark-Pool Execution (Actuators)
+ 1. **Mempool Evasion:** The Rust Engine passes the signed hex code to the go-clob-client.
+ 2. **Broadcast:** The client broadcasts the transaction directly to Polymarket's sequencer and routes EVM settlement via Flashbots open-source MEV-share nodes, ensuring no human can see the trade on a public block explorer until it is mathematically finalized.
+ 3. **The FOSS Watchdog:** Simultaneously, a standalone web3.py script continuously monitors your wallet's balance on Polygon. If it drops 10%, it signs a transaction (via a separate emergency Vault key) to your OpenZeppelin smart contract, physically locking all remaining funds on-chain.
+By utilizing this wiring plan, you have eliminated all SaaS dependencies. Your latency drops from HTTP web delays to local IPC (Inter-Process Communication) speeds, and you retain absolute, sovereign control over the entire quantitative fund.

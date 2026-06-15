@@ -1,0 +1,55 @@
+To escape vendor lock-in and proprietary constraints entirely, we need to decouple the three main components of an AI-powered coding environment: the **editor**, the **AI integration**, and the **model provider**.
+By swapping out closed ecosystems (like GitHub Codespaces or Cursor) for self-hosted, open-source alternatives, you maintain absolute control over your code, your telemetry, and your infrastructure state. You can access this entire stack from a web browser on any device (including iOS) without App Store restrictions.
+Here is the complete, project-agnostic architecture and deployment plan.
+## I. The Open-Source Repository Tree
+These are the public GitHub repositories that replace the proprietary stack. You can clone, audit, and host all of these yourself.
+| Component Layer | Proprietary Equivalent | Open Source GitHub Repository | Role in Stack |
+|---|---|---|---|
+| **IDE Plane** | GitHub Codespaces | gitpod-io/openvscode-server | Provides a headless, browser-accessible VS Code environment running on your own Linux server. |
+| **AI Extension** | GitHub Copilot | continuedev/continue | The open-source code assistant. Runs strictly as an extension inside the IDE to provide ghost-text auto-completion. |
+| **Gateway Plane** | OpenAI API | BerriAI/litellm | The universal proxy. Translates standard AI requests into AWS Bedrock formats, or routes them to local models. |
+| **Compute Layer** | Hosted Cloud VMs | coder/coder *(Optional)* | An open-source orchestrator if you want to use Terraform to dynamically spin up these developer environments for a team. |
+### Architecture Tree
+```text
+your-infrastructure-stack/
+├── ide-plane/
+│   └── openvscode-server/             # The web-based IDE host
+│       ├── .vscode/extensions/
+│       │   └── continuedev/continue/  # The inline-completion engine
+│       └── workspace/                 # Your live Terraform (.tf) codebase
+├── ai-gateway-plane/
+│   └── litellm/                       # The AI translation proxy
+│       ├── proxy_config.yaml          # Routing rules for the models
+│       └── .env                       # AWS IAM Credentials (kept strictly server-side)
+└── cloud-enhancement-layer/
+    ├── AWS Bedrock Cloud              # Managed high-performance models (Claude/Llama)
+    └── OR vllm-project/vllm           # Fully local, open-source GPU model host
+
+```
+## II. Cloud Power Enhancement Layer
+To make this truly "handcuff-free," you need a compute layer that gives you the intelligence of a frontier model without forcing your proprietary code through a startup's servers. You have two paths for this enhancement layer:
+ 1. **The AWS Bedrock Route (Managed Cloud Power):** You leverage AWS Bedrock via secure IAM roles. Your code goes directly from your private server to your private AWS perimeter. No third-party AI company (like OpenAI or Anthropic directly) logs your Terraform state.
+ 2. **The vLLM Route (Self-Hosted Power):** If you want absolute zero-trust, you run vllm-project/vllm on a GPU-enabled server. You download open-source coding models (like Llama 3 or DeepSeek Coder) and run inference entirely on your own metal.
+Because we are using **LiteLLM** as our gateway plane, you can hot-swap between Bedrock and vLLM by changing a single line of text in a configuration file, without ever touching the IDE settings.
+## III. The Wiring Plan
+Here is the ordered execution plan to wire these open-source components together into a cohesive, chat-free Terraform engine.
+ 1. Deploy the AI Gateway (LiteLLM)
+   Translates editor requests to your cloud layer
+   Spin up a Docker container running LiteLLM. Provide it with your AWS credentials so it can authenticate with Bedrock securely.
+   Create a proxy_config.yaml file:
+   
+   Start the gateway: docker run -p 4000:4000 -v $(pwd)/proxy_config.yaml:/app/config.yaml litellm/litellm
+ 2. Provision the IDE Server (OpenVSCode)
+   Hosts the browser-based editor
+   Launch the OpenVSCode server on your host machine or cloud VM. This will expose a web-based VS Code interface that you can access via Safari on your iPad or any desktop browser.
+   docker run -p 3000:3000 gitpod/openvscode-server
+ 3. Inject the AI Extension (Continue)
+   Brings AI into the editor
+   Navigate to http://localhost:3000 (or your server's IP). Open the Extensions tab in the browser-based IDE and install the Continue extension.
+   Because this is OpenVSCode Server, you have full access to standard extensions, unlike native iOS apps.
+ 4. Connect the Telemetry-Free Wiring
+   Configure ghost-text and hide chat
+   Open the Continue configuration file (~/.continue/config.json) inside the IDE. Point the autocomplete engine to your local LiteLLM proxy. To satisfy your "no chat" requirement, configure only the tabAutocompleteModel and ignore the chat models.
+   
+   Finally, simply drag the Continue chat panel to close it.
+Once running, you open your web browser, navigate to your server, and start typing resource "aws_s3_bucket". Continue will silently hit your local LiteLLM proxy, which authenticates with Bedrock, generates the infrastructure code, and passes it back as grey ghost-text for you to tab-accept.

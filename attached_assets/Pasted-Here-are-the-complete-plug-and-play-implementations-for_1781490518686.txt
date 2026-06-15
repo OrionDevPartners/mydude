@@ -1,0 +1,173 @@
+Here are the complete, plug-and-play implementations for both your OPA security rules and the local python heartbeat watchdog.
+## 1. Open Policy Agent (OPA) Security Policies
+Create these files inside your security/policies/ directory. They convert your cloud-native Cedar policies into highly deterministic local Rego rules.
+### law1_map_before_touch.rego
+This policy ensures an agent cannot perform a mutating action (write, delete, execute) unless a valid, verified state map (has_mapped_topology) is true in the request context.
+```rego
+package swarm.authz
+
+# By default, deny everything
+default allow = false
+
+# Allow read-only actions unconditionally to facilitate mapping
+allow {
+    input.action == "read"
+}
+
+# Allow mutation ONLY if the system topology has been fully mapped
+allow {
+    is_mutation(input.action)
+    input.has_mapped_topology == true
+    not blast_radius_exceeded
+}
+
+# Helper to define what constitutes a mutating touch
+is_mutation(action) {
+    mutating_actions := {"write", "delete", "execute", "modify"}
+    mutating_actions[action]
+}
+
+```
+### law3_blast_radius.rego
+This rule acts as your dynamic blast-radius gate. It blocks execution if the agent attempts to modify high-tier infrastructure directories, or if its calculated blast radius metric exceeds its assigned squad threshold.
+```rego
+package swarm.authz
+
+# Core rule to calculate if blast radius thresholds are violated
+blast_radius_exceeded {
+    # Block if a low-tier agent tries to touch Tier 0 directories
+    input.target_tier == "tier-0"
+    input.agent_role != "orchestrator"
+}
+
+blast_radius_exceeded {
+    # Block if an individual agent's calculated impact score is too high
+    input.calculated_impact_score > input.squad_max_impact_threshold
+}
+
+```
+## 2. The Python Heartbeat Watchdog (monitor.py)
+Place this file inside infra-local/watchdog/. It runs asynchronously, monitoring Redis for expired or missing agent heartbeats and instantly logging safety alerts or issuing isolation commands.
+```python
+import time
+import os
+import redis
+
+# Configuration pulled from environment or defaults
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+CHECK_INTERVAL = float(os.getenv("CHECK_INTERVAL", 5.0))
+
+def init_redis():
+    try:
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+        r.ping()
+        print(f"[*] Watchdog successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+        return r
+    except redis.ConnectionError as e:
+        print(f"[CRITICAL] Watchdog failed to connect to Redis: {e}")
+        exit(1)
+
+def monitor_loop():
+    r = init_redis()
+    print("[*] Autonomic Watchdog Loop Started. Scanning for agent heartbeats...")
+    
+    # Track agents we've already flagged to avoid spamming alerts
+    dead_agents = set()
+
+    while True:
+        try:
+            # Scan for all active agent keys in the keyspace
+            # Agents register keys matching pattern 'agent:[id]:status'
+            cursor, keys = r.scan(cursor=0, match="agent:*:status", count=100)
+            
+            active_agents = set()
+            for key in keys:
+                # Extract agent ID from key (e.g., agent:devops-squad-4:status -> devops-squad-4)
+                agent_id = key.split(":")[1]
+                active_agents.add(agent_id)
+                
+                # If an agent was dead but came back online, remove from dead list
+                if agent_id in dead_agents:
+                    print(f"[RECOVERY] Agent '{agent_id}' has re-established heartbeat.")
+                    dead_agents.remove(agent_id)
+
+            # Look through global registry to see if any registered agent went missing
+            # (Assuming Master Orchestrator keeps an active roster in a Redis Set 'global:roster')
+            roster = r.smembers("global:roster")
+            
+            for agent_id in roster:
+                if agent_id not in active_agents and agent_id not in dead_agents:
+                    print(f"[FAIL-SAFE TRIGGERED] Missing Heartbeat for Agent: {agent_id}")
+                    # 1. Flag the agent as compromised
+                    r.hset(f"agent:{agent_id}:metadata", "health", "unresponsive")
+                    # 2. Add to local dead tracker
+                    dead_agents.add(agent_id)
+                    # 3. Trigger emergency isolation routing policy
+                    isolate_agent(r, agent_id)
+
+        except Exception as e:
+            print(f"[ERROR] Exception in watchdog loop: {e}")
+            
+        time.sleep(CHECK_INTERVAL)
+
+def isolate_agent(redis_client, agent_id):
+    """
+    Executes defensive containment protocols against the unresponsive agent.
+    """
+    print(f"[CONTAINMENT] Revoking all local task assignments for agent '{agent_id}'...")
+    # Remove agent from the active operational pool
+    redis_client.srem("global:active_workers", agent_id)
+    # Log incident to a secure append-only audit channel
+    redis_client.rpush("sys:audit:log", f"{time.time()}: CRITICAL - Agent {agent_id} isolated due to heartbeat drop.")
+
+if __name__ == "__main__":
+    monitor_loop()
+
+```
+## 3. Wiring It Into Docker Compose
+To spin everything up seamlessly, write this to your root compose.yaml:
+```yaml
+services:
+  # The central message/heartbeat bus
+  redis-bus:
+    image: redis:7-alpine
+    container_name: swarm-redis-bus
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+
+  # The Local Policy Engine replacing AWS Cedar
+  opa-governance:
+    image: openpolicyagent/opa:latest
+    container_name: swarm-opa-governance
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./security/policies:/policies
+    command: "run --server /policies"
+    restart: always
+
+  # The Autonomic Monitor
+  watchdog:
+    build:
+      context: .
+      dockerfile: ./infra-local/watchdog/Dockerfile # Simple python:3.11-slim container with redis-py installed
+    container_name: swarm-watchdog
+    environment:
+      - REDIS_HOST=redis-bus
+      - CHECK_INTERVAL=2.0
+    depends_on:
+      - redis-bus
+    restart: always
+
+volumes:
+  redis_data:
+
+```
+### Next Steps to Fire the Engines
+ 1. Create a quick Dockerfile for the watchdog running pip install redis && python monitor.py.
+ 2. Run docker compose up --build -d to bring the entire network backend, local database, and security compiler online.
+Once your compose environment is green, your open-source core infrastructure is completely air-gapped and waiting for the Master Orchestrator to mount. Do you want to map out the base python orchestrator template (runtime/orchestrator/src/main.py) to connect these pieces together?

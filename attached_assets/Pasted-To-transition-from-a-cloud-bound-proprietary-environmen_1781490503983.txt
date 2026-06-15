@@ -1,0 +1,75 @@
+To transition from a cloud-bound, proprietary environment to a fully local, self-hosted, and open-source ecosystem, the architecture must decouple from cloud-native APIs (AWS, Cedar, Anthropic) and utilize modular, containerized open-source alternatives.
+Below is the complete project-agnostic architecture, file tree, open-source mapping stack, and wiring blueprint.
+## I. Open-Source Alternative Stack Mapping
+| Proprietary Component | Open-Source / Public GitHub Substitution | Operational Role |
+|---|---|---|
+| **AWS S3 State Storage** | **MinIO** (minio/minio) | S3-compatible local object storage for state files and artifacts. |
+| **AWS DynamoDB (Locking & Heartbeat)** | **Redis** (redis/redis) | Ultra-low latency memory store for locks, state synchronization, and agent heartbeats. |
+| **AWS Lambda & EventBridge** | **Temporal.io** (temporalio/temporal) or **Celery** | Distributed orchestration engine to manage the dead man's switch and execution loops. |
+| **AWS Verified Permissions (Cedar)** | **Open Policy Agent (OPA)** (open-policy-agent/opa) | Decoupled, policy-as-code engine using the Rego language to enforce agent boundaries. |
+| **Amazon SageMaker** | **vLLM** (vllm-project/vllm) or **Ollama** (ollama/ollama) | High-throughput local LLM serving engine. |
+| **Anthropic Claude (Opus / Sonnet)** | **DeepSeek-V3 / Llama-3** (via Hugging Face) | Locally hosted, open-weight foundational models for reasoning and execution squads. |
+## II. Project-Agnostic Core Tree Structure
+```text
+open-swarm-core/
+├── compose.yaml                         # Orchestrates local MinIO, Redis, OPA, and vLLM
+├── infra-local/                         # Air-gapped foundation config
+│   ├── minio-config.json                # Bucket encryption and access controls
+│   ├── redis.conf                       # Persistence and eviction constraints for heartbeats
+│   └── watchdog/                        # Local script/service replacing Lambda+EventBridge
+│       └── monitor.py                   # Monitors Redis heartbeats, issues SIGTERM on timeout
+│
+├── runtime/                             # The computing engine
+│   ├── orchestrator/                    # Master Orchestrator Service
+│   │   ├── Dockerfile
+│   │   ├── config.yaml                  # Global routing table and active agent registry
+│   │   └── src/
+│   │       └── main.py                  # Core loop, OPA evaluation, and sub-agent dispatch
+│   └── workers/                         # Worker squad factories
+│       ├── Dockerfile.worker
+│       ├── template_agent.py            # Generic worker loop pulling tasks from Redis queue
+│       └── squads_manifest.json         # Declarative mapping defining your 80+ agents
+│
+├── security/                            # OPA Policy Framework (Replacing Cedar)
+│   └── policies/
+│       ├── law1_map_before_touch.rego   # Restricts mutation if context map is missing/stale
+│       ├── law3_blast_radius.rego       # Prevents API execution if radius calculation bounds break
+│       └── law4_cartography_merge.rego  # Blocks step execution unless an update schema is verified
+│
+└── scripts/
+    ├── bootstrap.sh                     # Seeds MinIO buckets, starts compose, initializes OPA
+    └── run_cartography.py               # Step 0: Runs validation and builds the system topology map
+
+```
+## III. Comprehensive Wiring & Protocol Plan
+To ensure the 80-agent swarm functions harmoniously without central cloud oversight, the communication, policy enforcement, and fail-safe loops must be explicitly wired through the local network mesh.
+### 1. The Heartbeat & Dead Man's Switch Protocol
+Instead of relying on AWS EventBridge and Lambda, the lifecycle of the system runs entirely via Redis and a lightweight background watchdog process (monitor.py).
+ * **Registration:** When the Master Orchestrator or any individual worker agent boots up, it issues a SET agent:[id]:status "active" EX 30 command to Redis.
+ * **The Loop:** The agent must rewrite this key every 15 seconds.
+ * **The Watchdog:** The monitor.py container continuously scans the keyspace using a non-blocking SCAN. If an agent's key expires, the watchdog immediately registers a failure event, alerts the Master Orchestrator to isolate that squad, and flags the memory registry as compromised.
+### 2. Policy-as-Code Authorization Interceptor (OPA)
+Before any agent executes a bash script, hits an API endpoint, or alters a configuration file, it must pass its intended action payload to the Open Policy Agent service over HTTP (http://localhost:8181/v1/data/swarm/authz).
+```
+[Agent Instance] ──(Submits Action Payload)──> [Master Orchestrator]
+                                                       │
+                                            (Validates Policy via HTTP)
+                                                       │
+                                                       ▼
+[Execution Allowed] <──(True/False Decision)─── [Open Policy Agent (OPA)]
+
+```
+The OPA container evaluates the context against the local .rego policies:
+ * **The payload contains:** { "agent_id": "devops-squad-4", "action": "modify", "target": "file_sys", "has_mapped_topology": true }
+ * **The engine returns:** A strict boolean decision (allow: true/false). If allow is false, the execution terminates immediately at the Orchestrator runtime level, preventing prompt jailbreaks from crossing into system files.
+### 3. Local Model Pipeline & Inference Wiring
+Rather than spending credits on closed APIs, the runtime containers route their inference calls through an internal network bridge directly to the vllm service endpoint.
+ * **Heavy Reasoning (Master Orchestrator):** Configured to target http://vllm-inference:8000/v1 using an open-weight model optimized for coding and planning (e.g., DeepSeek-V3 or Llama-3-70B-Instruct).
+ * **Sub-agents / Parallel Workers:** Configured with a lower context or quantized model variant (e.g., Llama-3-8B-Instruct) running on the same local cluster to preserve VRAM and achieve high token throughput during simultaneous tasks.
+### 4. Setup Execution Order (Bootstrapping the Architecture)
+To run this stack fully open-source on your hardware:
+ 1. **Run Bootstrapper:** Execute scripts/bootstrap.sh to construct your directory paths, pull down down all public Docker images, and configure local filesystems.
+ 2. **Launch Core Stack:** Run docker compose up -d from the root directory to stand up MinIO, Redis, OPA, and your Inference Engines.
+ 3. **Seed Security:** The bootstrap script pushes the local .rego policies into OPA's active memory via curl.
+ 4. **Initialize Phase 0:** Execute python scripts/run_cartography.py. This reads your squads_manifest.json, instructs the agents to map their target local workspace directory structures, and writes the baseline schema directly to the MinIO state bucket before unlocking worker read/write permissions.
+Would you like the complete, plug-and-play code implementations for the OPA Rego security policies or the Python watchdog monitor script?
