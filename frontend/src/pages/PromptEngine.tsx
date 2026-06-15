@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   listPrompts, getPromptDetail, optimizePrompt, getPromptRun,
   promptVersionPromote, promptVersionRollback,
@@ -10,7 +10,7 @@ import { Card, Spinner, Alert, PageHeader, Badge, Empty, Collapsible } from '@/c
 import { fmtDate } from '@/lib/utils'
 import {
   Sparkles, ChevronRight, ChevronLeft, TrendingUp, ShieldCheck, RotateCcw,
-  FlaskConical, CheckCircle, AlertCircle, Clock, Database,
+  FlaskConical, CheckCircle, AlertCircle, Clock, Database, GitCompare,
 } from 'lucide-react'
 
 const VERSION_COLOR: Record<string, string> = {
@@ -36,6 +36,73 @@ function cs(n: number | null | undefined): string {
 function num(n: number | null | undefined, digits = 2): string {
   if (n === null || n === undefined) return '—'
   return n.toFixed(digits)
+}
+
+// ---------------- Line-level diff (live vs. candidate instructions) ----------------
+type DiffLine = { type: 'same' | 'add' | 'del'; text: string }
+
+// Longest-common-subsequence line diff. Prompt instructions are at most a few
+// hundred lines, so the O(n*m) table is cheap and keeps the diff stable/minimal.
+function diffLines(oldText: string, newText: string): DiffLine[] {
+  const a = oldText.split('\n')
+  const b = newText.split('\n')
+  const n = a.length, m = b.length
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+  const out: DiffLine[] = []
+  let i = 0, j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push({ type: 'same', text: a[i] }); i++; j++ }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ type: 'del', text: a[i] }); i++ }
+    else { out.push({ type: 'add', text: b[j] }); j++ }
+  }
+  while (i < n) { out.push({ type: 'del', text: a[i] }); i++ }
+  while (j < m) { out.push({ type: 'add', text: b[j] }); j++ }
+  return out
+}
+
+function DiffView({ live, candidate }: { live: string; candidate: string }) {
+  const lines = useMemo(() => diffLines(live, candidate), [live, candidate])
+  const added = lines.reduce((c, l) => c + (l.type === 'add' ? 1 : 0), 0)
+  const removed = lines.reduce((c, l) => c + (l.type === 'del' ? 1 : 0), 0)
+
+  if (added === 0 && removed === 0) {
+    return (
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0 0' }}>
+        No wording changes — the candidate instructions are identical to the live version.
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: 'flex', gap: 12, fontSize: 11.5, marginBottom: 6, fontVariantNumeric: 'tabular-nums' }}>
+        <span style={{ color: '#2ecc71' }}>+{added} added</span>
+        <span style={{ color: '#e74c3c' }}>−{removed} removed</span>
+      </div>
+      <pre style={{
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, lineHeight: 1.6,
+        background: 'rgba(0,0,0,0.25)', padding: '8px 0', borderRadius: 8, margin: 0,
+        maxHeight: 360, overflow: 'auto',
+      }}>
+        {lines.map((l, idx) => {
+          const sign = l.type === 'add' ? '+' : l.type === 'del' ? '−' : '\u00A0'
+          const color = l.type === 'add' ? '#7ee2a8' : l.type === 'del' ? '#f0a0a0' : 'var(--text-secondary, #cbd5e1)'
+          const bg = l.type === 'add' ? 'rgba(46,204,113,0.12)' : l.type === 'del' ? 'rgba(231,76,60,0.12)' : 'transparent'
+          return (
+            <div key={idx} style={{ display: 'flex', gap: 8, padding: '0 12px', background: bg, color }}>
+              <span style={{ userSelect: 'none', opacity: 0.7, flexShrink: 0 }}>{sign}</span>
+              <span style={{ flex: 1 }}>{l.text || '\u00A0'}</span>
+            </div>
+          )
+        })}
+      </pre>
+    </div>
+  )
 }
 
 // ---------------- Score comparison (candidate vs. live baseline) ----------------
@@ -166,11 +233,15 @@ function ProgramList({ onSelect }: { onSelect: (name: string) => void }) {
 }
 
 // ---------------- Version row ----------------
-function VersionCard({ v, onAction, busy }: {
+function VersionCard({ v, onAction, busy, liveInstructions }: {
   v: PromptVersionRow
   onAction: (kind: 'promote' | 'rollback', v: PromptVersionRow) => void
   busy: boolean
+  liveInstructions: string | null
 }) {
+  // Only a candidate is meaningfully diffed against the live baseline; for the
+  // live version itself there is nothing to compare against.
+  const showDiff = v.status === 'candidate'
   return (
     <Card style={{ padding: '14px 16px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -208,6 +279,23 @@ function VersionCard({ v, onAction, busy }: {
           }}>{v.instructions}</pre>
         </Collapsible>
       </div>
+      {showDiff && (
+        <div style={{ marginTop: 8 }}>
+          <Collapsible title={
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <GitCompare size={13} /> Diff vs. live
+            </span>
+          }>
+            {liveInstructions === null
+              ? (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0 0' }}>
+                  No live baseline yet — promoting this candidate would create the first live version, so there is nothing to diff against.
+                </div>
+              )
+              : <DiffView live={liveInstructions} candidate={v.instructions} />}
+          </Collapsible>
+        </div>
+      )}
     </Card>
   )
 }
@@ -303,6 +391,7 @@ function ProgramDetail({ name, onBack }: { name: string; onBack: () => void }) {
 
   const p = data.program
   const optimizing = activeRunId !== null
+  const liveInstructions = data.versions.find(x => x.status === 'live')?.instructions ?? null
 
   return (
     <div>
@@ -331,7 +420,9 @@ function ProgramDetail({ name, onBack }: { name: string; onBack: () => void }) {
         <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Versions</h3>
       </div>
       <div style={{ display: 'grid', gap: 10 }}>
-        {data.versions.map(v => <VersionCard key={v.id} v={v} onAction={onAction} busy={busy} />)}
+        {data.versions.map(v => (
+          <VersionCard key={v.id} v={v} onAction={onAction} busy={busy} liveInstructions={liveInstructions} />
+        ))}
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '24px 0 6px' }}>
