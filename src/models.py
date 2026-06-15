@@ -1358,6 +1358,28 @@ class BurstEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class GuardrailEvent(Base):
+    """Durable audit record for every guardrail classifier verdict.
+
+    Written by src/swarm/guardrails.py on every ingress/egress pass.
+    Blocks and flags also appear as SentinelEvents so they surface in the
+    Governance Center without an extra query.
+    """
+    __tablename__ = "guardrail_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(30), unique=True, nullable=False, index=True)
+    classifier = Column(String(40), nullable=False, index=True)
+    stage = Column(String(10), nullable=False, index=True)     # ingress | egress
+    action = Column(String(10), nullable=False, index=True)    # pass | block | redact | flag
+    confidence = Column(Float, nullable=False, default=0.0)
+    reason = Column(Text, nullable=True)
+    patterns_json = Column(Text, nullable=True)
+    degraded = Column(Boolean, default=False)
+    context_preview = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class MemoryAuditLog(Base):
     """Durable audit trail of substrate MemoryEvents.
 

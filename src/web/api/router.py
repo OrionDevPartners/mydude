@@ -1247,6 +1247,65 @@ async def api_epistemic_trend(
     return trend
 
 
+@router.get("/guardrail/events")
+async def api_guardrail_events(
+    limit: int = 100,
+    stage: str = "",
+    action: str = "",
+    _=Depends(require_auth),
+):
+    """Recent guardrail classifier verdicts (blocks, redactions, flags).
+
+    Query params:
+      limit  — max rows (default 100, max 500)
+      stage  — filter by 'ingress' or 'egress' (empty = all)
+      action — filter by 'block', 'redact', 'flag', 'pass' (empty = all non-pass)
+    """
+    from src.database import SessionLocal
+    from src.models import GuardrailEvent
+    limit = min(max(1, limit), 500)
+    db = SessionLocal()
+    try:
+        q = db.query(GuardrailEvent).order_by(GuardrailEvent.created_at.desc())
+        if stage in ("ingress", "egress"):
+            q = q.filter(GuardrailEvent.stage == stage)
+        if action in ("block", "redact", "flag", "pass"):
+            q = q.filter(GuardrailEvent.action == action)
+        else:
+            # Default: only non-pass events (they're the interesting ones)
+            q = q.filter(GuardrailEvent.action != "pass")
+        rows = q.limit(limit).all()
+        total_blocks = db.query(GuardrailEvent).filter(GuardrailEvent.action == "block").count()
+        total_flags = db.query(GuardrailEvent).filter(GuardrailEvent.action == "flag").count()
+        total_redacts = db.query(GuardrailEvent).filter(GuardrailEvent.action == "redact").count()
+        total_events = db.query(GuardrailEvent).count()
+    finally:
+        db.close()
+
+    return {
+        "ok": True,
+        "total_events": total_events,
+        "total_blocks": total_blocks,
+        "total_flags": total_flags,
+        "total_redacts": total_redacts,
+        "events": [
+            {
+                "id": r.id,
+                "event_id": r.event_id,
+                "classifier": r.classifier,
+                "stage": r.stage,
+                "action": r.action,
+                "confidence": r.confidence,
+                "reason": r.reason or "",
+                "patterns": (r.patterns_json or "").split(",") if r.patterns_json else [],
+                "degraded": r.degraded,
+                "created_at": _dt(r.created_at),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.post("/governance/alerts/{alert_id}/ack")
 async def api_ack_alert(alert_id: int, _=Depends(require_auth)):
     from src.database import SessionLocal

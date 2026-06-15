@@ -158,6 +158,13 @@ export const getConnected = () => request<ConnectedData>('/connected')
 
 // Governance
 export const getGovernance = () => request<GovernanceData>('/governance')
+export const getGuardrailEvents = (params?: { limit?: number; stage?: string; action?: string }) => {
+  const p = new URLSearchParams()
+  if (params?.limit != null) p.set('limit', String(params.limit))
+  if (params?.stage) p.set('stage', params.stage)
+  if (params?.action) p.set('action', params.action)
+  return request<GuardrailEventsData>(`/guardrail/events?${p}`)
+}
 export const ackAlert = (id: number) =>
   request<{ ok: boolean }>(`/governance/alerts/${id}/ack`, { method: 'POST' })
 export const setCloudShift = (enabled: boolean, reason?: string) =>
@@ -717,6 +724,8 @@ export interface AcquisitionCandidate { id: number; candidate_name: string; cand
 export interface AcquisitionJob { id: number; job_id: string; capability: string; state: string; best_candidate_name: string | null; best_candidate_version: string | null; best_candidate_registry: string | null; governance_proposal_id: string | null; notes: string | null; created_at: string; updated_at: string | null; candidates: AcquisitionCandidate[] }
 export interface GovernanceData { alerts: Alert[]; open_alerts: number; ledger: LedgerEntry[]; metrics: MetricRow[]; total_metrics: number; cloud_shift_active: boolean; exec_locus_dist: unknown[]; failed_indexes: number; governance_proposal_failures: number; metrics_reset_at: string; metrics_reset_by: string; proposals: GovernanceProposal[]; recent_proposals: GovernanceProposal[]; open_proposals: number; routing_stats?: RoutingStats; drift_report?: DriftReport; acquisition_jobs?: AcquisitionJob[]; acquisition_enabled?: boolean }
 export interface Alert { id: number; rule: string; severity: string; detail: string; acknowledged: boolean; created_at: string }
+export interface GuardrailEvent { id: number; event_id: string; classifier: string; stage: string; action: string; confidence: number; reason: string; patterns: string[]; degraded: boolean; created_at: string }
+export interface GuardrailEventsData { ok: boolean; total_events: number; total_blocks: number; total_flags: number; total_redacts: number; events: GuardrailEvent[] }
 export interface EpistemicPoint { run_id: string; created_at: string | null; counts: Record<string, number>; total: number; pct: Record<string, number>; aborted: boolean }
 export interface EpistemicWindowOption { key: string; label: string }
 export interface EpistemicTrendData {

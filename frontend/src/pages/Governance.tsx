@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend, resetSwarmMetrics } from '@/lib/api'
-import type { GovernanceProposal, DriftEntry, PreconditionGapEntry } from '@/lib/api'
+import { getGovernance, ackAlert, setCloudShift, getEpistemicTrend, resetSwarmMetrics, getGuardrailEvents } from '@/lib/api'
+import type { GovernanceProposal, DriftEntry, PreconditionGapEntry, GuardrailEvent } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, Tabs, PageHeader, Empty } from '@/components/ui'
 import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse, Activity, Vote, Zap, GitBranch, PackageSearch } from 'lucide-react'
+import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse, Activity, Vote, Zap, GitBranch, PackageSearch, ShieldAlert } from 'lucide-react'
 import type { AcquisitionJob } from '@/lib/api'
 
 const EP_COLORS: Record<string, string> = {
@@ -29,6 +29,8 @@ export function Governance() {
   const { data, loading, error, refetch } = useApi(getGovernance, [])
   const { data: trend, loading: trendLoading, error: trendError } =
     useApi(() => getEpistemicTrend({ window: epWindow, from: epFrom, to: epTo }), [epWindow, epFrom, epTo])
+  const { data: guardrails, loading: grLoading, error: grError } =
+    useApi(() => getGuardrailEvents({ limit: 100 }), [])
   const [shiftBusy, setShiftBusy] = useState(false)
   const [shiftMsg, setShiftMsg] = useState<string | null>(null)
   const [shiftErr, setShiftErr] = useState<string | null>(null)
@@ -117,7 +119,7 @@ export function Governance() {
         </div>
       )}
 
-      <Tabs tabs={['Alerts', 'Proposals', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction', 'Routing', 'Acquisition']} active={tab} onChange={setTab} />
+      <Tabs tabs={['Alerts', 'Proposals', 'Guardrails', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction', 'Routing', 'Acquisition']} active={tab} onChange={setTab} />
 
       {tab === 'Alerts' && data && (
         data.alerts.length === 0
@@ -167,6 +169,36 @@ export function Governance() {
               )}
             </div>
           )
+      )}
+
+      {tab === 'Guardrails' && (
+        grLoading
+          ? <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner /></div>
+          : grError
+            ? <Alert type="error">{grError}</Alert>
+            : (
+              <div>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+                  Substrate guardrail classifiers wrap every swarm run. <strong>Ingress</strong> screens the
+                  prompt for injection / jailbreak attempts and redacts PII &amp; secrets before inference;
+                  <strong> egress</strong> runs output-safety and code-shield checks before results are surfaced.
+                  Blocks &amp; flags also raise sentinel alerts and adjust compliance / hallucination scores.
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 18 }}>
+                  <GlassStatCard value={guardrails?.total_blocks ?? 0} label="Blocks" icon={<ShieldAlert size={16} />} glow={(guardrails?.total_blocks ?? 0) > 0} />
+                  <GlassStatCard value={guardrails?.total_flags ?? 0} label="Flags" icon={<Bell size={16} />} />
+                  <GlassStatCard value={guardrails?.total_redacts ?? 0} label="Redactions" icon={<ShieldCheck size={16} />} />
+                  <GlassStatCard value={guardrails?.total_events ?? 0} label="Total verdicts" icon={<BarChart2 size={16} />} />
+                </div>
+                {(guardrails?.events.length ?? 0) === 0
+                  ? <Empty message="No guardrail blocks, flags or redactions recorded yet. The ingress (injection + PII) and egress (output safety + code shield) classifiers are active on every run." icon={<ShieldCheck size={32} />} />
+                  : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {(guardrails?.events ?? []).map(ev => <GuardrailEventCard key={ev.id} ev={ev} />)}
+                    </div>
+                  )}
+              </div>
+            )
       )}
 
       {tab === 'Swarm Health' && data && (
@@ -769,6 +801,38 @@ function statusBadge(status: string): string {
   if (status === 'rejected') return 'badge-red'
   if (status === 'open') return 'badge-blue'
   return 'badge-gray'
+}
+
+function guardrailActionBadge(action: string): string {
+  if (action === 'block') return 'badge-red'
+  if (action === 'flag') return 'badge-yellow'
+  if (action === 'redact') return 'badge-blue'
+  return 'badge-gray'
+}
+
+function GuardrailEventCard({ ev }: { ev: GuardrailEvent }) {
+  return (
+    <div className="glass-card" style={{ padding: '14px 18px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+        <span className={`badge ${guardrailActionBadge(ev.action)}`}>{ev.action}</span>
+        <span className="badge badge-gray">{ev.stage}</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{ev.classifier}</span>
+        {ev.degraded && <span className="badge badge-yellow">degraded</span>}
+        <span style={{ fontSize: 11.5, fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+          {Math.round((ev.confidence ?? 0) * 100)}% conf
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>{fmtDate(ev.created_at)}</span>
+      </div>
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: ev.patterns.length ? 6 : 0 }}>{ev.reason}</p>
+      {ev.patterns.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {ev.patterns.filter(Boolean).map((p, i) => (
+            <span key={i} style={{ fontSize: 10.5, fontFamily: 'monospace', padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }}>{p}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function ProposalCard({ p }: { p: GovernanceProposal }) {
