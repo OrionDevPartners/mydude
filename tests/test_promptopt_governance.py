@@ -354,6 +354,53 @@ def test_optimization_with_dummy_lm_produces_candidates():
         assert bd["n"] >= 1, "breakdown scored on zero examples"
         assert v["base_score"] is not None, "candidate missing live baseline score"
 
+        # The breakdown must also carry a capped sample of the lowest-scoring
+        # example outputs (with each one's missing sections) so the operator can
+        # drill into WHICH outputs dragged the average down — not just the average.
+        worst = bd.get("worst_examples")
+        assert isinstance(worst, list) and worst, "candidate v%s missing worst_examples sample" % v["version_no"]
+        assert len(worst) <= service.WORST_EXAMPLE_SAMPLE, "worst_examples exceeds the persisted cap"
+        assert len(worst) <= bd["n"], "more worst examples than scored examples"
+        for ex in worst:
+            for comp in ("score", "format_fraction", "compliance_score",
+                         "hallucination_risk", "missing_sections", "output"):
+                assert comp in ex, "worst example missing field %s" % comp
+            assert isinstance(ex["missing_sections"], list)
+            assert isinstance(ex["output"], str)
+        # Worst-first ordering (non-decreasing score).
+        scores = [e["score"] for e in worst]
+        assert scores == sorted(scores), "worst_examples not ordered worst-first"
+
+
+def test_worst_examples_helper_ranks_lowest_scoring():
+    """The drilldown sample must surface the lowest-scoring outputs (worst first),
+    cap to the requested count, and carry each output's missing sections — so an
+    operator can see precisely which examples dragged the candidate's score down."""
+    from src.promptopt.metric import score_text, worst_examples
+    secs = ["RESULT", "ARTIFACTS", "CHECKS", "RISKS", "CAPABILITIES", "COMPRESSED_HANDOFF"]
+    texts = [
+        GOOD_TEXT,                       # all sections present -> high score
+        "RESULT: partial\nARTIFACTS: x", # most sections missing -> low score
+        "",                              # empty output -> worst score
+    ]
+    rows = []
+    for t in texts:
+        r = score_text(t, secs)
+        r["output"] = t
+        rows.append(r)
+
+    sample = worst_examples(rows, limit=2, output_cap=20)
+    assert len(sample) == 2, "limit not honored"
+    assert sample[0]["score"] <= sample[1]["score"], "not ordered worst-first"
+    # The empty output is the worst and must expose every missing section.
+    worst = sample[0]
+    assert worst["output"] == "", "worst example should be the empty output"
+    assert set(worst["missing_sections"]) == set(secs), "empty output should miss all sections"
+    # Output text is capped to the requested length.
+    long_sample = worst_examples([{**score_text(GOOD_TEXT, secs), "output": "x" * 5000}],
+                                 limit=1, output_cap=50)
+    assert len(long_sample[0]["output"]) == 50, "output not capped"
+
 
 def test_optimization_fail_loud_without_provider():
     _add_traces(max(0, service.min_traces() + 2))
@@ -703,6 +750,7 @@ _TESTS = [
     test_min_trace_gate,
     test_trace_capture_counts,
     test_optimization_with_dummy_lm_produces_candidates,
+    test_worst_examples_helper_ranks_lowest_scoring,
     test_optimization_fail_loud_without_provider,
     test_role_program_optimizes_on_its_own_output_field,
     test_thinking_role_programs_optimize_on_own_sections,

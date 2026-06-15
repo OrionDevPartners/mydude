@@ -1023,10 +1023,15 @@ export interface PromptProgramSummary {
   live_score?: number | null;
   version_count?: number; usable_trace_count: number; updated_at?: string | null;
 }
+export interface PromptWorstExample {
+  score: number | null; format_fraction: number | null;
+  compliance_score: number | null; hallucination_risk: number | null;
+  missing_sections: string[]; violations?: string[]; output: string;
+}
 export interface PromptScoreBreakdown {
   n: number; score: number | null; format_fraction: number | null;
   compliance_score: number | null; hallucination_risk: number | null;
-  missing_sections: string[];
+  missing_sections: string[]; worst_examples?: PromptWorstExample[];
 }
 export interface PromptVersionRow {
   id: number; version_no: number; status: string; ever_live: boolean;

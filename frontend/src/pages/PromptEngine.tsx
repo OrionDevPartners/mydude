@@ -3,7 +3,7 @@ import {
   listPrompts, getPromptDetail, optimizePrompt, getPromptRun,
   promptVersionPromote, promptVersionRollback,
   PromptProgramSummary, PromptProgramDetail, PromptVersionRow, PromptRunRow,
-  PromptScoreBreakdown,
+  PromptScoreBreakdown, PromptWorstExample,
 } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, PageHeader, Badge, Empty, Collapsible } from '@/components/ui'
@@ -136,6 +136,57 @@ function MetricRow({ label, live, cand, fmt, better }: {
   )
 }
 
+function WorstExampleRow({ ex, idx }: { ex: PromptWorstExample; idx: number }) {
+  return (
+    <div style={{
+      marginTop: 8, padding: '8px 10px', borderRadius: 6,
+      background: 'rgba(0,0,0,0.22)', border: '1px solid var(--border)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--text-muted)' }}>
+        <span style={{ fontWeight: 700, color: 'var(--text-secondary, #cbd5e1)' }}>#{idx + 1}</span>
+        <span>score <b style={{ color: 'var(--text-secondary, #cbd5e1)' }}>{pct(ex.score)}</b></span>
+        <span>coverage {pct(ex.format_fraction)}</span>
+        <span>compliance {cs(ex.compliance_score)}</span>
+        <span>HR {num(ex.hallucination_risk, 2)}</span>
+      </div>
+      {ex.missing_sections && ex.missing_sections.length > 0 && (
+        <div style={{ marginTop: 5, fontSize: 11, color: '#e0a458' }}>
+          Missing: {ex.missing_sections.join(', ')}
+        </div>
+      )}
+      {ex.violations && ex.violations.length > 0 && (
+        <div style={{ marginTop: 4, fontSize: 11, color: '#e07a7a' }}>
+          Violations: {ex.violations.join('; ')}
+        </div>
+      )}
+      <pre style={{
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, lineHeight: 1.5,
+        background: 'rgba(0,0,0,0.3)', padding: 8, borderRadius: 6, margin: '6px 0 0',
+        color: 'var(--text-secondary, #cbd5e1)', maxHeight: 180, overflow: 'auto',
+      }}>{ex.output ? ex.output : '(empty output — prediction produced no text)'}</pre>
+    </div>
+  )
+}
+
+function WorstExamples({ cand }: { cand: PromptScoreBreakdown }) {
+  const examples = cand.worst_examples
+  if (!examples || examples.length === 0) return null
+  return (
+    <div style={{ marginTop: 8 }}>
+      <Collapsible title={
+        <span style={{ fontSize: 11.5, color: 'var(--text-muted)', fontWeight: 600 }}>
+          Lowest-scoring example{examples.length === 1 ? '' : 's'} ({examples.length})
+        </span>
+      }>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', margin: '2px 0 2px' }}>
+          The candidate's worst sample outputs from this run — what dragged the average down.
+        </div>
+        {examples.map((ex, i) => <WorstExampleRow key={i} ex={ex} idx={i} />)}
+      </Collapsible>
+    </div>
+  )
+}
+
 function ScoreComparison({ v }: { v: PromptVersionRow }) {
   const cand: PromptScoreBreakdown | null | undefined = v.breakdown
   const live: PromptScoreBreakdown | null | undefined = v.base_breakdown
@@ -182,6 +233,7 @@ function ScoreComparison({ v }: { v: PromptVersionRow }) {
           Scored on {cand.n} held-out example{cand.n === 1 ? '' : 's'} from the same run.
         </div>
       )}
+      {haveBreakdown && cand && <WorstExamples cand={cand} />}
       {!haveBreakdown && haveScores && (
         <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
           Metric breakdown unavailable for this version — re-optimize to capture the per-component split.

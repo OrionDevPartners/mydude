@@ -113,6 +113,35 @@ def aggregate_scores(score_dicts: List[Dict[str, Any]],
     }
 
 
+_SAMPLE_FIELDS = (
+    "score", "format_fraction", "compliance_score", "hallucination_risk",
+    "missing_sections",
+)
+_SAMPLE_OUTPUT_CAP = 1000
+
+
+def worst_examples(rows: List[Dict[str, Any]], limit: int = 3,
+                   output_cap: int = _SAMPLE_OUTPUT_CAP) -> List[Dict[str, Any]]:
+    """Return the lowest-scoring per-output rows (worst first), capped to ``limit``.
+
+    Lets an operator drill past the averaged breakdown into the individual sample
+    outputs that dragged a candidate's score down — and *which sections each was
+    missing* — so failure modes are visible before promotion. Each returned row is
+    the ``score_text`` component split plus a capped copy of the output text (the
+    caller must have set ``output`` on each row). Only the allow-listed component
+    fields + a few violations are kept so persisted provenance stays bounded.
+    """
+    ordered = sorted(rows, key=lambda r: float(r.get("score") or 0.0))
+    out: List[Dict[str, Any]] = []
+    for r in ordered[: max(0, limit)]:
+        s: Dict[str, Any] = {k: r.get(k) for k in _SAMPLE_FIELDS}
+        s["missing_sections"] = list(r.get("missing_sections") or [])
+        s["violations"] = list((r.get("violations") or [])[:3])
+        s["output"] = (r.get("output") or "")[:output_cap]
+        out.append(s)
+    return out
+
+
 def metric(gold: Any, pred: Any, trace: Any = None, *args, **kwargs) -> float:
     """Scalar metric for MIPROv2 / dspy.Evaluate (judge defaults)."""
     return score_text(extract_output(pred))["score"]

@@ -28,6 +28,10 @@ from src.promptopt.specs import get_spec
 
 DEFAULT_MIN_TRACES = 10
 
+# How many of the lowest-scoring example outputs to persist per breakdown so the
+# operator can drill into a candidate's failure modes before promoting it.
+WORST_EXAMPLE_SAMPLE = 3
+
 
 class RunInProgress(RuntimeError):
     """A run is already active for this program (maps to HTTP 409)."""
@@ -105,7 +109,9 @@ def _evaluate_detailed(program, dataset, input_fields: List[str],
     failed prediction is scored worst-case (empty output) — never silently
     skipped — so the breakdown can't be gamed by dropping hard examples.
     """
-    from src.promptopt.metric import aggregate_scores, extract_output, score_text
+    from src.promptopt.metric import (
+        aggregate_scores, extract_output, score_text, worst_examples,
+    )
     if not dataset:
         return None, None
     rows: List[Dict[str, Any]] = []
@@ -115,8 +121,15 @@ def _evaluate_detailed(program, dataset, input_fields: List[str],
             text = extract_output(pred, output_field)
         except Exception:
             text = ""
-        rows.append(score_text(text, sections))
+        row = score_text(text, sections)
+        # Keep the actual output alongside its component scores so the operator can
+        # drill into the worst examples — not just the averaged breakdown.
+        row["output"] = text or ""
+        rows.append(row)
     agg = aggregate_scores(rows, sections)
+    # Capped sample of the lowest-scoring example outputs (with the sections each
+    # was missing) so the operator can see WHICH outputs dragged the average down.
+    agg["worst_examples"] = worst_examples(rows, WORST_EXAMPLE_SAMPLE)
     return agg.get("score"), agg
 
 
