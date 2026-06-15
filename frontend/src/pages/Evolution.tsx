@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import {
   listEvolutionComponents, getEvolutionComponent, getEvolutionComponentStatus,
-  startEvolutionLoop, stopEvolutionLoop,
+  getEvolutionLoopStatus, startEvolutionLoop, stopEvolutionLoop,
   triggerEvolutionTrial, seedEvolutionThesis,
   CognitionComponent, ComponentDetail, EvolutionThesis, EvolutionCycleLog,
 } from '@/lib/api'
@@ -436,31 +436,66 @@ function ComponentCard({ c, onSelect }: { c: CognitionComponent; onSelect: () =>
 
 function ComponentList({ onSelect }: { onSelect: (id: number) => void }) {
   const { data, loading, error } = useApi(() => listEvolutionComponents(), [])
+  const [components, setComponents] = useState<CognitionComponent[] | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={24} /></div>
-  if (error) return <Alert type="error">{error}</Alert>
-  if (!data || data.components.length === 0) return (
+  // Seed local state from the initial fetch; the poller takes over from here.
+  useEffect(() => {
+    if (data) {
+      setComponents(data.components)
+      setLastUpdated(new Date())
+    }
+  }, [data])
+
+  // Auto-refresh the overview every ~3s while any component's loop is running so
+  // cycle counts, promoted counts and the "evolving" badge update in place.
+  // Polling stops as soon as nothing is running.
+  const anyRunning = (components ?? []).some(c => c.loop_state === 'running' || c.thread_alive)
+  useEffect(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    if (!anyRunning) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const s = await getEvolutionLoopStatus()
+        setComponents(s.components)
+        setLastUpdated(new Date())
+      } catch { /* transient; keep polling */ }
+    }, 3000)
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
+  }, [anyRunning])
+
+  if (loading && !components) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={24} /></div>
+  if (error && !components) return <Alert type="error">{error}</Alert>
+  if (!components || components.length === 0) return (
     <Empty
       message="No cognition components registered yet. They are seeded at application startup."
       icon={<FlaskConical size={28} />}
     />
   )
 
-  const running = data.components.filter(c => c.loop_state === 'running' || c.thread_alive).length
-  const totalCycles = data.components.reduce((s, c) => s + c.cycle_count, 0)
-  const totalPromoted = data.components.reduce((s, c) => s + c.promoted_theses, 0)
+  const running = components.filter(c => c.loop_state === 'running' || c.thread_alive).length
+  const totalCycles = components.reduce((s, c) => s + c.cycle_count, 0)
+  const totalPromoted = components.reduce((s, c) => s + c.promoted_theses, 0)
 
   return (
     <div>
+      {anyRunning && lastUpdated && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+          <Spinner size={11} />
+          <span style={{ color: '#2ecc71' }}>Live</span>
+          <span>· auto-refreshing every 3s · last updated {lastUpdated.toLocaleTimeString()}</span>
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
-        <GlassStatCard value={data.components.length} label="Components" icon={<FlaskConical size={16} />} />
+        <GlassStatCard value={components.length} label="Components" icon={<FlaskConical size={16} />} />
         <GlassStatCard value={running} label="Evolving now" icon={<Activity size={16} />} glow={running > 0} />
         <GlassStatCard value={totalCycles} label="Total cycles" icon={<RotateCcw size={16} />} />
         <GlassStatCard value={totalPromoted} label="Promoted theses" icon={<CheckCircle size={16} />} />
       </div>
       <GlassSection title="Cognition components" className="animate-fade-in-up">
         <div style={{ display: 'grid', gap: 10 }}>
-          {data.components.map(c => (
+          {components.map(c => (
             <ComponentCard key={c.id} c={c} onSelect={() => onSelect(c.id)} />
           ))}
         </div>
