@@ -27,6 +27,11 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Hermetic contract: never dispatch the live LLM swarm during candidate
+# generation (a real run is ~240 provider calls). Force heuristic-only theses so
+# select_next_thesis is deterministic and fast regardless of provider config.
+os.environ.setdefault("EVOLUTION_LLM_THESIS", "0")
+
 from src.database import SessionLocal
 from src.models import (
     CognitionComponent,
@@ -1067,6 +1072,151 @@ def test_stall_adjusted_signal_phases():
 
 
 # ---------------------------------------------------------------------------
+# Test 21: _refine_stalled_thesis materially changes the payload
+# ---------------------------------------------------------------------------
+
+def test_refine_stalled_thesis_materially_changes_payload():
+    """A stalled-but-under-retry-limit candidate must be refined into a
+    materially different payload, with auditable refinement metadata."""
+    from src.promptopt.evolution import _refine_stalled_thesis
+
+    class _Stub:
+        def __init__(self, ctype):
+            self.component_type = ctype
+
+    # prompt_program: instructions get an alternate directive appended.
+    pp_cand = {
+        "branch_cell": "instructions",
+        "thesis": {"instructions": "BASE INSTRUCTIONS."},
+        "rationale": "original rationale",
+        "score_signal": 0.75,
+    }
+    refined_pp = _refine_stalled_thesis(pp_cand, _Stub("prompt_program"), stall_n=1)
+    assert_true(
+        refined_pp["thesis"]["instructions"] != pp_cand["thesis"]["instructions"],
+        "refined prompt_program instructions must differ from the stalled payload",
+    )
+    assert_true(
+        "STALL-REFINEMENT" in refined_pp["thesis"]["instructions"],
+        "refined instructions must carry the stall-refinement marker",
+    )
+    assert_true("refinement" in refined_pp, "refined candidate must carry refinement metadata")
+    assert_equal(refined_pp["refinement"]["strategy"], "alternate_directive",
+                 "prompt_program refinement strategy must be alternate_directive")
+    assert_true(
+        "STALL-REFINED" in refined_pp["rationale"],
+        "rationale must record that the thesis was stall-refined (auditable)",
+    )
+    # Original candidate must be left untouched (refine returns a copy).
+    assert_equal(pp_cand["thesis"]["instructions"], "BASE INSTRUCTIONS.",
+                 "refine must not mutate the original candidate in place")
+
+    # swarm_config: numeric value steps to a different number.
+    sc_cand = {
+        "branch_cell": "evidence_strength",
+        "thesis": {"value": 0.65, "key": "swarm.min_evidence_strength"},
+        "rationale": "raise evidence_strength",
+        "score_signal": 0.70,
+    }
+    refined_sc = _refine_stalled_thesis(sc_cand, _Stub("swarm_config"), stall_n=1)
+    assert_true(
+        refined_sc["thesis"]["value"] != sc_cand["thesis"]["value"],
+        "refined swarm_config value must differ from the stalled payload",
+    )
+    assert_equal(refined_sc["refinement"]["strategy"], "adjusted_step",
+                 "numeric refinement strategy must be adjusted_step")
+
+    # Successive retries explore different values (step scales with stall_n).
+    refined_sc2 = _refine_stalled_thesis(sc_cand, _Stub("swarm_config"), stall_n=2)
+    assert_true(
+        refined_sc2["thesis"]["value"] != refined_sc["thesis"]["value"],
+        "a higher stall count must explore a different refined value",
+    )
+
+    # Non-refinable payload (no-op probe) is returned unchanged.
+    noop_cand = {"branch_cell": "instructions", "thesis": {"noop": True}, "rationale": "noop"}
+    unchanged = _refine_stalled_thesis(noop_cand, _Stub("prompt_program"), stall_n=1)
+    assert_true("refinement" not in unchanged, "non-refinable payload must not gain refinement metadata")
+
+    print("PASS test_refine_stalled_thesis_materially_changes_payload")
+
+
+# ---------------------------------------------------------------------------
+# Test 22: select_next_thesis refines a stalled cell that is still under the
+#          retry limit (rather than re-running the identical thesis)
+# ---------------------------------------------------------------------------
+
+def test_select_next_thesis_refines_stalled_cell_under_retry_limit():
+    """When a branch cell has stalled once (below max_stall_retries), the next
+    selection for that cell must carry a refined, materially different payload
+    and record the refinement in selection_votes for audit."""
+    name = TEST_PREFIX + "refine_under_limit"
+    _cleanup(name)
+    try:
+        # prompt_program candidates all target the 'instructions' cell, so a
+        # single stall on that cell guarantees the selected candidate is refined.
+        component_id = _make_component(name, "prompt_program")
+
+        db = SessionLocal()
+        try:
+            c = db.query(CognitionComponent).filter_by(id=component_id).first()
+        finally:
+            db.close()
+
+        # Baseline: no stalls yet — selected payload carries no refinement.
+        baseline_candidate, baseline_votes = select_next_thesis(c, cycle_index=1)
+        assert_true(
+            "STALL-REFINEMENT" not in json.dumps(baseline_candidate["thesis"]),
+            "baseline (un-stalled) thesis must NOT be refined",
+        )
+        assert_true(
+            baseline_votes.get("selected_refinement") is None,
+            "baseline selection_votes must not record a refinement",
+        )
+        stalled_cell = baseline_candidate["branch_cell"]
+
+        # Seed ONE stall for that cell (1 < MAX_STALL_RETRIES==2 → refine phase).
+        estore.log_cycle(
+            component_id=component_id,
+            cycle_index=1,
+            outcome="stalled",
+            thesis_id=None,
+            next_selection={"stalled_branch_cell": stalled_cell},
+            detail="seeded single stall",
+        )
+
+        refined_candidate, votes = select_next_thesis(c, cycle_index=2)
+
+        assert_equal(
+            refined_candidate["branch_cell"], stalled_cell,
+            "the stalled cell should still be selected while under the retry limit",
+        )
+        assert_true(
+            "STALL-REFINEMENT" in json.dumps(refined_candidate["thesis"]),
+            "the retried thesis for the stalled cell must be refined",
+        )
+        assert_true(
+            json.dumps(refined_candidate["thesis"]) != json.dumps(baseline_candidate["thesis"]),
+            "refined payload must be materially different from the stalled one",
+        )
+        assert_true(
+            votes.get("selected_refinement") is not None,
+            "selection_votes must record the refinement (auditable)",
+        )
+        assert_equal(
+            votes["selected_refinement"]["stall_count"], 1,
+            "refinement audit must record the stall count that triggered it",
+        )
+        assert_true(
+            stalled_cell in (votes.get("refined_branch_cells") or []),
+            "selection_votes must list the refined branch cell",
+        )
+        print("PASS test_select_next_thesis_refines_stalled_cell_under_retry_limit")
+    finally:
+        _cleanup(name)
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -1091,6 +1241,8 @@ TESTS = [
     test_stall_records_negative_signal_in_cycle_log,
     test_select_next_thesis_deprioritizes_stalled_branch_cell,
     test_stall_adjusted_signal_phases,
+    test_refine_stalled_thesis_materially_changes_payload,
+    test_select_next_thesis_refines_stalled_cell_under_retry_limit,
 ]
 
 

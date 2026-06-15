@@ -57,6 +57,24 @@ STALL_SIGNAL_PENALTY = 0.15
 # Heavier penalty applied once a branch cell reaches MAX_STALL_RETRIES so an
 # alternative branch cell wins whenever one exists.
 STALL_DEPRIORITIZE_PENALTY = 0.50
+# Per-stall-retry numeric step applied when REFINING a stalled branch cell's
+# thesis so the retried payload is materially different from the prior (stalled)
+# attempt rather than an identical re-run. Scales with the stall count so each
+# successive retry of the same cell explores a different value.
+STALL_REFINE_STEP = 0.05
+
+# Alternate improvement directives cycled through on successive stall-retries of a
+# prompt_program 'instructions' branch cell. Re-running the identical directive
+# that already stalled would just stall again; each retry appends a structurally
+# different directive so the loop tries a smarter variant of the same idea.
+_REFINE_DIRECTIVES: Tuple[str, ...] = (
+    "Decompose every load-bearing claim into an explicit evidence chain "
+    "(claim -> source -> confidence) before stating it.",
+    "Prepend a one-line self-check that lists which required sections are "
+    "present; refuse to emit the answer if any required section is missing.",
+    "Rank candidate answers by falsifiability and emit only the most "
+    "falsifiable one, stating its disconfirming test inline.",
+)
 
 
 def _max_stall_retries() -> int:
@@ -101,6 +119,97 @@ def _stall_adjusted_signal(
     if n >= max_retries:
         return max(0.0, base_signal - STALL_DEPRIORITIZE_PENALTY)
     return max(0.0, base_signal - STALL_SIGNAL_PENALTY * n)
+
+
+def _refine_stalled_thesis(
+    candidate: Dict[str, Any],
+    component: Any,
+    stall_n: int,
+) -> Dict[str, Any]:
+    """Return a refined COPY of a candidate whose branch cell recently stalled.
+
+    The prior attempt for this cell produced essentially this same payload and
+    stalled, so re-running it unchanged would just stall again. This mutates the
+    payload into a materially different variant — an alternate directive for a
+    prompt_program 'instructions' cell, or a widened numeric step for a
+    swarm_config / role_composition cell — so the loop tries a smarter variant
+    of the same idea before the cell hits its retry limit.
+
+    The mutation is auditable: the candidate's rationale is annotated and a
+    'refinement' block (stall_count / strategy / detail) is attached so
+    select_next_thesis can surface it in the selection_votes record.
+
+    When the payload has no refinable field (e.g. a no-op probe), the original
+    candidate is returned unchanged.
+    """
+    if stall_n <= 0:
+        return candidate
+
+    import copy
+    refined = copy.deepcopy(candidate)
+    payload = refined.get("thesis") or {}
+    branch_cell = refined.get("branch_cell", "")
+    ctype = getattr(component, "component_type", "")
+    strategy: Optional[str] = None
+    detail: Optional[str] = None
+
+    if ctype == "prompt_program" and "instructions" in payload:
+        directive = _REFINE_DIRECTIVES[(stall_n - 1) % len(_REFINE_DIRECTIVES)]
+        base = payload.get("instructions") or ""
+        payload["instructions"] = base + (
+            "\n\nSTALL-REFINEMENT (retry %d): the prior directive stalled — "
+            "instead, %s" % (stall_n, directive)
+        )
+        strategy = "alternate_directive"
+        detail = "retry %d directive variant" % stall_n
+
+    elif "value" in payload:
+        try:
+            cur_val = float(payload.get("value"))
+        except (ValueError, TypeError):
+            cur_val = None
+        if cur_val is not None:
+            lo, hi = _BRANCH_CELL_BOUNDS.get(branch_cell, (float("-inf"), float("inf")))
+            bump = STALL_REFINE_STEP * stall_n
+            new_val = round(min(hi, max(lo, cur_val + bump)), 3)
+            if new_val == round(cur_val, 3):
+                # Already at the upper bound — step the other way instead so the
+                # refined value is guaranteed to differ from the stalled one.
+                new_val = round(min(hi, max(lo, cur_val - bump)), 3)
+            if new_val != round(cur_val, 3):
+                payload["value"] = new_val
+                strategy = "adjusted_step"
+                detail = "value %.3f->%.3f (step x%d)" % (cur_val, new_val, stall_n)
+
+    elif "weight" in payload:
+        try:
+            cur_w = float(payload.get("weight"))
+        except (ValueError, TypeError):
+            cur_w = None
+        if cur_w is not None:
+            bump = STALL_REFINE_STEP * stall_n
+            new_w = round(min(1.0, max(0.0, cur_w + bump)), 3)
+            if new_w == round(cur_w, 3):
+                new_w = round(min(1.0, max(0.0, cur_w - bump)), 3)
+            if new_w != round(cur_w, 3):
+                payload["weight"] = new_w
+                strategy = "adjusted_step"
+                detail = "weight %.3f->%.3f (step x%d)" % (cur_w, new_w, stall_n)
+
+    if strategy is None:
+        return candidate
+
+    refined["thesis"] = payload
+    refined["rationale"] = (refined.get("rationale") or "") + (
+        " [STALL-REFINED x%d: %s - %s]" % (stall_n, strategy, detail)
+    )
+    refined["refinement"] = {
+        "stall_count": stall_n,
+        "strategy": strategy,
+        "detail": detail,
+        "branch_cell": branch_cell,
+    }
+    return refined
 
 
 # --- LLM-backed thesis generation (governed swarm dispatch) ----------------
@@ -838,6 +947,20 @@ def select_next_thesis(
     except Exception:
         stalled_counts = {}
 
+    # Refine-and-retry: for any candidate whose branch cell has stalled but is
+    # still UNDER the retry limit, mutate its payload into a materially different
+    # variant before re-trying it — so the loop tries a smarter variant of the
+    # same idea, not an identical re-run. Cells at/above the limit are left
+    # unrefined and get heavily deprioritized by _stall_adjusted_signal instead.
+    refined_candidates: List[Dict[str, Any]] = []
+    for cand in candidates:
+        n = stalled_counts.get(cand.get("branch_cell", ""), 0)
+        if 0 < n < max_retries:
+            refined_candidates.append(_refine_stalled_thesis(cand, component, n))
+        else:
+            refined_candidates.append(cand)
+    candidates = refined_candidates
+
     best_candidate = candidates[0]
     best_adjusted = -1.0
     votes: Dict[str, Dict[str, Any]] = {}
@@ -883,6 +1006,10 @@ def select_next_thesis(
         "selected_signal_adjusted": round(best_adjusted, 4),
         "stalled_branch_cells": stalled_counts,
         "max_stall_retries": max_retries,
+        "selected_refinement": best_candidate.get("refinement"),
+        "refined_branch_cells": sorted(
+            c["branch_cell"] for c in candidates if c.get("refinement")
+        ),
         "cycle_index": cycle_index,
         "dissent_count": len(result.dissent),
     }

@@ -30,3 +30,19 @@ straddle loops (same constraint lm_bridge documents). Always pass a timeout
 (`EVOLUTION_LLM_TIMEOUT`, default 240s) so the loop never hangs on a provider.
 
 Operators can force heuristic-only mode with `EVOLUTION_LLM_THESIS=0`.
+
+**Test gotcha:** `tests/test_evolution_loop.py` claims to be hermetic ("no LLM
+calls"), but any test that calls `select_next_thesis` triggers candidate
+generation, which dispatches a real ~240-call swarm run **when a provider is
+configured** (true in the dev env) — so the "hermetic" suite hangs until the
+240s timeout. The suite must set `EVOLUTION_LLM_THESIS=0` at module load
+(before calling) to stay heuristic-only and deterministic. Provider availability,
+not the test code, is what flips this on.
+
+**Stall refine-and-retry:** when a branch cell stalls but is still under
+`max_stall_retries`, `select_next_thesis` now refines that cell's candidate
+(`_refine_stalled_thesis`) into a materially different payload before retrying —
+alternate directive for prompt_program, widened bounded step (scales with stall
+count) for swarm_config/role_composition — instead of an identical re-run. It's
+auditable via `selection_votes.selected_refinement` / `refined_branch_cells`.
+Cells at/above the limit stay unrefined and get deprioritized as before.
