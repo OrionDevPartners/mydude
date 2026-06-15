@@ -444,6 +444,16 @@ class PolicyEngine:
             )
         return PolicyDecision(True, "Allowed by policy.")
 
+    def evaluate_acquisition_kill_switch(self) -> bool:
+        """Return True when the auto-siphon acquisition loop is enabled.
+
+        Disabled by default — fetching and executing third-party code carries
+        real risk. Operators opt in with ENABLE_AUTO_SIPHON_ACQUISITION=true.
+        This is distinct from ALLOW_PROD_CAPABILITIES: acquisition can run in
+        dev without enabling production-affecting capabilities.
+        """
+        return _env_flag("ENABLE_AUTO_SIPHON_ACQUISITION")
+
     def _evaluate_gmail(self, params: Dict[str, Any]) -> PolicyDecision:
         """Gate for reading an emailed one-time code via the Gmail connector.
 

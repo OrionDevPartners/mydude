@@ -15,6 +15,8 @@ from src.models import (
     GovernanceVote,
     GovernanceEnactment,
     SwarmRunIndex,
+    CapabilityAcquisitionJob,
+    AcquisitionCandidate,
 )
 from src.web.auth import require_auth
 
@@ -270,6 +272,56 @@ async def governance(request: Request, _=Depends(require_auth)):
             db, window=epistemic_window,
             date_from=epistemic_from, date_to=epistemic_to,
         )
+
+        # Acquisition jobs — queried inside this try block so the session is live.
+        acquisition_jobs = []
+        acquisition_enabled = False
+        try:
+            from src.swarm.policy import PolicyEngine as _PE
+            acquisition_enabled = _PE().evaluate_acquisition_kill_switch()
+            acq_rows = (
+                db.query(CapabilityAcquisitionJob)
+                .order_by(CapabilityAcquisitionJob.created_at.desc())
+                .limit(30)
+                .all()
+            )
+            for row in acq_rows:
+                acq_candidates = (
+                    db.query(AcquisitionCandidate)
+                    .filter(AcquisitionCandidate.job_id == row.id)
+                    .order_by(AcquisitionCandidate.created_at.desc())
+                    .all()
+                )
+                acquisition_jobs.append({
+                    "id": row.id,
+                    "job_id": row.job_id,
+                    "capability": row.capability,
+                    "state": row.state,
+                    "best_candidate_name": row.best_candidate_name,
+                    "best_candidate_version": row.best_candidate_version,
+                    "best_candidate_registry": row.best_candidate_registry,
+                    "governance_proposal_id": row.governance_proposal_id,
+                    "notes": row.notes,
+                    "created_at": row.created_at,
+                    "updated_at": row.updated_at,
+                    "candidates": [
+                        {
+                            "id": c.id,
+                            "candidate_name": c.candidate_name,
+                            "candidate_version": c.candidate_version,
+                            "registry": c.registry,
+                            "description": c.description,
+                            "passed_sandbox": c.passed_sandbox,
+                            "passed_governance": c.passed_governance,
+                            "governance_proposal_id": c.governance_proposal_id,
+                            "created_at": c.created_at,
+                        }
+                        for c in acq_candidates
+                    ],
+                })
+        except Exception as _acq_exc:
+            logger.warning("Acquisition job load failed: %s", _acq_exc)
+
     finally:
         db.close()
 
@@ -318,6 +370,8 @@ async def governance(request: Request, _=Depends(require_auth)):
         "enactments": enactments,
         "epistemic_trend": epistemic_trend,
         "epistemic_labels": EPISTEMIC_LABELS,
+        "acquisition_jobs": acquisition_jobs,
+        "acquisition_enabled": acquisition_enabled,
         "flash": request.query_params.get("flash"),
     })
 

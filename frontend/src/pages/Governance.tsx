@@ -6,7 +6,8 @@ import { useApi } from '@/hooks/useApi'
 import { Spinner, Alert, Tabs, PageHeader, Empty } from '@/components/ui'
 import { GlassStatCard } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse, Activity, Vote, Zap, GitBranch } from 'lucide-react'
+import { ShieldCheck, Bell, BarChart2, Server, FlaskConical, HeartPulse, Activity, Vote, Zap, GitBranch, PackageSearch } from 'lucide-react'
+import type { AcquisitionJob } from '@/lib/api'
 
 const EP_COLORS: Record<string, string> = {
   verified: '#34d399',
@@ -116,7 +117,7 @@ export function Governance() {
         </div>
       )}
 
-      <Tabs tabs={['Alerts', 'Proposals', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction', 'Routing']} active={tab} onChange={setTab} />
+      <Tabs tabs={['Alerts', 'Proposals', 'Swarm Health', 'Ledger', 'Metrics', 'Epistemic', 'Jurisdiction', 'Routing', 'Acquisition']} active={tab} onChange={setTab} />
 
       {tab === 'Alerts' && data && (
         data.alerts.length === 0
@@ -598,6 +599,133 @@ export function Governance() {
             )}
           </div>
         </div>
+      )}
+
+      {tab === 'Acquisition' && data && (
+        <AcquisitionPanel jobs={data.acquisition_jobs ?? []} enabled={data.acquisition_enabled ?? false} />
+      )}
+    </div>
+  )
+}
+
+function AcquisitionPanel({ jobs, enabled }: { jobs: AcquisitionJob[]; enabled: boolean }) {
+  const [expanded, setExpanded] = useState<number | null>(null)
+
+  const stateColor = (s: string) => {
+    if (s === 'approved') return '#34d399'
+    if (s === 'rejected' || s === 'failed') return '#f87171'
+    if (s === 'governance_pending') return '#fbbf24'
+    if (s === 'fetching' || s === 'sandboxing') return '#60a5fa'
+    return 'var(--text-muted)'
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="glass-card" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <PackageSearch size={16} style={{ opacity: 0.7, flexShrink: 0 }} />
+        <div style={{ flex: 1, fontSize: 13, color: 'var(--text-secondary)' }}>
+          When the broker encounters an unmet capability, the acquisition loop searches PyPI/npm, verifies
+          candidates in a sandboxed subprocess (no production secrets), runs the governance envelope,
+          and raises a <strong>safety-track governance proposal</strong> for your explicit approval.
+          Integration only occurs after sandbox pass + governance pass + you enact the proposal.
+        </div>
+        <span className={`badge ${enabled ? 'badge-green' : 'badge-gray'}`} style={{ flexShrink: 0 }}>
+          {enabled ? 'Enabled' : 'Disabled'}
+        </span>
+      </div>
+
+      {!enabled && (
+        <div className="glass-card" style={{ padding: '12px 16px', fontSize: 12.5, color: 'var(--text-muted)' }}>
+          Set <code>ENABLE_AUTO_SIPHON_ACQUISITION=true</code> in your environment secrets to activate
+          the auto-siphon acquisition loop. Disabled by default — it fetches and executes third-party code.
+        </div>
+      )}
+
+      {jobs.length === 0 ? (
+        <Empty
+          message={enabled
+            ? "No acquisition jobs yet. Jobs open automatically when the broker encounters an unmet capability with no in-codebase equivalent."
+            : "No acquisition jobs. Enable the kill switch to start collecting jobs."
+          }
+          icon={<PackageSearch size={32} />}
+        />
+      ) : (
+        jobs.map(job => (
+          <div key={job.id} className="glass-card" style={{ padding: '14px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+                  <code style={{ fontSize: 11, color: 'var(--text-muted)' }}>{job.job_id}</code>
+                  <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)', fontFamily: 'monospace' }}>
+                    {job.capability}
+                  </span>
+                  <span style={{ fontWeight: 700, fontSize: 12, color: stateColor(job.state) }}>
+                    {job.state}
+                  </span>
+                </div>
+                {job.best_candidate_name && (
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                    Best candidate:{' '}
+                    <code>{job.best_candidate_name}{job.best_candidate_version ? `==${job.best_candidate_version}` : ''}</code>
+                    {job.best_candidate_registry && (
+                      <span style={{ color: 'var(--text-muted)' }}> ({job.best_candidate_registry})</span>
+                    )}
+                  </div>
+                )}
+                {job.governance_proposal_id && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    Governance proposal: <code>{job.governance_proposal_id}</code>
+                    {' '}<span className="badge badge-yellow" style={{ fontSize: 10 }}>awaiting approval</span>
+                  </div>
+                )}
+                {job.notes && (
+                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, maxWidth: 600 }}>{job.notes}</div>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{fmtDate(job.created_at)}</div>
+            </div>
+
+            {job.candidates.length > 0 && (
+              <>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setExpanded(expanded === job.id ? null : job.id)}
+                  style={{ marginTop: 4, fontSize: 11 }}
+                >
+                  {expanded === job.id ? 'Hide' : `Show ${job.candidates.length} candidate${job.candidates.length === 1 ? '' : 's'}`}
+                </button>
+                {expanded === job.id && (
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {job.candidates.map(c => (
+                      <div key={c.id} style={{
+                        padding: '8px 12px',
+                        background: 'rgba(255,255,255,0.04)',
+                        borderRadius: 6,
+                        border: '1px solid var(--border, rgba(255,255,255,0.08))',
+                        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                      }}>
+                        <code style={{ fontSize: 12 }}>
+                          {c.candidate_name}{c.candidate_version ? `==${c.candidate_version}` : ''}
+                        </code>
+                        {c.registry && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>({c.registry})</span>}
+                        <span className={`badge ${c.passed_sandbox ? 'badge-green' : 'badge-red'}`} style={{ fontSize: 10 }}>
+                          sandbox {c.passed_sandbox ? '✓' : '✗'}
+                        </span>
+                        <span className={`badge ${c.passed_governance ? 'badge-green' : 'badge-gray'}`} style={{ fontSize: 10 }}>
+                          governance {c.passed_governance ? '✓' : '✗'}
+                        </span>
+                        {c.governance_proposal_id && (
+                          <code style={{ fontSize: 10, color: 'var(--text-muted)' }}>{c.governance_proposal_id}</code>
+                        )}
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>{fmtDate(c.created_at)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        ))
       )}
     </div>
   )

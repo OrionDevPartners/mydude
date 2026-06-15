@@ -433,6 +433,117 @@
 
 <div class="card">
     <div class="card-header">
+        <h3>🔍 Auto-Siphon Acquisition Jobs</h3>
+        {% if acquisition_enabled %}
+        <span class="status-badge sev-low">ENABLED</span>
+        {% else %}
+        <span class="status-badge" style="opacity:0.6;">DISABLED — set ENABLE_AUTO_SIPHON_ACQUISITION=true to activate</span>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        <p class="meta" style="margin-bottom:0.8rem;">When the broker encounters an unmet capability deficit, the acquisition loop fetches candidate packages (PyPI/npm), verifies them in a sandboxed subprocess, and raises a governance proposal for operator approval. Integration only occurs after <strong>sandbox pass + governance envelope pass + explicit operator approval</strong>.</p>
+        {% if acquisition_jobs %}
+        <div class="table-wrap">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Job ID</th>
+                    <th>Capability</th>
+                    <th>State</th>
+                    <th>Best Candidate</th>
+                    <th>Governance Proposal</th>
+                    <th>Candidates</th>
+                    <th>Notes</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for job in acquisition_jobs %}
+            <tr>
+                <td class="mono" style="font-size:0.78rem;">{{ job.job_id }}</td>
+                <td>
+                    <code style="font-size:0.82rem;">{{ job.capability }}</code>
+                </td>
+                <td>
+                    {% set state_colors = {
+                        "pending": "opacity:0.6",
+                        "fetching": "color:var(--accent)",
+                        "sandboxing": "color:var(--accent)",
+                        "governance_pending": "color:#f0a500",
+                        "approved": "color:#3ddc84",
+                        "rejected": "color:#e94560",
+                        "failed": "color:#e94560"
+                    } %}
+                    <span style="{{ state_colors.get(job.state, '') }};font-weight:600;">
+                        {{ job.state }}
+                    </span>
+                </td>
+                <td>
+                    {% if job.best_candidate_name %}
+                    <span class="mono" style="font-size:0.8rem;">
+                        {{ job.best_candidate_name }}{% if job.best_candidate_version %}=={{ job.best_candidate_version }}{% endif %}
+                    </span>
+                    {% if job.best_candidate_registry %}
+                    <span class="meta"> ({{ job.best_candidate_registry }})</span>
+                    {% endif %}
+                    {% else %}
+                    <span class="meta">—</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if job.governance_proposal_id %}
+                    <code style="font-size:0.78rem;">{{ job.governance_proposal_id }}</code>
+                    {% else %}
+                    <span class="meta">—</span>
+                    {% endif %}
+                </td>
+                <td style="text-align:center;">
+                    {{ job.candidates | length }}
+                    {% if job.candidates %}
+                    <details style="display:inline-block;margin-left:0.3rem;">
+                        <summary style="cursor:pointer;font-size:0.75rem;opacity:0.7;">show</summary>
+                        <div style="position:absolute;background:var(--bg-card);border:1px solid var(--border);padding:0.6rem;border-radius:4px;z-index:10;min-width:320px;font-size:0.78rem;">
+                        {% for c in job.candidates %}
+                        <div style="margin-bottom:0.4rem;padding-bottom:0.4rem;border-bottom:1px solid var(--border);">
+                            <strong>{{ c.candidate_name }}{% if c.candidate_version %}=={{ c.candidate_version }}{% endif %}</strong>
+                            <span class="meta"> ({{ c.registry or '?' }})</span><br>
+                            Sandbox: <span style="color:{% if c.passed_sandbox %}#3ddc84{% else %}#e94560{% endif %}">
+                                {{ '✓ pass' if c.passed_sandbox else '✗ fail' }}
+                            </span>
+                            &nbsp;·&nbsp;
+                            Governance: <span style="color:{% if c.passed_governance %}#3ddc84{% else %}#e94560{% endif %}">
+                                {{ '✓ pass' if c.passed_governance else '✗ fail' }}
+                            </span>
+                            {% if c.governance_proposal_id %}
+                            <br><span class="meta">Proposal: {{ c.governance_proposal_id }}</span>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                        </div>
+                    </details>
+                    {% endif %}
+                </td>
+                <td style="font-size:0.78rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ job.notes or '' }}">{{ (job.notes or '—')[:80] }}</td>
+                <td class="meta" style="white-space:nowrap;">{{ job.created_at.strftime('%Y-%m-%d %H:%M') if job.created_at else '—' }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            {% if acquisition_enabled %}
+            No acquisition jobs yet. Jobs open automatically when the broker encounters an unmet capability that has no in-codebase equivalent.
+            {% else %}
+            Acquisition is disabled. Set <code>ENABLE_AUTO_SIPHON_ACQUISITION=true</code> in your environment secrets to activate the auto-siphon loop.
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
         <h3>⚙️ Provider Metrics</h3>
         <span class="meta">{{ total_metrics }} calls recorded</span>
     </div>

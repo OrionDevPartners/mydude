@@ -1062,6 +1062,57 @@ async def api_governance(request: Request, _=Depends(require_auth)):
         proposals = [_ser_proposal(p) for p in open_props]
         recent_proposals = [_ser_proposal(p) for p in recent_props]
         open_proposals = len(open_props)
+
+        # Acquisition jobs — loaded here while the session is still live.
+        acquisition_jobs = []
+        acquisition_enabled = False
+        try:
+            from src.swarm.policy import PolicyEngine as _AcqPE
+            acquisition_enabled = _AcqPE().evaluate_acquisition_kill_switch()
+            from src.models import CapabilityAcquisitionJob, AcquisitionCandidate
+            _acq_rows = (
+                db.query(CapabilityAcquisitionJob)
+                .order_by(CapabilityAcquisitionJob.created_at.desc())
+                .limit(30)
+                .all()
+            )
+            for _row in _acq_rows:
+                _cands = (
+                    db.query(AcquisitionCandidate)
+                    .filter(AcquisitionCandidate.job_id == _row.id)
+                    .order_by(AcquisitionCandidate.created_at.desc())
+                    .all()
+                )
+                acquisition_jobs.append({
+                    "id": _row.id,
+                    "job_id": _row.job_id,
+                    "capability": _row.capability,
+                    "state": _row.state,
+                    "best_candidate_name": _row.best_candidate_name,
+                    "best_candidate_version": _row.best_candidate_version,
+                    "best_candidate_registry": _row.best_candidate_registry,
+                    "governance_proposal_id": _row.governance_proposal_id,
+                    "notes": _row.notes,
+                    "created_at": _dt(_row.created_at),
+                    "updated_at": _dt(_row.updated_at),
+                    "candidates": [
+                        {
+                            "id": c.id,
+                            "candidate_name": c.candidate_name,
+                            "candidate_version": c.candidate_version,
+                            "registry": c.registry,
+                            "description": c.description,
+                            "passed_sandbox": c.passed_sandbox,
+                            "passed_governance": c.passed_governance,
+                            "governance_proposal_id": c.governance_proposal_id,
+                            "created_at": _dt(c.created_at),
+                        }
+                        for c in _cands
+                    ],
+                })
+        except Exception as _acq_exc:
+            logger.warning("Acquisition job load failed: %s", _acq_exc)
+
     finally:
         db.close()
 
@@ -1122,6 +1173,8 @@ async def api_governance(request: Request, _=Depends(require_auth)):
         "open_proposals": open_proposals,
         "routing_stats": routing_stats,
         "drift_report": drift_report,
+        "acquisition_jobs": acquisition_jobs,
+        "acquisition_enabled": acquisition_enabled,
     }
 
 

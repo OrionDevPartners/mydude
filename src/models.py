@@ -1290,6 +1290,57 @@ class BurstWorker(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CapabilityAcquisitionJob(Base):
+    """Tracks one closed-loop auto-siphon acquisition job.
+
+    State machine:
+      pending → fetching → sandboxing → governance_pending → approved / rejected / failed
+
+    The job is opened when the broker encounters an unmet capability deficit
+    (after DevGuard's dedup check) and the ENABLE_AUTO_SIPHON_ACQUISITION kill
+    switch is on. Integration into the live runtime happens ONLY after sandbox
+    pass + governance pass + explicit operator approval of the linked
+    GovernanceProposal — never automatically.
+    """
+    __tablename__ = "capability_acquisition_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(String(30), unique=True, nullable=False, index=True)
+    capability = Column(String(120), nullable=False, index=True)
+    params_json = Column(Text, nullable=True)
+    state = Column(String(30), nullable=False, default="pending", index=True)
+    best_candidate_name = Column(String(120), nullable=True)
+    best_candidate_version = Column(String(40), nullable=True)
+    best_candidate_registry = Column(String(40), nullable=True)
+    governance_proposal_id = Column(String(50), nullable=True, index=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AcquisitionCandidate(Base):
+    """A single candidate package evaluated within an acquisition job.
+
+    Stores the structured sandbox pass/fail record and governance scores so
+    every evaluation step is permanently auditable — not just the winning
+    candidate.
+    """
+    __tablename__ = "acquisition_candidates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, nullable=False, index=True)
+    candidate_name = Column(String(120), nullable=False)
+    candidate_version = Column(String(40), nullable=True)
+    registry = Column(String(40), nullable=True)
+    description = Column(Text, nullable=True)
+    knowledge_excerpt = Column(Text, nullable=True)
+    sandbox_result_json = Column(Text, nullable=True)
+    passed_sandbox = Column(Boolean, default=False)
+    passed_governance = Column(Boolean, default=False)
+    governance_proposal_id = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class BurstEvent(Base):
     """Audit trail of every burst worker lifecycle transition.
 

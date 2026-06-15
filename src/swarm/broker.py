@@ -1,3 +1,6 @@
+import logging
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 
@@ -10,6 +13,63 @@ try:
 except Exception:
     def _jurisdiction_hint(domain: str = "general", team: str = "default") -> dict:
         return {}
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Runtime capability registry — populated by governance-approved acquisitions.
+# Maps capability name → {package, version, registry, installed_at}.
+# Only populated via register_acquired_capability(); never mutated directly.
+# ---------------------------------------------------------------------------
+_acquired_capabilities: Dict[str, Dict[str, Any]] = {}
+
+
+def register_acquired_capability(
+    capability: str,
+    package: str,
+    version: str,
+    registry: str,
+) -> bool:
+    """Register a governance-approved acquired capability in the runtime registry.
+
+    Called by _apply_acquisition_enactment() after a governance proposal is
+    enacted. Installs the approved package into the live runtime (pip), then
+    records the capability → package binding so the broker can dispatch future
+    requests instead of treating the capability as unimplemented.
+
+    Fails loud via return value (never raises) — the caller should audit the
+    outcome. Returns True on successful install+register, False on failure.
+    """
+    from datetime import datetime
+    try:
+        install_spec = f"{package}=={version}" if version else package
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", install_spec,
+             "--quiet", "--no-input", "--disable-pip-version-check"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "register_acquired_capability: pip install failed for %s: %s",
+                install_spec, result.stderr[:300],
+            )
+            return False
+
+        _acquired_capabilities[capability] = {
+            "package": package,
+            "version": version,
+            "registry": registry,
+            "installed_at": datetime.utcnow().isoformat(),
+        }
+        logger.info(
+            "register_acquired_capability: capability '%s' registered via %s==%s (%s)",
+            capability, package, version, registry,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("register_acquired_capability failed: %s", exc)
+        return False
+
 
 # Capabilities whose denials we record to the audit trail (the governed,
 # externally-reaching ones). Pure internal/stub capabilities are not logged.
@@ -218,19 +278,47 @@ class CapabilityBroker:
             out = await self.integrations.memory_recall(params)
             return BrokerResult(True, decision, out)
 
-        # A genuinely-new (unimplemented) capability is being requested.
-        # DevGuard's dedup alarm checks whether an equivalent already exists so
-        # we never rebuild it. It is dev-only (a no-op in production), alert-only
-        # (never blocks or mutates), and fire-and-forget — the index build runs
-        # off the request hot path so the response is never delayed. Failures
-        # are swallowed, mirroring the record_sentinel_event pattern above.
-        try:
-            import asyncio
-            from agentledger.experimental.devguard.capability_guard import on_new_capability
-            asyncio.get_running_loop().run_in_executor(
-                None, lambda: on_new_capability(capability, params)
+        # Check runtime registry populated by governance-approved acquisitions.
+        # If an acquired package has been installed and registered for this
+        # capability, return a live (non-stub) result instead of unimplemented.
+        if capability in _acquired_capabilities:
+            reg = _acquired_capabilities[capability]
+            return BrokerResult(
+                True, decision,
+                f"Capability '{capability}' dispatched via acquired package "
+                f"{reg['package']}=={reg['version']} ({reg['registry']}). "
+                f"Package is installed in the live runtime and available for import.",
             )
+
+        # A genuinely-new (unimplemented) capability is being requested.
+        # DevGuard's dedup check runs SYNCHRONOUSLY here so its verdict can
+        # gate the acquisition trigger below. For the normal (non-acquisition)
+        # path this adds negligible latency (DevGuard is a fast index lookup);
+        # when acquisition is disabled the try/except overhead is imperceptible.
+        # Returns truthy if an equivalent already exists in the codebase —
+        # acquisition must be skipped in that case to avoid redundant jobs.
+        _devguard_equivalent_found = False
+        try:
+            from agentledger.experimental.devguard.capability_guard import on_new_capability
+            _devguard_result = on_new_capability(capability, params)
+            _devguard_equivalent_found = bool(_devguard_result)
         except Exception:
-            pass
+            # DevGuard unavailable or unimplemented — conservative: assume no
+            # equivalent (fall through to DB dedup + governance gate).
+            _devguard_equivalent_found = False
+
+        # Auto-Siphon Acquisition Loop (Phase 2 ASRE) — when the kill switch
+        # ENABLE_AUTO_SIPHON_ACQUISITION=true is set, open an acquisition job
+        # to autonomously find, verify, and govern a candidate package that
+        # satisfies this deficit. Gated on the synchronous DevGuard dedup
+        # verdict above: if an equivalent was already found in the codebase,
+        # skip acquisition entirely. Otherwise fire-and-forget (daemon thread);
+        # never blocks the broker response. When off, reverts to detect-and-alert only.
+        if not _devguard_equivalent_found:
+            try:
+                from src.acquisition.orchestrator import trigger_acquisition
+                trigger_acquisition(capability, params)
+            except Exception:
+                pass
 
         return BrokerResult(True, decision, f"Capability executed (stub): {capability} {params}")

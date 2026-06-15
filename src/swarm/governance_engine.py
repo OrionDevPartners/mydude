@@ -550,6 +550,8 @@ class GovernanceEngine:
         action_raw = (prop.proposed_action or "").strip()
         if action_raw.startswith("promote_prompt_version:"):
             return self._promote_prompt_version(db, prop, action_raw)
+        if action_raw.startswith("register_acquired_capability"):
+            return self._apply_acquisition_enactment(db, prop, action_raw)
 
         try:
             from src.models import AppSetting
@@ -595,6 +597,138 @@ class GovernanceEngine:
         except Exception as e:
             logger.warning("_apply_enacted_action failed for proposal %s: %s", getattr(prop, "proposal_id", "?"), e)
             return []
+
+    def _apply_acquisition_enactment(self, db: Any, prop: Any, action_raw: str) -> List[str]:
+        """Handle enactment of a 'register_acquired_capability' governance proposal.
+
+        Parses the action string (format: 'register_acquired_capability
+        capability=X package=Y version=Z registry=W job_id=N'), marks the
+        acquisition job and its best candidate as approved, triggers the memory
+        siphon to distill a verified claim, and emits a final audit event.
+        Never raises — failures return an empty list with a logged warning.
+        """
+        applied: List[str] = []
+        try:
+            import re as _re
+            def _kv(key: str) -> str:
+                m = _re.search(rf"{key}=(\S+)", action_raw)
+                return m.group(1) if m else ""
+
+            capability = _kv("capability")
+            package = _kv("package")
+            version = _kv("version")
+            registry = _kv("registry")
+            job_id_str = _kv("job_id")
+            job_id = int(job_id_str) if job_id_str.isdigit() else None
+
+            if not capability:
+                logger.warning(
+                    "_apply_acquisition_enactment: missing capability in action: %s", action_raw[:200]
+                )
+                return ["acquisition_enactment=failed:missing_capability"]
+
+            if job_id:
+                from src.models import CapabilityAcquisitionJob, AcquisitionCandidate
+
+                best_cand = (
+                    db.query(AcquisitionCandidate)
+                    .filter(
+                        AcquisitionCandidate.job_id == job_id,
+                        AcquisitionCandidate.passed_sandbox == True,
+                        AcquisitionCandidate.passed_governance == True,
+                    )
+                    .first()
+                )
+                if not best_cand and package:
+                    best_cand = (
+                        db.query(AcquisitionCandidate)
+                        .filter(
+                            AcquisitionCandidate.job_id == job_id,
+                            AcquisitionCandidate.candidate_name == package,
+                        )
+                        .first()
+                    )
+                knowledge_excerpt = best_cand.knowledge_excerpt or "" if best_cand else ""
+
+                # Step 1: Attempt runtime registration FIRST.
+                # State and memory distillation are set based on the outcome,
+                # so we never record "approved" when the live install failed.
+                installed = False
+                try:
+                    from src.swarm.broker import register_acquired_capability
+                    installed = register_acquired_capability(capability, package, version, registry)
+                except Exception as reg_exc:
+                    logger.warning("register_acquired_capability call failed: %s", reg_exc)
+
+                # Step 2: Update DB state based on runtime registration outcome.
+                job = db.query(CapabilityAcquisitionJob).filter(
+                    CapabilityAcquisitionJob.id == job_id
+                ).first()
+                if job:
+                    job.state = "approved" if installed else "approved_pending_runtime_install"
+                    job.governance_proposal_id = getattr(prop, "proposal_id", None)
+
+                if best_cand:
+                    best_cand.passed_governance = True
+
+                db.flush()
+
+                if installed:
+                    applied.append(
+                        f"acquisition_job_{job_id}=approved capability={capability} "
+                        f"package={package}=={version} runtime=installed"
+                    )
+                    applied.append(f"runtime_registered={capability}→{package}=={version}")
+                    logger.info(
+                        "_apply_acquisition_enactment: capability '%s' approved and live "
+                        "in broker registry via %s==%s (%s)",
+                        capability, package, version, registry,
+                    )
+                else:
+                    applied.append(
+                        f"acquisition_job_{job_id}=approved_pending_runtime_install "
+                        f"capability={capability} package={package}=={version}"
+                    )
+                    logger.warning(
+                        "_apply_acquisition_enactment: pip install into live runtime failed "
+                        "for %s==%s; job state=approved_pending_runtime_install; "
+                        "capability is governance-approved but not yet broker-dispatched",
+                        package, version,
+                    )
+
+                # Step 3: Write memory siphon and audit only after confirmed outcome.
+                try:
+                    from src.acquisition.orchestrator import _siphon_success, _audit
+                    if installed:
+                        _siphon_success(capability, package, version, registry, knowledge_excerpt)
+                        _audit(
+                            capability, "approved",
+                            f"Governance proposal {getattr(prop, 'proposal_id', '?')} enacted. "
+                            f"Package {package}=={version} ({registry}) installed and registered "
+                            f"for capability '{capability}'.",
+                            target=package,
+                        )
+                    else:
+                        _audit(
+                            capability, "approved_pending_runtime_install",
+                            f"Governance proposal {getattr(prop, 'proposal_id', '?')} enacted "
+                            f"but runtime pip install of {package}=={version} ({registry}) failed. "
+                            f"Capability '{capability}' requires manual install to become active.",
+                            target=package,
+                        )
+                except Exception as siphon_exc:
+                    logger.warning("Siphon/audit on enactment failed: %s", siphon_exc)
+            else:
+                logger.warning(
+                    "_apply_acquisition_enactment: no job_id in action, cannot update job state: %s",
+                    action_raw[:200],
+                )
+                applied.append(f"acquisition_capability={capability} job_id=unknown")
+
+        except Exception as exc:
+            logger.warning("_apply_acquisition_enactment failed: %s", exc)
+            return []
+        return applied
 
     @classmethod
     def from_meta_claim(cls, claim: Any) -> Optional[str]:
