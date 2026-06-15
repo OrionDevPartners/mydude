@@ -8,7 +8,7 @@ import { useApi } from '@/hooks/useApi'
 import { Card, Spinner, Alert, Tabs, Modal, PageHeader, Empty, Screenshot, FormField } from '@/components/ui'
 import { GlassStatCard, GlassSection } from '@/components/glass'
 import { fmtDate } from '@/lib/utils'
-import { Plus, Trash2, ExternalLink, XCircle, CreditCard, RefreshCw, CheckCircle, Search } from 'lucide-react'
+import { Plus, Trash2, ExternalLink, XCircle, CreditCard, RefreshCw, CheckCircle, Search, AlertTriangle } from 'lucide-react'
 
 const STATUS_COLOR: Record<string, string> = {
   confirmed: 'badge-green', candidate: 'badge-blue',
@@ -87,12 +87,19 @@ export function Subscriptions() {
             <GlassSection title="Tracked subscriptions" className="animate-fade-in-up">
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {data.subscriptions.map(sub => (
-                <Card key={sub.id} style={{ padding: '14px 18px' }}>
+                <Card key={sub.id} style={sub.needs_details
+                  ? { padding: '14px 18px', borderColor: 'var(--warning, #d99a1c)', boxShadow: 'inset 3px 0 0 var(--warning, #d99a1c)' }
+                  : { padding: '14px 18px' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
                     <div style={{ flex: 1, minWidth: 180 }}>
-                      <div style={{ display: 'flex', align: 'center', gap: 8, marginBottom: 4 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
                         <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{sub.name}</span>
                         <span className={`badge ${STATUS_COLOR[sub.status] || 'badge-gray'}`}>{sub.status}</span>
+                        {sub.needs_details && (
+                          <span className="badge badge-yellow" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <AlertTriangle size={11} /> Needs details
+                          </span>
+                        )}
                       </div>
                       <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                         {sub.domain}
@@ -105,6 +112,16 @@ export function Subscriptions() {
                         )}
                         {sub.login_username && ` · ${sub.login_username}`} {sub.source && `· ${formatSource(sub.source)}`}
                       </p>
+                      {sub.needs_details && (
+                        <p style={{ fontSize: 12, color: 'var(--warning, #d99a1c)', marginTop: 6, display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                          <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                          <span>
+                            Unrecognised merchant — the name was guessed from <strong>{sub.domain}</strong> and login/account URLs are missing.
+                            Add the real service name and links before acting on it.
+                            <button className="btn btn-secondary btn-sm" style={{ marginLeft: 8 }} onClick={() => setCreds(sub)}>Add details</button>
+                          </span>
+                        </p>
+                      )}
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       {sub.status === 'candidate' && (
@@ -258,7 +275,7 @@ function SubResult({ result, onClose }: { result: SubActionResult; onClose: () =
 }
 
 function CredentialsForm({ sub, onSaved, onError }: { sub: Subscription; onSaved: () => void; onError: (e: string) => void }) {
-  const [form, setForm] = useState({ login_url: sub.login_url, account_url: sub.account_url, login_username: sub.login_username, password: '' })
+  const [form, setForm] = useState({ name: sub.name, login_url: sub.login_url, account_url: sub.account_url, login_username: sub.login_username, password: '' })
   const [saving, setSaving] = useState(false)
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })) }
   async function submit(e: React.FormEvent) {
@@ -269,6 +286,15 @@ function CredentialsForm({ sub, onSaved, onError }: { sub: Subscription; onSaved
   }
   return (
     <form onSubmit={submit}>
+      {sub.needs_details && (
+        <p style={{ fontSize: 12, color: 'var(--warning, #d99a1c)', marginBottom: 14, display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+          <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>This was an unrecognised billing sender. Replace the guessed name with the real service name and add its login/account URLs.</span>
+        </p>
+      )}
+      <FormField label={sub.needs_details ? 'Service name *' : 'Service name'} hint={sub.needs_details ? 'Guessed from the sender domain — set the real name' : undefined}>
+        <input className="form-input" value={form.name} onChange={e => set('name', e.target.value)} required={sub.needs_details} />
+      </FormField>
       <FormField label="Login URL"><input className="form-input" type="url" value={form.login_url} onChange={e => set('login_url', e.target.value)} /></FormField>
       <FormField label="Account URL"><input className="form-input" type="url" value={form.account_url} onChange={e => set('account_url', e.target.value)} /></FormField>
       <FormField label="Username"><input className="form-input" value={form.login_username} onChange={e => set('login_username', e.target.value)} /></FormField>

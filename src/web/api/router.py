@@ -2174,6 +2174,7 @@ async def api_set_sub_status(sub_id: int, status: str = Form(""), _=Depends(requ
 @router.post("/subscriptions/{sub_id}/credentials")
 async def api_set_sub_credentials(
     sub_id: int,
+    name: str = Form(""),
     login_url: str = Form(""),
     account_url: str = Form(""),
     login_username: str = Form(""),
@@ -2188,6 +2189,10 @@ async def api_set_sub_credentials(
         sub = db.query(Subscription).filter(Subscription.id == sub_id).first()
         if not sub:
             raise HTTPException(404, "Not found.")
+        # Let the user replace a guessed-from-domain name on an unrecognised
+        # candidate with the real service name.
+        if name.strip():
+            sub.name = name.strip()
         if login_url.strip():
             sub.login_url = login_url.strip()
         if account_url.strip():

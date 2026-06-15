@@ -42,6 +42,12 @@ def _broker():
 
 
 def _serialize(sub):
+    source = sub.source or ""
+    # Flag candidates discovered from billing receipts whose merchant MyDude
+    # doesn't recognise yet: their name was guessed from the sender domain and
+    # they have no login/account URLs, so the user must fill in real details
+    # before acting on them.
+    is_unknown = "email_receipt_unknown" in source.split("+")
     return {
         "id": sub.id,
         "name": sub.name,
@@ -56,7 +62,15 @@ def _serialize(sub):
         "cost_is_estimate": bool(sub.cost_is_estimate) if sub.est_cost else False,
         "currency": sub.currency or "",
         "cadence": sub.cadence or "",
-        "source": sub.source or "",
+        "source": source,
+        "unknown": is_unknown,
+        # An unknown candidate still missing the real service identity: name
+        # was guessed from the domain and both login/account URLs are absent.
+        "needs_details": bool(
+            is_unknown
+            and sub.status == "candidate"
+            and not (sub.login_url or sub.account_url)
+        ),
         "notes": sub.notes or "",
         "last_checked_at": sub.last_checked_at,
         "created_at": sub.created_at,
@@ -377,6 +391,7 @@ async def set_status(request: Request, sub_id: int, status: str = Form(""), _=De
 async def set_credentials(
     request: Request,
     sub_id: int,
+    name: str = Form(""),
     login_url: str = Form(""),
     account_url: str = Form(""),
     login_username: str = Form(""),
@@ -387,12 +402,16 @@ async def set_credentials(
 
     The password is encrypted into the vault as a dedicated ApiKey row and
     referenced by id — it is never stored in plaintext on the subscription.
+    A real service name may also be supplied to replace a guessed-from-domain
+    name on an unrecognised candidate.
     """
     db = SessionLocal()
     try:
         sub = db.query(Subscription).filter(Subscription.id == sub_id).first()
         if not sub:
             return RedirectResponse("/subscriptions?err=" + quote("Not found."), status_code=303)
+        if name.strip():
+            sub.name = name.strip()
         if login_url.strip():
             sub.login_url = login_url.strip()
         if account_url.strip():
