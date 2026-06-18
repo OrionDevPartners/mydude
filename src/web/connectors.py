@@ -40,7 +40,7 @@ def get_connection_status(connector_names):
         url = "https://%s/api/v2/connection?%s" % (hostname, query)
         req = urllib.request.Request(
             url,
-            headers={"Accept": "application/json", "X_REPLIT_TOKEN": token},
+            headers={"Accept": "application/json", "X-Replit-Token": token},
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             payload = json.loads(resp.read().decode())
@@ -78,7 +78,7 @@ def get_connection_settings(connector_name):
         url = "https://%s/api/v2/connection?%s" % (hostname, query)
         req = urllib.request.Request(
             url,
-            headers={"Accept": "application/json", "X_REPLIT_TOKEN": token},
+            headers={"Accept": "application/json", "X-Replit-Token": token},
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             payload = json.loads(resp.read().decode())
