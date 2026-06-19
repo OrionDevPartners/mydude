@@ -560,6 +560,48 @@ class GovernanceEngine:
             logger.warning("Prompt promotion failed for version %s: %s", version_id, e)
             return ["promote_prompt_version=error:%s" % e]
 
+    @staticmethod
+    def _write_setting(db: Any, key: str, value: str, op: str = "set") -> str:
+        """Idempotent, race-safe write of a single AppSetting row.
+
+        Computes the final value and persists it (pending in the caller's
+        transaction). Safe when other writers share the same database: a
+        competing INSERT of the same key is recovered as an UPDATE inside a
+        SAVEPOINT rather than poisoning the enclosing enactment transaction.
+
+        ``op="increment"`` adds ``value`` to the current numeric value, clamped
+        to a max of 5; any other ``op`` stores ``value`` verbatim. Returns the
+        value actually stored.
+        """
+        from sqlalchemy.exc import IntegrityError
+        from src.models import AppSetting
+
+        def _compute(existing: Optional[str]) -> str:
+            if op == "increment":
+                current = int(existing or "0")
+                return str(min(current + int(value), 5))
+            return value
+
+        setting = db.query(AppSetting).filter(AppSetting.key == key).first()
+        if setting is not None:
+            setting.value = _compute(setting.value)
+            return setting.value
+
+        new_val = _compute(None)
+        try:
+            with db.begin_nested():
+                db.add(AppSetting(key=key, value=new_val))
+                db.flush()
+            return new_val
+        except IntegrityError:
+            # A concurrent writer inserted the same key first — re-read and
+            # update instead of crashing the enactment.
+            setting = db.query(AppSetting).filter(AppSetting.key == key).first()
+            if setting is None:
+                raise
+            setting.value = _compute(setting.value)
+            return setting.value
+
     def _apply_enacted_action(self, db: Any, prop: Any) -> List[str]:
         """Parse proposed_action and write bounded setting changes to AppSetting.
 
@@ -585,18 +627,7 @@ class GovernanceEngine:
                     key = pattern["setting_key"]
                     value = pattern["value"]
 
-                    setting = db.query(AppSetting).filter(AppSetting.key == key).first()
-                    if pattern["op"] == "increment":
-                        current = int(setting.value or "0") if setting else 0
-                        new_val = str(min(current + int(value), 5))
-                    else:
-                        new_val = value
-
-                    if setting:
-                        setting.value = new_val
-                    else:
-                        db.add(AppSetting(key=key, value=new_val))
-
+                    new_val = self._write_setting(db, key, value, op=pattern["op"])
                     applied.append(f"{key}={new_val}")
                     logger.info(
                         "Enacted action applied: proposal=%s key=%s value=%s",
@@ -607,11 +638,7 @@ class GovernanceEngine:
                 # Record the free-text action as a pending operator note
                 key = f"{PENDING_ACTION_PREFIX}{prop.proposal_id}"
                 note = (prop.proposed_action or "no action specified")[:500]
-                setting = db.query(AppSetting).filter(AppSetting.key == key).first()
-                if setting:
-                    setting.value = note
-                else:
-                    db.add(AppSetting(key=key, value=note))
+                self._write_setting(db, key, note, op="set")
                 applied.append(f"{key}=<pending_note>")
                 logger.info("No mapped action pattern; recorded as pending note: %s", key)
 

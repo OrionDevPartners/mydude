@@ -48,3 +48,4 @@
 - [Governed non-LLM capability calls](governed-capability-call.md) — wrap resolver capability calls in governed_call (jurisdiction gate + broker allow-list + fail-soft audit w/ exec_locus+actor); sync, so async routes use to_thread.
 - [Zero-token structural routing](zero-token-routing.md) — pre-swarm router was dormant; now a fail-safe gate in run() recording STRUCTURAL_ROUTING; dispatch rare by design (contract validation + ~0.92 threshold).
 - [Cross-domain FK split](cross-domain-fk-split.md) — per-domain physical DBs can't keep cross-DB FKs; strip them at create_all, enforce in app; backfill needs typed Core inserts for JSON.
+- [Governance setting-write race](governance-setting-write-race.md) — enactment AppSetting writes must be SAVEPOINT insert-or-update; parallel run_all on one shared DB collides on same swarm.* key.
