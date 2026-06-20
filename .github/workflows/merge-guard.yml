@@ -1,0 +1,148 @@
+name: Merge Guard
+
+# Merge Guard — ADVISORY (non-blocking) protection against STALE code
+# overwriting EDGE code (the most up-to-date code on a branch).
+#
+# It never fails a check and never blocks a merge or a push. It only surfaces
+# GitHub warning annotations + a job summary when it detects that an incoming
+# change is based on stale history and could overwrite newer commits.
+#
+# Two situations are detected:
+#   1. pull_request — the PR branch does NOT contain the current tip of its base
+#      branch, so merging it could revert newer commits already on the base.
+#   2. push (forced) — a non-fast-forward force-push that drops commits which
+#      were reachable from the previous tip, i.e. stale code overwrote edge code.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+
+permissions:
+  contents: read
+
+# Supersede older runs of this advisory guard for the same ref, but never cancel
+# in a way that loses a force-push warning.
+concurrency:
+  group: merge-guard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pr-staleness:
+    name: PR stale-vs-edge (advisory)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+
+      - name: Warn if PR is based on stale code
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          git fetch --no-tags --quiet origin "$BASE_REF" 2>/dev/null || true
+          git fetch --no-tags --quiet origin "$HEAD_SHA" 2>/dev/null || true
+          # Current tip of the base branch = the "edge" (most up-to-date) code.
+          EDGE="$(git rev-parse "origin/$BASE_REF" 2>/dev/null || echo "$BASE_SHA")"
+          echo "Base '$BASE_REF' edge tip: $EDGE"
+          echo "PR head:                 $HEAD_SHA"
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            echo "PR head not available locally; skipping (advisory)."
+            exit 0
+          fi
+          if git merge-base --is-ancestor "$EDGE" "$HEAD_SHA" 2>/dev/null; then
+            echo "OK: PR already contains the latest '$BASE_REF' — not stale."
+            {
+              echo "### ✅ Merge Guard: PR is up to date"
+              echo ""
+              echo "This PR already contains the current tip of \`$BASE_REF\` (\`${EDGE:0:7}\`). Merging will not overwrite newer code."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          BEHIND="$(git rev-list --count "${HEAD_SHA}..${EDGE}" 2>/dev/null || echo '?')"
+          MSG="This PR is based on STALE code: it is missing ${BEHIND} commit(s) already on '${BASE_REF}' (edge tip ${EDGE:0:7}). Merging as-is could overwrite newer code — update/rebase onto '${BASE_REF}' first."
+          echo "::warning title=Merge Guard: stale branch::${MSG}"
+          {
+            echo "### ⚠️ Merge Guard: this PR is based on stale code"
+            echo ""
+            echo "- Base branch: \`${BASE_REF}\` (edge tip \`${EDGE:0:7}\`)"
+            echo "- Commits this PR is missing from base: **${BEHIND}**"
+            echo ""
+            echo "${MSG}"
+            echo ""
+            echo "_Advisory only — this check does not block the merge._"
+            echo ""
+            echo "<details><summary>Commits on \`${BASE_REF}\` not yet in this PR</summary>"
+            echo ""
+            echo '```'
+            git log --oneline "${HEAD_SHA}..${EDGE}" 2>/dev/null | head -50 || true
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+  force-push-overwrite:
+    name: Force-push overwrite (advisory)
+    if: github.event_name == 'push' && github.event.forced == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+
+      - name: Warn if a force-push dropped commits
+        continue-on-error: true
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -uo pipefail
+          ZERO="0000000000000000000000000000000000000000"
+          if [ "$BEFORE" = "$ZERO" ] || [ "$AFTER" = "$ZERO" ]; then
+            echo "Branch create/delete — no existing edge code to overwrite."
+            exit 0
+          fi
+          git fetch --no-tags --quiet origin "$BEFORE" 2>/dev/null || true
+          git fetch --no-tags --quiet origin "$AFTER" 2>/dev/null || true
+          if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "Previous tip ${BEFORE} not fetchable (already gc'd); cannot diff. Skipping (advisory)."
+            exit 0
+          fi
+          if git merge-base --is-ancestor "$BEFORE" "$AFTER" 2>/dev/null; then
+            echo "OK: force-push on '$REF_NAME' was fast-forward-compatible — no commits dropped."
+            exit 0
+          fi
+          DROPPED="$(git rev-list --count "${AFTER}..${BEFORE}" 2>/dev/null || echo '?')"
+          MSG="Force-push on '${REF_NAME}' was NOT a fast-forward: ${DROPPED} commit(s) reachable from the previous tip (${BEFORE:0:7}) are no longer reachable. Stale code may have overwritten edge code — verify this was intentional."
+          echo "::warning title=Merge Guard: force-push dropped commits::${MSG}"
+          {
+            echo "### ⚠️ Merge Guard: force-push overwrote edge code"
+            echo ""
+            echo "- Branch: \`${REF_NAME}\`"
+            echo "- Previous tip \`${BEFORE:0:7}\` → new tip \`${AFTER:0:7}\`"
+            echo "- Commits dropped: **${DROPPED}**"
+            echo ""
+            echo "${MSG}"
+            echo ""
+            echo "_Advisory only — this runs after the push and blocks nothing._"
+            echo ""
+            echo "<details><summary>Dropped commits (were on previous tip, not in new tip)</summary>"
+            echo ""
+            echo '```'
+            git log --oneline "${AFTER}..${BEFORE}" 2>/dev/null | head -50 || true
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
